@@ -36,11 +36,11 @@
 - 路线图：修订 1，`single` + `compact`，P-001 已 `ready`。
 - 阶段计划：修订 1，指纹 `sha256:c52c7decce7ec9b0032160207e0bb37a1ad3f7d08e0f8edec18edfbb49785ab9`。
 - 项目检查：规划后已初始化 Git；本次检查修订为 `5d250e8e3ec3d7cfdf43e2be400caedcedc8239f`，检查前工作树干净，检查后只有本执行状态证据更新；未发现 `AGENTS.md` 或用户工作重叠。
-- 当前安全状态：P-001-T-001 仍有确定性通过证据；P-001-T-002 已完成纠正并重新通过 G-002 与最终聚合的本地部分。客户端现由真实 HTTP/WebSocket、SQLite 和角色投影驱动，不再使用固定演示状态；连接接管、房主断线截止时间、资产守恒、牌桌内部流水和手牌结果摘要也已接入。P-001-T-003 已恢复执行，等待目标 iStoreOS 更新镜像后的 Docker 烟雾和 Chrome 实机复验。未创建阶段结果或最终记录。
-- 本次生产编辑前基线：Git 修订 `5d250e8e3ec3d7cfdf43e2be400caedcedc8239f`；仅 `execution-state.md` 含本轮已解释的工作流证据差异。预计范围为 `apps/server/src/app.ts`、`apps/web/src/**`、共享契约/领域中被真实流程暴露的缺口，以及 `tests/e2e/**` 和对应运行器。
-- 本次完成条件：已满足。大厅、排行榜、设置、赛季、房间、牌桌和公共大屏均读取权威状态；真实 Fastify E2E 使用两个独立玩家上下文和独立大屏，覆盖刷新恢复、跨客户端同步、新设备接管及隐藏牌隔离；`npm run verify:core` 与 `npm run test:capacity` 通过。
-- 已观察验证：本地生产构建驱动的 Chromium 桌面与 WebKit 手机测试各完成账户/资料/设置/赛季/语言持久化，以及双玩家建房、入桌、下注、大屏、刷新恢复、私有牌隔离、新设备接管和关闭兑换，共 4/4 场景通过。服务级测试还证明无租约私有投影返回 403、畸形命令返回 400、提前弃牌可在未发完整公共牌时正确结算、结果摘要与结算流水跨 SQLite 重开保留。
-- 未完成的硬门禁：目标 iStoreOS 仍运行纠正前镜像；需更新后执行完整无网络、非 root、命名卷及重启状态/资产指纹烟雾，并用 Chrome 对目标部署复验真实大厅、双客户端牌局与公共大屏。该容器运行/恢复门禁不能降级为 finding。
+- 当前安全状态：P-001-T-001 仍有确定性通过证据；P-001-T-002 已完成纠正并重新通过 G-002 与最终聚合的本地部分。客户端现由真实 HTTP/WebSocket、SQLite 和角色投影驱动，不再使用固定演示状态；连接接管、房主断线截止时间、资产守恒、牌桌内部流水和手牌结果摘要也已接入。P-001-T-003 已完成本地最终逐项审计与修正；目标 iStoreOS 的最近一次 Chrome 复验发现局域网非安全 HTTP 来源缺少 `crypto.randomUUID`，本地已加入降级命令 ID 并由生产 E2E 验证。需交付最终增量并由用户重建后再完成目标 Docker/Chrome 门禁。未创建阶段结果或最终记录。
+- 本次生产编辑前基线：Git 修订 `062709aff60e660a42af72833f0c4dd02a38cfb7`。恢复时工作树包含两个上次中断留下且可确定归属的部分编辑：`packages/contracts/src/index.ts` 新增结果类型/投影字段 6 行，`packages/poker/src/index.ts` 新增强制弃牌状态转换 39 行；除此之外无工作树差异。后续预计范围为这两个文件、`packages/domain/src/index.ts`、`apps/server/src/app.ts`、`apps/web/src/main.tsx`、`apps/web/src/locales.ts`、必要样式及对应平台/扑克/服务/E2E 测试。
+- 本次完成条件：逐项审计暴露的核心边界均有实现和确定性证据：重启时在线状态重建、全押自动跑牌、零筹码座位的新手牌处理、对局中只允许移除断线玩家且不会卡住行动者、建房可配置房主时限、结算结果公开展示、反向流水关联原流水、作废结果摘要与旧快照兼容、庄家按钮可见；之后重新通过 `npm run verify:core`、`npm run test:capacity` 与生产构建，再等待最终 iStoreOS Docker/Chrome 证据。
+- 已观察验证：本地生产构建驱动的 Chromium 桌面与 WebKit 手机测试各完成账户/资料/设置/赛季/语言持久化，以及双玩家建房、离开/重进、下注、大屏、刷新恢复、私有牌隔离、新设备接管和关闭兑换，共 4/4 场景通过；其中明确移除 `crypto.randomUUID` 模拟局域网 HTTP，并覆盖桌面键盘/鼠标和手机触摸筹码操作。服务级测试还证明无租约私有投影返回 403、畸形命令返回 400、提前弃牌可在未发完整公共牌时正确结算、结果摘要与结算流水跨 SQLite 重开保留。容量测试以 15 个真实账户、两桌、15 个玩家 WebSocket 和 4 个大屏 WebSocket 验证同步和隐私隔离。
+- 未完成的硬门禁：目标 iStoreOS 仍运行最终增量前镜像；需更新后执行完整无网络、非 root、命名卷及重启状态/资产指纹烟雾，并用 Chrome 对目标部署复验真实大厅、双客户端牌局与公共大屏。该容器运行/恢复门禁不能降级为 finding。
 
 ## 4. 任务状态
 
@@ -48,7 +48,7 @@
 | --- | --- | --- | --- | --- |
 | P-001-T-001 | 完成 | 根配置；`apps/server`；`packages/contracts`、`packages/domain`、`packages/persistence`、`packages/test-support`；平台测试 | lint、typecheck、6/6 定向测试通过 | 本机 Node.js 为 20.13.1，生产目标仍锁定 Node 24；首次 SQLite 迁移测试暴露引导表顺序错误，修复后重跑通过 |
 | P-001-T-002 | 完成（纠正后） | `packages/contracts`、`packages/domain`、`packages/poker`；`apps/server/src/app.ts`；`apps/web/src/**`；真实生产服务 E2E 运行器与平台/扑克/服务测试 | lint、typecheck；8/8 platform/server；6/6 poker；3/3 realtime；Chromium 桌面＋WebKit 手机真实服务 E2E 4/4；生产构建通过 | 原路由桩静态 E2E 已删除；纠正中补充了租约化私有投影、连接接管、房主超时、牌桌流水、结果摘要、纯筹码赢家等待、提前弃牌自动结算、双向拖放和补充筹码 |
-| P-001-T-003 | 进行中，等待目标部署 | `Dockerfile`、`deploy/**`、生产构建/静态资产检查、容量与 Docker 烟雾、工作流证据 | `npm run verify:core` 通过；`npm run test:capacity` 2/2；生产构建通过；待 iStoreOS `npm run test:docker-smoke` 与目标 Chrome 复验 | 本机仍无 Docker CLI/daemon；用户已提供 iStoreOS Docker 环境并同意在此检查点更新镜像 |
+| P-001-T-003 | 进行中，本地审计完成并等待目标部署 | `Dockerfile`、`deploy/**`、生产构建/静态资产检查、容量与 Docker 烟雾、共享契约/规则/服务/客户端边界修正、`vitest.config.ts`、工作流证据 | lint、typecheck、Vitest 32/32、生产 Chromium/WebKit E2E 4/4、15 账户容量 3/3 与生产构建通过；待 iStoreOS Docker 烟雾与目标 Chrome 复验 | 本机仍无 Docker CLI/daemon；最近目标复验暴露局域网 HTTP UUID 缺陷并已在本地修正，完成最终增量更新后继续硬门禁 |
 
 ## 5. 运行累计文件变化
 
@@ -69,6 +69,7 @@
 | `playwright.config.ts`、`scripts/run-e2e.mjs`、`tests/poker.test.ts`、`tests/realtime.test.ts`、`tests/e2e/core.spec.ts` | add | G-002 规则、隐私、并发及 Chromium/WebKit 核心流程证据 |
 | `Dockerfile`、`.dockerignore`、`deploy/compose.yml`、`deploy/README.md`、`README.md` | add | x86-64 Node 24 非 root 生产镜像、数据卷、健康检查和 iStoreOS 运维约定 |
 | `scripts/verify-static-assets.mjs`、`tests/capacity.test.ts`、`tests/docker-smoke.mjs` | add | 本地资产、目标容量、离线容器与重启恢复门禁 |
+| `vitest.config.ts` | add | 将 Playwright E2E 与 Vitest 默认全量测试入口隔离，保证 `npm test` 的退出码可信 |
 | `apps/server/src/app.ts` | modify | 为拒绝命令记录无 payload、无租约、无手牌的结构化诊断字段 |
 
 需求与契约未修改；生产与验证文件变化均已列入上表。
@@ -102,6 +103,12 @@
 | 2026-07-27 | P-001-T-002 真实浏览器纠正 | `npm run test:e2e:core`；运行器先生产构建并启动真实 Fastify/SQLite，再运行 Chromium 桌面与 WebKit 手机 | 通过：4/4；无 API 路由桩，覆盖双客户端同步、私有牌隔离、公共大屏、刷新恢复和连接接管 |
 | 2026-07-27 | P-001-T-003 本地最终聚合 | `npm run verify:core` | 通过：lint、typecheck、8 platform/server、6 poker、3 realtime、4 真实 Chromium/WebKit E2E；生产构建和无外部静态资源检查同时通过 |
 | 2026-07-27 | P-001-T-003 容量复验 | `npm run test:capacity` | 通过：15 账户、2 房间、多大屏隔离与命令幂等，2/2 |
+| 2026-07-27 | 目标局域网 HTTP 复验 | Chrome 打开 `http://192.168.100.1:3000/` 并在真实大厅创建房间 | 失败：浏览器报 `crypto.randomUUID is not a function`；确认为非安全 HTTP 来源兼容缺陷，本地改为安全能力检测与降级 ID，保持门禁开放 |
+| 2026-07-27 | P-001-T-003 最终规则与服务回归 | `npm run test:platform`、`npm run test:poker`、`npm run test:realtime` | 通过：platform/server 14/14、poker 12/12、realtime 3/3；覆盖重启在线状态重建、全押跑牌、短额全押加注权、掉线强制弃牌、零筹码补码、结果/撤销流水和未跟注超额退回 |
+| 2026-07-27 | P-001-T-003 最终生产浏览器回归 | `npm run test:e2e:core` | 通过：Chromium 桌面与 WebKit 手机 4/4；生产构建、局域网 HTTP UUID 降级、离开/重进、鼠标/键盘/触摸筹码、双客户端、大屏隐私、结算、刷新和接管均通过 |
+| 2026-07-27 | P-001-T-003 真实容量回归 | `npm run test:capacity` | 通过：3/3；15 个账户、两桌、15 个玩家 WebSocket、4 个大屏 WebSocket 与空闲大厅互不串房或泄露私有牌 |
+| 2026-07-27 | P-001-T-003 默认全量测试 | `npm test` | 首次因 Vitest 误收集 Playwright 文件而失败；新增 `vitest.config.ts` 后通过，5 个文件、32/32 测试 |
+| 2026-07-27 | P-001-T-003 静态门禁 | `npm run lint`、`npm run typecheck`、`git diff --check` | 通过；无 lint、类型或空白错误 |
 
 ## 7. 决策、待确认问题与回答
 
@@ -123,14 +130,15 @@
 - 阻塞项 `BLK-I-001`：目标 iStoreOS 已证明 x86-64 镜像能够构建、启动并托管页面，但当前环境仍不能执行仓库的完整 Docker 烟雾脚本；非 root、无网络运行、命名卷和容器重启状态/资产指纹尚未取得完整证据。影响为 AC-027 与生产恢复硬门禁仍未全部关闭。
 - 已关闭 `BLK-I-002`：固定演示状态与路由桩 E2E 已被真实权威客户端和生产服务 E2E 替换；2026-07-27 本地最终聚合确定性通过。目标部署仍需更新镜像后复验，若实机与本地证据不一致则重新打开阻塞项。
 - 已记录的主要实施风险为资产一致性、私有牌投影、撤销/自动推进并发、浏览器交互差异和 iStoreOS 容器恢复；对应控制和阻塞门禁见路线图 R-001–R-005。
+- 2026-07-27 恢复审计发现上次中断留下 `RoomProjection.lastResult`/`HandResultSummary.outcome` 与 `forceFold` 两处部分实现；其归属和意图可由需求 FR-029、FR-033、FR-037 及当前差异唯一确定。任务保持 `in_progress`，不得在完成调用方、兼容归一化、UI 和测试前计为通过。
 - `relaxed` 只允许经独立证明确实不影响交付行为的 supplemental 异常作为报告项；core、硬门禁和未知影响永远阻塞。
 
 ## 9. 精确恢复步骤
 
 1. 第一恢复动作：重新读取本状态与 `phase-001-plan.md`，并用 SHA-256 验证 `requirements.md`、`implementation-plan.md`、`phase-001-plan.md` 分别仍为 `92d44a0f...bba1e`、`aecddaa2...0df3c`、`c52c7dec...85ab9`；任一不一致时停止实现并重新进入规划审计。
-2. 确认当前 Git 修订和差异；保留任何额外用户文件。P-001-T-002 已完成，本地 `npm run verify:core` 与 `npm run test:capacity` 为最新有效证据，不得恢复旧路由桩 E2E。
-3. 在目标 iStoreOS 更新工作区后，先保留 `home-party-game-platform-data` 命名卷，重新构建并替换 `home-table` 容器；确认 Compose 报告 `healthy` 且 `/healthz` 返回成功。
-4. 在目标工作区执行 `npm run test:docker-smoke`，验证 linux/amd64 镜像、无网络健康、非 root 运行路径、独立命名卷和容器重启指纹；随后用 Chrome 打开 `http://192.168.100.1:3000/`，复验真实建房、两名玩家同步下注、刷新恢复和公共大屏隐私。
+2. 确认当前 Git 修订和差异；保留任何额外用户文件。以 `062709aff60e660a42af72833f0c4dd02a38cfb7` 加上述两处已登记的部分实现为恢复起点，先完成当前检查点列出的九项边界修正及定向测试，再重跑最终本地门禁；不得恢复旧路由桩 E2E。
+3. 本地最终门禁通过后生成新的部署归档和 SHA-256，通知用户保留 `home-party-game-platform-data` 命名卷，重新构建并替换 `home-table` 容器；确认 Compose 报告 `healthy` 且 `/healthz` 返回成功。
+4. 在目标工作区执行 `npm run test:docker-smoke`，验证 linux/amd64 镜像、无网络健康、非 root 运行路径、独立命名卷和容器重启指纹；随后用 Chrome 打开 `http://192.168.100.1:3000/`，复验真实建房、两名玩家同步下注、刷新恢复、结算结果和公共大屏隐私。
 5. 只有目标 Docker 烟雾与 Chrome 实机复验都通过后，才能完成 P-001-T-003 后置检查点、全 AC 追踪审计、阶段结果与最终化。当前不得创建 `phase-001-result.md`、`change-0.md` 或 `effective-requirements.md`。
 
 ## 10. 最终完成门禁

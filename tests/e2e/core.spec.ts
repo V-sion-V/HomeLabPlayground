@@ -5,11 +5,13 @@ test.describe.configure({ mode: "serial" });
 test("uses real account, settings, profile, season, and language persistence flows", async ({
   page
 }, testInfo) => {
+  test.setTimeout(60_000);
   const suffix = uniqueSuffix(testInfo.project.name);
   const username = `资料甲-${suffix}`;
   const updatedUsername = `资料乙-${suffix}`;
   const seasonName = `验收赛季-${suffix}`;
 
+  await emulateLanHttp(page);
   await enter(page, username);
   await expect(page.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
 
@@ -54,6 +56,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   browser,
   page: hostPage
 }, testInfo) => {
+  test.setTimeout(60_000);
   const suffix = uniqueSuffix(testInfo.project.name);
   const hostName = `房主-${suffix}`;
   const guestName = `玩家-${suffix}`;
@@ -66,6 +69,12 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   const takeoverPage = await takeoverContext.newPage();
 
   try {
+    await Promise.all([
+      emulateLanHttp(hostPage),
+      emulateLanHttp(guestPage),
+      emulateLanHttp(displayPage),
+      emulateLanHttp(takeoverPage)
+    ]);
     await enter(hostPage, hostName);
     await enter(guestPage, guestName);
 
@@ -73,6 +82,8 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     const create = hostPage.getByRole("dialog", { name: "创建德州扑克房间" });
     await create.getByLabel("房间名称").fill(roomName);
     await create.getByLabel("游戏模式").selectOption("chips-and-cards");
+    await expect(create.getByLabel("房主转让时限")).toHaveValue("120");
+    await create.getByLabel("房主转让时限").fill("45");
     await create.getByLabel("买入筹码").fill("2000");
     await create.getByRole("button", { name: "创建房间" }).click();
     await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
@@ -80,6 +91,12 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       .getByRole("link", { name: "打开公共大屏" })
       .getAttribute("href");
     expect(displayHref).toBeTruthy();
+    const roomId = new URL(displayHref!, "http://127.0.0.1:4173").searchParams.get(
+      "roomId"
+    );
+    expect(roomId).toBeTruthy();
+    const roomResponse = await hostPage.request.get(`/api/room/${roomId}?display=1`);
+    expect((await roomResponse.json()).config.hostTransferTimeoutSeconds).toBe(45);
 
     await expect(guestPage.getByText(roomName)).toBeVisible();
     await guestPage.getByRole("button", { name: "加入牌局" }).click();
@@ -88,29 +105,83 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await join.getByRole("button", { name: "加入牌局" }).click();
 
     await expect(hostPage.getByText(guestName)).toBeVisible();
+    await guestPage.getByRole("button", { name: "离开房间" }).click();
+    await expect(guestPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+    await expect(hostPage.getByText(guestName)).toHaveCount(0);
+    await guestPage
+      .locator(".room-card")
+      .filter({ hasText: roomName })
+      .getByRole("button", { name: "加入牌局" })
+      .click();
+    const rejoin = guestPage.getByRole("dialog", { name: "选择买入金额" });
+    await rejoin.getByLabel("买入筹码").fill("2000");
+    await rejoin.getByRole("button", { name: "加入牌局" }).click();
+    await expect(hostPage.getByText(guestName)).toBeVisible();
     await hostPage.getByRole("button", { name: "开始牌局" }).click();
     await expect(hostPage.getByLabel("德州扑克")).toBeVisible();
     await expect(guestPage.getByLabel("德州扑克")).toBeVisible();
+    await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
 
     await displayPage.goto(displayHref!);
     await expect(displayPage.getByText("只读同步 · 不占玩家名额")).toBeVisible();
     await expect(displayPage.getByTestId("community-cards").locator("span")).toHaveCount(5);
+    await expect(displayPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(displayPage.getByText("我的手牌")).toHaveCount(0);
     await expect(displayPage.getByRole("button", { name: /确认|弃牌|全押/ })).toHaveCount(0);
+    await displayPage.getByRole("button", { name: "EN" }).click();
+    await expect(displayPage.getByText("Public display", { exact: true })).toBeVisible();
+    await displayPage.reload();
+    await expect(displayPage.getByText("Public display", { exact: true })).toBeVisible();
+    await displayPage.getByRole("button", { name: "中" }).click();
+    await expect(displayPage.getByText("公共大屏", { exact: true })).toBeVisible();
 
     const actorPage = await actingPage(hostPage, guestPage);
     const observerPage = actorPage === hostPage ? guestPage : hostPage;
+    const chip25 = actorPage
+      .locator(".chip-rack")
+      .getByRole("button", { name: "25", exact: true });
+    const betCache = actorPage.getByLabel("下注缓存");
+    if (testInfo.project.name.startsWith("chromium")) {
+      await chip25.focus();
+      await chip25.press("Enter");
+      await expect(betCache.getByRole("button", { name: "remove-25" })).toHaveCount(1);
+      await betCache.getByRole("button", { name: "remove-25" }).press("Enter");
+      await chip25.dragTo(betCache);
+    } else {
+      const chipBox = await chip25.boundingBox();
+      const cacheBox = await betCache.boundingBox();
+      expect(chipBox).toBeTruthy();
+      expect(cacheBox).toBeTruthy();
+      await chip25.dispatchEvent("pointerdown", {
+        pointerType: "touch",
+        clientX: chipBox!.x + chipBox!.width / 2,
+        clientY: chipBox!.y + chipBox!.height / 2
+      });
+      await chip25.dispatchEvent("pointerup", {
+        pointerType: "touch",
+        clientX: cacheBox!.x + cacheBox!.width / 2,
+        clientY: cacheBox!.y + cacheBox!.height / 2
+      });
+    }
+    await expect(betCache.getByRole("button", { name: "remove-25" })).toHaveCount(1);
+    await betCache.getByRole("button", { name: "remove-25" }).click();
+    await expect(betCache.getByRole("button", { name: "remove-25" })).toHaveCount(0);
     await actorPage.getByRole("button", { name: "一键跟注" }).click();
     await expect(actorPage.getByRole("button", { name: "确认跟注" })).toBeEnabled();
     await actorPage.getByRole("button", { name: "确认跟注" }).click();
     await expect(observerPage.locator(".pot strong")).toHaveText("200");
     await expect(displayPage.locator(".pot strong")).toHaveText("200");
+    await observerPage.getByRole("button", { name: "弃牌" }).click();
+    await expect(hostPage.getByText("本手分配结果")).toBeVisible({ timeout: 7_000 });
+    await expect(guestPage.getByText("本手分配结果")).toBeVisible();
+    await expect(displayPage.getByText("本手分配结果")).toBeVisible();
 
     await hostPage.reload();
     await expect(hostPage.getByText(roomName)).toBeVisible();
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await expect(hostPage.getByText("本手分配结果")).toBeVisible();
 
     await enter(takeoverPage, hostName, false);
     await expect(takeoverPage.getByText(roomName)).toBeVisible();
@@ -127,6 +198,15 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     ]);
   }
 });
+
+async function emulateLanHttp(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis.crypto, "randomUUID", {
+      configurable: true,
+      value: undefined
+    });
+  });
+}
 
 async function enter(page: Page, username: string, expectLobby = true): Promise<void> {
   await page.goto("/");

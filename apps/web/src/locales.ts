@@ -86,6 +86,7 @@ const messages = {
     notYourTurn: "等待其他玩家",
     connectionError: "与家庭服务器的连接已中断",
     roomClosed: "房间已关闭，筹码已兑换",
+    removedFromRoom: "你已离开或被移出房间，剩余筹码已兑换",
     noRooms: "目前没有牌桌，创建一张开始聚会。",
     score: "分数",
     hand: "第 {number} 手",
@@ -99,7 +100,10 @@ const messages = {
     topUp: "补充筹码",
     online: "在线",
     offline: "已断线",
-    betUpdated: "下注已同步"
+    betUpdated: "下注已同步",
+    dealer: "庄家按钮",
+    handResult: "本手分配结果",
+    handVoided: "本手已作废并退款"
   },
   en: {
     brand: "Home Table",
@@ -186,6 +190,7 @@ const messages = {
     notYourTurn: "Waiting for another player",
     connectionError: "Connection to the home server was lost",
     roomClosed: "The room closed and chips were cashed out",
+    removedFromRoom: "You left or were removed; remaining chips were cashed out",
     noRooms: "No tables yet. Create one to start the party.",
     score: "Score",
     hand: "Hand {number}",
@@ -199,7 +204,10 @@ const messages = {
     topUp: "Top up",
     online: "Online",
     offline: "Disconnected",
-    betUpdated: "Bet synchronized"
+    betUpdated: "Bet synchronized",
+    dealer: "Dealer button",
+    handResult: "Hand payout",
+    handVoided: "Hand voided and refunded"
   }
 } as const;
 

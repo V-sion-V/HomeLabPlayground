@@ -31,6 +31,10 @@ try {
     image
   ]);
   await waitForHealth(offlineContainer);
+  const uid = run(["exec", offlineContainer, "id", "-u"], false);
+  if (uid.status !== 0 || uid.stdout.trim() === "0") {
+    throw new Error("Runtime container must use a non-root user");
+  }
   must([
     "exec",
     offlineContainer,
@@ -43,18 +47,108 @@ try {
   must(["run", "-d", "--name", firstContainer, "-P", "-v", `${volume}:/data`, image]);
   await waitForHealth(firstContainer);
   const firstBase = baseUrl(firstContainer);
-  const entered = await post(`${firstBase}/api/enter`, { username: "smoke-user", avatar: "🦊" });
-  if (entered.status !== "accepted") throw new Error("Account entry was not accepted");
-  const before = await get(`${firstBase}/api/state`);
+  const alice = await post(`${firstBase}/api/enter`, {
+    username: `smoke-alice-${suffix}`,
+    avatar: "🦊"
+  });
+  const bob = await post(`${firstBase}/api/enter`, {
+    username: `smoke-bob-${suffix}`,
+    avatar: "🐼"
+  });
+  if (alice.status !== "accepted" || bob.status !== "accepted") {
+    throw new Error("Account entry was not accepted");
+  }
+  const create = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: alice.data.connectionId,
+    aggregateId: "platform",
+    expectedVersion: bob.version,
+    type: "room.create",
+    payload: {
+      accountId: alice.data.account.id,
+      name: "Docker recovery table",
+      config: {
+        mode: "chips-and-cards",
+        smallBlind: 50,
+        bigBlind: 100,
+        minBuyIn: 2_000,
+        maxBuyIn: 20_000,
+        hostTransferTimeoutSeconds: 60
+      },
+      buyIn: 2_000
+    }
+  });
+  const roomId = create.data?.id;
+  if (create.status !== "accepted" || !roomId) {
+    throw new Error("Room creation was not accepted");
+  }
+  const join = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: bob.data.connectionId,
+    aggregateId: roomId,
+    expectedVersion: create.version,
+    type: "room.join",
+    payload: {
+      accountId: bob.data.account.id,
+      roomId,
+      buyIn: 2_000
+    }
+  });
+  const start = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: alice.data.connectionId,
+    aggregateId: roomId,
+    expectedVersion: join.version,
+    type: "room.start",
+    payload: { accountId: alice.data.account.id, roomId }
+  });
+  const action = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: alice.data.connectionId,
+    aggregateId: roomId,
+    expectedVersion: start.version,
+    type: "poker.action",
+    payload: {
+      accountId: alice.data.account.id,
+      roomId,
+      pokerVersion: start.data.pokerVersion,
+      action: { kind: "call" }
+    }
+  });
+  if (action.status !== "accepted") throw new Error("Poker action was not accepted");
+  const beforeLobby = await get(`${firstBase}/api/state`);
+  const beforeRoom = await get(`${firstBase}/api/room/${roomId}?display=1`);
+  const beforePrivate = await get(
+    `${firstBase}/api/room/${roomId}?accountId=${alice.data.account.id}` +
+      `&connectionId=${encodeURIComponent(alice.data.connectionId)}`
+  );
   must(["rm", "-f", firstContainer]);
 
   must(["run", "-d", "--name", secondContainer, "-P", "-v", `${volume}:/data`, image]);
   await waitForHealth(secondContainer);
-  const after = await get(`${baseUrl(secondContainer)}/api/state`);
-  if (JSON.stringify(before) !== JSON.stringify(after)) {
-    throw new Error("State fingerprint changed across container restart");
+  const secondBase = baseUrl(secondContainer);
+  const afterLobby = await get(`${secondBase}/api/state`);
+  const afterRoom = await get(`${secondBase}/api/room/${roomId}?display=1`);
+  const afterPrivate = await get(
+    `${secondBase}/api/room/${roomId}?accountId=${alice.data.account.id}` +
+      `&connectionId=${encodeURIComponent(alice.data.connectionId)}`
+  );
+  if (
+    JSON.stringify(durableLobby(beforeLobby)) !==
+      JSON.stringify(durableLobby(afterLobby)) ||
+    JSON.stringify(durableRoom(beforeRoom)) !==
+      JSON.stringify(durableRoom(afterRoom)) ||
+    JSON.stringify(beforePrivate.ownHoleCards) !==
+      JSON.stringify(afterPrivate.ownHoleCards)
+  ) {
+    throw new Error("Durable state or private cards changed across container restart");
   }
-  console.log("Docker offline startup, health, named-volume persistence and restart fingerprint passed.");
+  if (!afterRoom.seats.every((seat) => seat.connected === false)) {
+    throw new Error("Persisted connections were not rebuilt as disconnected");
+  }
+  console.log(
+    "Docker offline startup, non-root runtime, health, named-volume poker persistence and restart fingerprint passed."
+  );
 } finally {
   for (const container of containers) run(["rm", "-f", container], false);
   run(["volume", "rm", volume], false);
@@ -113,4 +207,26 @@ async function post(url, body) {
   });
   if (!response.ok) throw new Error(`${url} returned ${response.status}`);
   return response.json();
+}
+
+function durableLobby(lobby) {
+  return {
+    ...lobby,
+    version: undefined,
+    rooms: lobby.rooms.map((room) => ({
+      ...room,
+      seats: room.seats.map((seat) => ({ ...seat, connected: undefined }))
+    }))
+  };
+}
+
+function durableRoom(room) {
+  return {
+    ...room,
+    platformVersion: undefined,
+    version: undefined,
+    advanceDeadline: undefined,
+    seats: room.seats.map((seat) => ({ ...seat, connected: undefined })),
+    ownHoleCards: undefined
+  };
 }

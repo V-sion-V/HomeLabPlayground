@@ -42,20 +42,38 @@ export function createPokerState(options: {
   bigBlind: number;
   dealerPosition?: number;
   deck?: Card[];
+  now?: number;
 }): PokerState {
   if (options.players.length < 2 || options.players.length > 10) {
     throw new DomainError("INVALID_PLAYER_COUNT");
+  }
+  const orderedPlayers = [...options.players].sort(
+    (left, right) => left.position - right.position
+  );
+  if (
+    new Set(orderedPlayers.map((player) => player.position)).size !==
+    orderedPlayers.length
+  ) {
+    throw new DomainError("INVALID_SEAT_POSITIONS");
+  }
+  if (
+    options.dealerPosition !== undefined &&
+    !orderedPlayers.some(
+      (player) => player.position === options.dealerPosition
+    )
+  ) {
+    throw new DomainError("INVALID_DEALER_POSITION");
   }
   const state: PokerState = {
     handNumber: 1,
     phase: "blinds",
     mode: options.mode,
-    dealerPosition: options.dealerPosition ?? options.players[0]!.position,
+    dealerPosition: options.dealerPosition ?? orderedPlayers[0]!.position,
     actingAccountId: null,
     communityCards: [],
     holeCards: {},
     deck: options.deck ? [...options.deck] : shuffleDeck(),
-    players: options.players.map((player) => ({
+    players: orderedPlayers.map((player) => ({
       ...player,
       roundBet: 0,
       totalBet: 0,
@@ -63,6 +81,7 @@ export function createPokerState(options: {
       allIn: false
     })),
     actedAccountIds: [],
+    raiseLockedAccountIds: [],
     pots: [],
     currentBet: 0,
     minimumRaise: options.bigBlind,
@@ -74,20 +93,26 @@ export function createPokerState(options: {
   if (state.mode === "chips-and-cards") dealHoleCards(state);
   state.phase = "preflop";
   state.actingAccountId = nextActiveAccount(state, bigBlindPlayerIndex(state));
+  if (state.actingAccountId === null) {
+    state.advanceDeadline = (options.now ?? Date.now()) + 3_000;
+  }
   return state;
 }
 
 export function legalActions(state: PokerState, accountId: string) {
   const player = requireActingPlayer(state, accountId);
   const callAmount = Math.min(state.currentBet - player.roundBet, player.stack);
+  const raiseLocked = state.raiseLockedAccountIds.includes(accountId);
   return {
     canFold: true,
     canCheck: callAmount === 0,
     callAmount,
     minimumRaiseTo: state.currentBet + state.minimumRaise,
     maximumTo: player.roundBet + player.stack,
-    canRaise: player.roundBet + player.stack > state.currentBet,
-    canAllIn: player.stack > 0
+    canRaise: !raiseLocked && player.roundBet + player.stack > state.currentBet,
+    canAllIn:
+      player.stack > 0 &&
+      (!raiseLocked || player.roundBet + player.stack <= state.currentBet)
   };
 }
 
@@ -102,6 +127,7 @@ export function act(
   const before = JSON.stringify(withoutUndo(state));
   const player = requireActingPlayer(state, accountId);
   const legal = legalActions(state, accountId);
+  const previouslyActed = [...state.actedAccountIds];
   let committed = 0;
   switch (action.kind) {
     case "fold":
@@ -115,6 +141,9 @@ export function act(
       break;
     case "bet":
     case "raise": {
+      if (state.raiseLockedAccountIds.includes(accountId)) {
+        throw new DomainError("RAISE_NOT_REOPENED");
+      }
       if (!Number.isInteger(action.amount)) throw new DomainError("INVALID_BET");
       if (action.amount <= state.currentBet || action.amount > legal.maximumTo) {
         throw new DomainError("INVALID_BET");
@@ -123,20 +152,47 @@ export function act(
       const isAllIn = action.amount === legal.maximumTo;
       if (raiseSize < state.minimumRaise && !isAllIn) throw new DomainError("MINIMUM_RAISE");
       committed = commit(player, action.amount - player.roundBet);
-      if (raiseSize >= state.minimumRaise) state.minimumRaise = raiseSize;
+      if (raiseSize >= state.minimumRaise) {
+        state.minimumRaise = raiseSize;
+        state.raiseLockedAccountIds = [];
+      } else {
+        state.raiseLockedAccountIds = [
+          ...new Set([
+            ...state.raiseLockedAccountIds,
+            ...previouslyActed.filter((candidate) => candidate !== accountId)
+          ])
+        ];
+      }
       state.currentBet = action.amount;
       state.actedAccountIds = [accountId];
       break;
     }
-    case "all-in":
+    case "all-in": {
+      if (
+        state.raiseLockedAccountIds.includes(accountId) &&
+        player.roundBet + player.stack > state.currentBet
+      ) {
+        throw new DomainError("RAISE_NOT_REOPENED");
+      }
       committed = commit(player, player.stack);
       if (player.roundBet > state.currentBet) {
         const raiseSize = player.roundBet - state.currentBet;
-        if (raiseSize >= state.minimumRaise) state.minimumRaise = raiseSize;
+        if (raiseSize >= state.minimumRaise) {
+          state.minimumRaise = raiseSize;
+          state.raiseLockedAccountIds = [];
+        } else {
+          state.raiseLockedAccountIds = [
+            ...new Set([
+              ...state.raiseLockedAccountIds,
+              ...previouslyActed.filter((candidate) => candidate !== accountId)
+            ])
+          ];
+        }
         state.currentBet = player.roundBet;
         state.actedAccountIds = [accountId];
       }
       break;
+    }
   }
   if (!state.actedAccountIds.includes(accountId)) state.actedAccountIds.push(accountId);
   state.pots = calculatePots(state.players);
@@ -184,6 +240,47 @@ export function undoLastAction(
   return JSON.parse(state.undoSnapshot) as PokerState;
 }
 
+export function forceFold(
+  state: PokerState,
+  accountId: string,
+  now = Date.now()
+): PokerState {
+  const player = requirePlayer(state, accountId);
+  const playerIndex = state.players.findIndex(
+    (candidate) => candidate.accountId === accountId
+  );
+  player.folded = true;
+  state.raiseLockedAccountIds = state.raiseLockedAccountIds.filter(
+    (candidate) => candidate !== accountId
+  );
+  state.pots = calculatePots(state.players);
+  state.version += 1;
+  state.lastAction = {
+    accountId,
+    kind: "forced-fold",
+    amount: 0,
+    version: state.version,
+    reversible: false
+  };
+  delete state.undoSnapshot;
+
+  if (remainingUnfolded(state).length === 1) {
+    state.phase = "showdown";
+    state.actingAccountId = null;
+    state.advanceDeadline = now + 3_000;
+    return state;
+  }
+  if (state.actingAccountId === accountId) {
+    if (roundComplete(state)) {
+      state.actingAccountId = null;
+      state.advanceDeadline = now + 3_000;
+    } else {
+      state.actingAccountId = nextActiveAccount(state, playerIndex);
+    }
+  }
+  return state;
+}
+
 export function advancePhase(
   state: PokerState,
   now = Date.now(),
@@ -201,6 +298,7 @@ export function advancePhase(
   for (const player of state.players) player.roundBet = 0;
   state.currentBet = 0;
   state.actedAccountIds = [];
+  state.raiseLockedAccountIds = [];
   const nextPhase: Partial<Record<HandPhase, HandPhase>> = {
     preflop: "flop",
     flop: "turn",
@@ -217,11 +315,17 @@ export function advancePhase(
     }
   }
   state.version += 1;
-  if (state.phase !== "showdown") {
+  if (state.phase === "showdown") {
+    state.actingAccountId = null;
+    state.advanceDeadline = now + 3_000;
+  } else {
     state.actingAccountId = nextActiveAccount(
       state,
       state.players.findIndex((player) => player.position === state.dealerPosition)
     );
+    if (state.actingAccountId === null) {
+      state.advanceDeadline = now + 3_000;
+    }
   }
   return state;
 }
@@ -235,14 +339,22 @@ export function calculatePots(
   let previous = 0;
   for (const level of levels) {
     const contributors = players.filter((player) => player.totalBet >= level);
-    const amount = (level - previous) * contributors.length;
+    const contribution = level - previous;
+    const amount = contribution * contributors.length;
     if (amount > 0) {
-      pots.push({
-        amount,
-        eligibleAccountIds: contributors
-          .filter((player) => !player.folded)
-          .map((player) => player.accountId)
-      });
+      const eligibleAccountIds = contributors
+        .filter((player) => !player.folded)
+        .map((player) => player.accountId);
+      if (eligibleAccountIds.length > 0) {
+        pots.push({ amount, eligibleAccountIds });
+      } else {
+        for (const contributor of contributors) {
+          pots.push({
+            amount: contribution,
+            eligibleAccountIds: [contributor.accountId]
+          });
+        }
+      }
     }
     previous = level;
   }
@@ -256,6 +368,7 @@ export function settleManual(
 ): PokerState {
   if (state.mode !== "chips-only") throw new DomainError("MANUAL_WINNER_NOT_ALLOWED");
   if (expectedVersion !== state.version) throw new DomainError("STALE_VERSION");
+  if (state.phase !== "showdown") throw new DomainError("INVALID_PHASE");
   if (winnersByPot.length !== state.pots.length) throw new DomainError("WINNER_REQUIRED");
   state.settlementSnapshot = JSON.stringify(withoutSettlement(state));
   state.pots.forEach((pot, index) => {
@@ -289,6 +402,7 @@ export function settleManual(
 
 export function settleAutomatically(state: PokerState): PokerState {
   if (state.mode !== "chips-and-cards") throw new DomainError("AUTOMATIC_WINNER_NOT_ALLOWED");
+  if (state.phase !== "showdown") throw new DomainError("INVALID_PHASE");
   const winnersByPot = state.pots.map((pot) => {
     if (pot.eligibleAccountIds.length === 1) return [...pot.eligibleAccountIds];
     if (state.communityCards.length !== 5) throw new DomainError("BOARD_INCOMPLETE");

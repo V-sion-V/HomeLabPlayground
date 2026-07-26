@@ -66,6 +66,20 @@ export class PlatformStore {
       .run({ version: state.version, state: JSON.stringify(state), now: Date.now() });
   }
 
+  recoverAfterRestart(): PlatformSnapshot {
+    const recover = this.db.transaction(() => {
+      const state = this.load();
+      const domain = new PlatformDomain(state);
+      if (domain.recoverAfterRestart()) {
+        domain.validateInvariants();
+        state.version += 1;
+        this.save(state);
+      }
+      return state;
+    });
+    return recover();
+  }
+
   execute<T>(
     envelope: CommandEnvelope,
     handler: (domain: PlatformDomain) => T

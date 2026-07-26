@@ -55,12 +55,62 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
 }
 
 export class PlatformDomain {
+  private normalizedPersistedState = false;
+
   constructor(
     public readonly state: PlatformSnapshot,
     private readonly now: () => number = Date.now,
     private readonly id: () => string = randomUUID
   ) {
-    state.handResults ??= [];
+    if (!Array.isArray(state.handResults)) {
+      state.handResults = [];
+      this.normalizedPersistedState = true;
+    }
+    for (const result of state.handResults) {
+      const legacyResult = result as typeof result & {
+        outcome?: "settled" | "void";
+      };
+      if (!legacyResult.outcome) {
+        legacyResult.outcome = "settled";
+        this.normalizedPersistedState = true;
+      }
+      const legacyParticipants = result as typeof result & {
+        participantAccountIds?: string[];
+      };
+      if (!Array.isArray(legacyParticipants.participantAccountIds)) {
+        legacyParticipants.participantAccountIds = [
+          ...new Set(result.payouts.map((payout) => payout.accountId))
+        ];
+        this.normalizedPersistedState = true;
+      }
+    }
+    for (const room of Object.values(state.rooms)) {
+      if (!Number.isFinite(room.createdAt)) {
+        room.createdAt = 0;
+        this.normalizedPersistedState = true;
+      }
+      for (const seat of room.seats) {
+        const legacySeat = seat as typeof seat & {
+          buyIn?: number;
+          frozenLeaderboardScore?: number;
+        };
+        if (!Number.isFinite(legacySeat.buyIn)) {
+          legacySeat.buyIn = seat.tableChips;
+          this.normalizedPersistedState = true;
+        }
+        if (!Number.isFinite(legacySeat.frozenLeaderboardScore)) {
+          legacySeat.frozenLeaderboardScore =
+            state.seasonAssets[seat.accountId]?.frozenScore ??
+            state.seasonAssets[seat.accountId]?.score ??
+            0;
+          this.normalizedPersistedState = true;
+        }
+      }
+      if (room.poker && !Array.isArray(room.poker.raiseLockedAccountIds)) {
+        room.poker.raiseLockedAccountIds = [];
+        this.normalizedPersistedState = true;
+      }
+    }
   }
 
   get currentSeason() {
@@ -161,6 +211,7 @@ export class PlatformDomain {
             bigBlind: room.config.bigBlind,
             minBuyIn: room.config.minBuyIn,
             maxBuyIn: room.config.maxBuyIn,
+            createdAt: room.createdAt,
             seats: projection.seats
           };
         })
@@ -185,7 +236,8 @@ export class PlatformDomain {
       hostAccountId: accountId,
       config: structuredClone(config),
       seats: [],
-      version: 0
+      version: 0,
+      createdAt: this.now()
     };
     this.state.rooms[room.id] = room;
     return room;
@@ -201,11 +253,17 @@ export class PlatformDomain {
     }
     const asset = this.requireAsset(accountId);
     if (asset.score < buyIn) throw new DomainError("INSUFFICIENT_SCORE");
-    const position = room.seats.length;
+    const occupiedPositions = new Set(room.seats.map((seat) => seat.position));
+    const position = Array.from({ length: 10 }, (_, index) => index).find(
+      (candidate) => !occupiedPositions.has(candidate)
+    );
+    if (position === undefined) throw new DomainError("ROOM_FULL");
     room.seats.push({
       accountId,
       position,
       connected: true,
+      buyIn,
+      frozenLeaderboardScore: asset.score,
       tableChips: buyIn,
       currentBet: 0,
       folded: false,
@@ -221,6 +279,7 @@ export class PlatformDomain {
   startRoom(roomId: string, hostAccountId: string): Room {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    if (room.status !== "waiting") throw new DomainError("ROOM_ALREADY_STARTED");
     if (room.seats.length < 2) throw new DomainError("NOT_ENOUGH_PLAYERS");
     room.status = "in_progress";
     room.version += 1;
@@ -231,6 +290,13 @@ export class PlatformDomain {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
     if (room.status !== "in_progress") throw new DomainError("ROOM_NOT_IN_PROGRESS");
+    if (room.poker?.advanceDeadline !== undefined) {
+      room.poker.pausedAdvanceRemainingMs = Math.max(
+        0,
+        room.poker.advanceDeadline - this.now()
+      );
+      delete room.poker.advanceDeadline;
+    }
     room.status = "paused";
     room.version += 1;
     return room;
@@ -240,6 +306,10 @@ export class PlatformDomain {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
     if (room.status !== "paused") throw new DomainError("ROOM_NOT_PAUSED");
+    if (room.poker?.pausedAdvanceRemainingMs !== undefined) {
+      room.poker.advanceDeadline = this.now() + room.poker.pausedAdvanceRemainingMs;
+      delete room.poker.pausedAdvanceRemainingMs;
+    }
     room.status = "in_progress";
     room.version += 1;
     return room;
@@ -248,9 +318,11 @@ export class PlatformDomain {
   transferHost(roomId: string, fromAccountId: string, toAccountId: string): Room {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== fromAccountId) throw new DomainError("HOST_ONLY");
-    if (!room.seats.some((seat) => seat.accountId === toAccountId)) {
+    const target = room.seats.find((seat) => seat.accountId === toAccountId);
+    if (!target) {
       throw new DomainError("PLAYER_NOT_IN_ROOM");
     }
+    if (!target.connected) throw new DomainError("TARGET_OFFLINE");
     room.hostAccountId = toAccountId;
     delete room.hostDisconnectDeadline;
     room.version += 1;
@@ -271,6 +343,7 @@ export class PlatformDomain {
     if (currentStack + amount > room.config.maxBuyIn) throw new DomainError("BUY_IN_LIMIT");
     if (this.requireAsset(accountId).score < amount) throw new DomainError("INSUFFICIENT_SCORE");
     this.transfer(accountId, room.id, amount, "top-up");
+    seat.buyIn += amount;
     seat.tableChips = currentStack + amount;
     const pokerPlayer = room.poker?.players.find((player) => player.accountId === accountId);
     if (pokerPlayer) pokerPlayer.stack += amount;
@@ -297,9 +370,6 @@ export class PlatformDomain {
     asset.inGame = false;
     asset.frozenScore = null;
     room.seats.splice(seatIndex, 1);
-    room.seats.forEach((seat, position) => {
-      seat.position = position;
-    });
     if (room.seats.length === 0) {
       delete this.state.rooms[roomId];
       return undefined;
@@ -351,6 +421,32 @@ export class PlatformDomain {
     return room;
   }
 
+  recoverAfterRestart(): boolean {
+    let changed = this.normalizedPersistedState;
+    for (const room of Object.values(this.state.rooms)) {
+      let roomChanged = false;
+      for (const seat of room.seats) {
+        if (seat.connected) {
+          seat.connected = false;
+          roomChanged = true;
+        }
+      }
+      const hostSeat = room.seats.find(
+        (seat) => seat.accountId === room.hostAccountId
+      );
+      if (hostSeat && room.hostDisconnectDeadline === undefined) {
+        room.hostDisconnectDeadline =
+          this.now() + room.config.hostTransferTimeoutSeconds * 1_000;
+        roomChanged = true;
+      }
+      if (roomChanged) {
+        room.version += 1;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   closeRoom(roomId: string): void {
     const room = this.requireRoom(roomId);
     const pokerPlayers = new Map(
@@ -360,11 +456,27 @@ export class PlatformDomain {
       ...room.seats.map((seat) => seat.accountId),
       ...pokerPlayers.keys()
     ]);
+    const handActive = Boolean(
+      room.poker && !["complete", "waiting", "void"].includes(room.poker.phase)
+    );
+    if (room.poker && handActive) {
+      this.recordHandResult(
+        room.id,
+        room.poker.handNumber,
+        room.config.mode,
+        room.poker.players
+          .map((player) => ({
+            accountId: player.accountId,
+            amount: player.totalBet
+          }))
+          .filter((refund) => refund.amount > 0),
+        "void",
+        room.poker.players.map((player) => player.accountId)
+      );
+    }
     for (const accountId of accountIds) {
       const seat = room.seats.find((candidate) => candidate.accountId === accountId);
       const pokerPlayer = pokerPlayers.get(accountId);
-      const handActive =
-        room.poker && !["complete", "waiting", "void"].includes(room.poker.phase);
       const refundable = pokerPlayer
         ? pokerPlayer.stack + (handActive ? pokerPlayer.totalBet : 0)
         : (seat?.tableChips ?? 0) + (seat?.currentBet ?? 0);
@@ -442,7 +554,10 @@ export class PlatformDomain {
       hostAccountId: room.hostAccountId,
       config: structuredClone(room.config),
       version: room.version,
-      seats: room.seats.map((seat) => {
+      createdAt: room.createdAt,
+      seats: [...room.seats]
+        .sort((left, right) => left.position - right.position)
+        .map((seat) => {
         const account = this.requireAccount(seat.accountId);
         const pokerPlayer = pokerPlayers.get(seat.accountId);
         return {
@@ -456,13 +571,16 @@ export class PlatformDomain {
           folded: pokerPlayer?.folded ?? seat.folded,
           allIn: pokerPlayer?.allIn ?? seat.allIn
         };
-      }),
+        }),
       potTotal: room.poker?.pots.reduce((sum, pot) => sum + pot.amount, 0) ?? 0,
       phase: room.poker?.phase,
       actingAccountId: room.poker?.actingAccountId,
       pokerVersion: room.poker?.version,
       currentBet: room.poker?.currentBet,
       minimumRaise: room.poker?.minimumRaise,
+      raiseLockedAccountIds: room.poker
+        ? [...room.poker.raiseLockedAccountIds]
+        : undefined,
       handNumber: room.poker?.handNumber,
       dealerPosition: room.poker?.dealerPosition,
       lastAction: room.poker?.lastAction
@@ -480,6 +598,22 @@ export class PlatformDomain {
       })),
       advanceDeadline: room.poker?.advanceDeadline
     };
+    const lastResult = [...this.state.handResults]
+      .reverse()
+      .find(
+        (result) =>
+          result.roomId === room.id &&
+          result.reversedAt === undefined &&
+          result.handNumber === room.poker?.handNumber
+      );
+    if (lastResult) {
+      projection.lastResult = {
+        handNumber: lastResult.handNumber,
+        outcome: lastResult.outcome,
+        participantAccountIds: [...lastResult.participantAccountIds],
+        payouts: structuredClone(lastResult.payouts)
+      };
+    }
     if (room.config.mode === "chips-and-cards") {
       const cards = room.poker?.communityCards ?? [];
       projection.communityCards = [
@@ -527,11 +661,20 @@ export class PlatformDomain {
       if (!room.poker) {
         return sum + room.seats.reduce((roomSum, seat) => roomSum + seat.tableChips, 0);
       }
+      const participatingAccountIds = new Set(
+        room.poker.players.map((player) => player.accountId)
+      );
       return (
         sum +
         room.poker.players.reduce(
           (roomSum, player) => roomSum + player.stack + player.totalBet,
           0
+        ) +
+        room.seats
+          .filter((seat) => !participatingAccountIds.has(seat.accountId))
+          .reduce(
+            (roomSum, seat) => roomSum + seat.tableChips + seat.currentBet,
+            0
         )
       );
     }, 0);
@@ -546,7 +689,8 @@ export class PlatformDomain {
     amount: number,
     direction: "table-to-pot" | "pot-to-table",
     reason: string,
-    handNumber: number
+    handNumber: number,
+    reversesReason?: string
   ): void {
     if (!Number.isInteger(amount) || amount <= 0) return;
     const table = `table:${roomId}:${accountId}`;
@@ -558,7 +702,8 @@ export class PlatformDomain {
       source: direction === "table-to-pot" ? table : pot,
       destination: direction === "table-to-pot" ? pot : table,
       amount,
-      reason
+      reason,
+      reversesReason
     });
   }
 
@@ -566,7 +711,9 @@ export class PlatformDomain {
     roomId: string,
     handNumber: number,
     mode: Room["config"]["mode"],
-    payouts: Array<{ accountId: string; amount: number }>
+    payouts: Array<{ accountId: string; amount: number }>,
+    outcome: "settled" | "void" = "settled",
+    participantAccountIds: string[] = payouts.map((payout) => payout.accountId)
   ): void {
     this.state.handResults.push({
       id: this.id(),
@@ -574,6 +721,8 @@ export class PlatformDomain {
       roomId,
       handNumber,
       mode,
+      outcome,
+      participantAccountIds: [...new Set(participantAccountIds)],
       payouts: structuredClone(payouts),
       completedAt: this.now()
     });
@@ -647,8 +796,37 @@ export class PlatformDomain {
     destination: string;
     amount: number;
     reason: string;
+    reversesReason?: string;
   }): void {
     const groupId = this.id();
+    const alreadyReversed = new Set(
+      this.state.ledger
+        .map((line) => line.reversalOf)
+        .filter((id): id is string => Boolean(id))
+    );
+    const originalLine = input.reversesReason
+      ? [...this.state.ledger]
+          .reverse()
+          .find(
+            (line) =>
+              line.seasonId === this.currentSeason.id &&
+              line.accountId === input.accountId &&
+              line.roomId === input.roomId &&
+              line.handNumber === input.handNumber &&
+              line.reason === input.reversesReason &&
+              line.reversalOf === undefined &&
+              !alreadyReversed.has(line.id)
+          )
+      : undefined;
+    const originalPair = originalLine
+      ? this.state.ledger.filter((line) => line.groupId === originalLine.groupId)
+      : [];
+    const sourceReversalOf = originalPair.find(
+      (line) => line.destination === input.source
+    )?.id;
+    const destinationReversalOf = originalPair.find(
+      (line) => line.source === input.destination
+    )?.id;
     const common = {
       groupId,
       seasonId: this.currentSeason.id,
@@ -664,13 +842,15 @@ export class PlatformDomain {
         id: this.id(),
         ...common,
         source: input.source,
-        destination: `clearing:${groupId}`
+        destination: `clearing:${groupId}`,
+        reversalOf: sourceReversalOf
       },
       {
         id: this.id(),
         ...common,
         source: `clearing:${groupId}`,
-        destination: input.destination
+        destination: input.destination,
+        reversalOf: destinationReversalOf
       }
     );
   }

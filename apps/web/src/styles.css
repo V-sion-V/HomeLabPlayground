@@ -109,6 +109,22 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 .player-seat span { grid-row: 1 / 3; font-size: 1.6rem; }
 .player-seat small { color: var(--gold); }
 .player-seat.active { border-color: var(--gold); }
+.dealer-marker {
+  position: absolute;
+  top: -.55rem;
+  right: -.45rem;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  color: #17251f;
+  background: var(--gold);
+  border: 2px solid #fff3cf;
+  font-style: normal;
+  font-size: .68rem;
+  font-weight: 900;
+}
 .north { top: 5%; left: 50%; transform: translateX(-50%); }
 .west { left: 4%; top: 44%; }
 .south { bottom: 5%; left: 50%; transform: translateX(-50%); }
@@ -243,6 +259,8 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 .display-seats > article strong { color: var(--gold); }
 .display-seats > article small { color: var(--muted); }
 .display-seats > article.active { border-color: var(--gold); }
+.seat-actions { grid-column: 1 / -1; justify-content: flex-end; }
+.seat-actions .text-button { font-size: .64rem; }
 .own-cards { display: flex; justify-content: center; gap: .35rem; margin-top: .65rem; }
 .own-cards span {
   display: grid;
@@ -256,6 +274,29 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
   font-weight: 900;
 }
 .settlement-actions { justify-content: center; margin: .7rem 0; }
+.hand-result {
+  display: grid;
+  gap: .35rem;
+  width: min(420px, 100%);
+  margin: .7rem auto;
+  padding: .65rem .8rem;
+  border: 1px solid rgba(230,185,95,.42);
+  border-radius: 12px;
+  color: var(--gold);
+  background: rgba(4,23,19,.88);
+  text-align: center;
+}
+.hand-result ul {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: .35rem .8rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink);
+  font-size: .78rem;
+}
 .winner-picker {
   display: grid;
   gap: .6rem;

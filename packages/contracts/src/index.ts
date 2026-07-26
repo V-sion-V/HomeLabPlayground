@@ -57,6 +57,8 @@ export interface Seat {
   accountId: string;
   position: number;
   connected: boolean;
+  buyIn: number;
+  frozenLeaderboardScore: number;
   tableChips: number;
   currentBet: number;
   folded: boolean;
@@ -92,6 +94,7 @@ export interface PokerState {
     allIn: boolean;
   }>;
   actedAccountIds: string[];
+  raiseLockedAccountIds: string[];
   pots: Pot[];
   currentBet: number;
   minimumRaise: number;
@@ -108,6 +111,7 @@ export interface PokerState {
   undoSnapshot?: string;
   settlementSnapshot?: string;
   advanceDeadline?: number;
+  pausedAdvanceRemainingMs?: number;
 }
 
 export interface RoomConfig {
@@ -128,6 +132,7 @@ export interface Room {
   config: RoomConfig;
   seats: Seat[];
   version: number;
+  createdAt: number;
   hostDisconnectDeadline?: number;
   poker?: PokerState;
 }
@@ -153,6 +158,8 @@ export interface HandResultSummary {
   roomId: string;
   handNumber: number;
   mode: RoomMode;
+  outcome: "settled" | "void";
+  participantAccountIds: string[];
   payouts: Array<{ accountId: string; amount: number }>;
   completedAt: number;
   reversedAt?: number;
@@ -227,6 +234,7 @@ export interface LobbyRoomProjection {
   bigBlind: number;
   minBuyIn: number;
   maxBuyIn: number;
+  createdAt: number;
   seats: PublicSeatProjection[];
 }
 
@@ -249,6 +257,7 @@ export interface RoomProjection {
   hostAccountId: string;
   config: RoomConfig;
   version: number;
+  createdAt: number;
   seats: PublicSeatProjection[];
   potTotal: number;
   phase?: HandPhase;
@@ -256,6 +265,7 @@ export interface RoomProjection {
   pokerVersion?: number;
   currentBet?: number;
   minimumRaise?: number;
+  raiseLockedAccountIds?: string[];
   handNumber?: number;
   dealerPosition?: number;
   lastAction?: {
@@ -266,6 +276,12 @@ export interface RoomProjection {
     reversible: boolean;
   };
   pots?: Pot[];
+  lastResult?: {
+    handNumber: number;
+    outcome: "settled" | "void";
+    participantAccountIds: string[];
+    payouts: Array<{ accountId: string; amount: number }>;
+  };
   communityCards?: Array<Card | { hidden: true }>;
   ownHoleCards?: Card[];
   advanceDeadline?: number;

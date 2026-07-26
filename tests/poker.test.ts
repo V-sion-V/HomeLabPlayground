@@ -6,6 +6,7 @@ import {
   calculatePots,
   createPokerState,
   evaluateSeven,
+  forceFold,
   legalActions,
   settleAutomatically,
   settleManual,
@@ -53,6 +54,19 @@ describe("Texas hold'em engine", () => {
     expect(pots[2]?.eligibleAccountIds).toEqual(["alice"]);
   });
 
+  it("returns unmatched excess when every contributor to that layer has folded", () => {
+    const pots = calculatePots([
+      { ...players[0]!, roundBet: 0, totalBet: 500, folded: true, allIn: false },
+      { ...players[1]!, roundBet: 0, totalBet: 300, folded: false, allIn: true },
+      { ...players[2]!, roundBet: 0, totalBet: 300, folded: false, allIn: true }
+    ]);
+    expect(pots).toEqual([
+      { amount: 900, eligibleAccountIds: ["bob", "cara"] },
+      { amount: 200, eligibleAccountIds: ["alice"] }
+    ]);
+    expect(pots.reduce((total, pot) => total + pot.amount, 0)).toBe(1_100);
+  });
+
   it("manual mode validates winners, splits odd chips, and reverses settlement", () => {
     const state = createPokerState({
       players,
@@ -62,6 +76,7 @@ describe("Texas hold'em engine", () => {
       deck: []
     });
     state.pots = [{ amount: 101, eligibleAccountIds: ["alice", "bob"] }];
+    state.phase = "showdown";
     const before = state.players.map((player) => player.stack);
     settleManual(state, [["alice", "bob"]]);
     expect(state.players[0]?.stack).toBe(before[0]! + 51);
@@ -105,6 +120,147 @@ describe("Texas hold'em engine", () => {
     expect(() => settleAutomatically(state)).not.toThrow();
     expect(state.phase).toBe("complete");
     expect(state.pots).toHaveLength(0);
+  });
+
+  it("runs out every board phase on durable three-second deadlines when nobody can act", () => {
+    const state = createPokerState({
+      players: [
+        { accountId: "alice", position: 0, stack: 10 },
+        { accountId: "bob", position: 1, stack: 20 }
+      ],
+      mode: "chips-and-cards",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: fixedDeck(),
+      now: 1_000
+    });
+    expect(state.actingAccountId).toBeNull();
+    expect(state.advanceDeadline).toBe(4_000);
+
+    advancePhase(state, 4_000);
+    expect(state.phase).toBe("flop");
+    expect(state.communityCards).toHaveLength(3);
+    expect(state.advanceDeadline).toBe(7_000);
+
+    advancePhase(state, 7_000);
+    expect(state.phase).toBe("turn");
+    expect(state.advanceDeadline).toBe(10_000);
+
+    advancePhase(state, 10_000);
+    expect(state.phase).toBe("river");
+    expect(state.advanceDeadline).toBe(13_000);
+
+    advancePhase(state, 13_000);
+    expect(state.phase).toBe("showdown");
+    expect(state.communityCards).toHaveLength(5);
+    expect(state.advanceDeadline).toBe(16_000);
+  });
+
+  it("force-folds a removed acting player and hands action to the next eligible seat", () => {
+    const state = createPokerState({
+      players,
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: []
+    });
+    expect(state.actingAccountId).toBe("alice");
+    forceFold(state, "alice", 1_000);
+    expect(state.players.find((player) => player.accountId === "alice")?.folded).toBe(true);
+    expect(state.actingAccountId).toBe("bob");
+    expect(state.lastAction).toMatchObject({
+      accountId: "alice",
+      kind: "forced-fold",
+      reversible: false
+    });
+    expect(state.undoSnapshot).toBeUndefined();
+  });
+
+  it("does not reopen raising for a player who already acted before a short all-in", () => {
+    const state = createPokerState({
+      players: [
+        { accountId: "alice", position: 0, stack: 1_000 },
+        { accountId: "bob", position: 1, stack: 30 },
+        { accountId: "cara", position: 2, stack: 1_000 }
+      ],
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: []
+    });
+    act(state, "alice", { kind: "call" });
+    act(state, "bob", { kind: "all-in" });
+    act(state, "cara", { kind: "call" });
+
+    expect(state.actingAccountId).toBe("alice");
+    expect(legalActions(state, "alice")).toMatchObject({
+      callAmount: 10,
+      canRaise: false,
+      canAllIn: false
+    });
+    expect(() =>
+      act(state, "alice", { kind: "raise", amount: 60 })
+    ).toThrowError("RAISE_NOT_REOPENED");
+  });
+
+  it("evaluates and distributes automatic main and side pots independently", () => {
+    const state = createPokerState({
+      players,
+      mode: "chips-and-cards",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: fixedDeck()
+    });
+    state.phase = "showdown";
+    state.communityCards = cards("2C 3D 4H 9S KC");
+    state.holeCards = {
+      alice: cards("AS AD"),
+      bob: cards("QS QD"),
+      cara: cards("5S 6S")
+    };
+    state.players.forEach((player) => {
+      player.stack = 0;
+      player.roundBet = 0;
+      player.totalBet = 0;
+    });
+    state.pots = [
+      { amount: 300, eligibleAccountIds: ["alice", "bob", "cara"] },
+      { amount: 400, eligibleAccountIds: ["alice", "bob"] }
+    ];
+
+    settleAutomatically(state);
+    expect(state.players.find((player) => player.accountId === "cara")?.stack).toBe(300);
+    expect(state.players.find((player) => player.accountId === "alice")?.stack).toBe(400);
+    expect(state.players.find((player) => player.accountId === "bob")?.stack).toBe(0);
+  });
+
+  it("accepts ten seats and rejects a table larger than the product limit", () => {
+    const tenPlayers = Array.from({ length: 10 }, (_, position) => ({
+      accountId: `player-${position}`,
+      position,
+      stack: 1_000
+    }));
+    expect(
+      createPokerState({
+        players: tenPlayers,
+        mode: "chips-only",
+        smallBlind: 10,
+        bigBlind: 20,
+        deck: []
+      }).players
+    ).toHaveLength(10);
+    expect(() =>
+      createPokerState({
+        players: [
+          ...tenPlayers,
+          { accountId: "player-10", position: 10, stack: 1_000 }
+        ],
+        mode: "chips-only",
+        smallBlind: 10,
+        bigBlind: 20,
+        deck: []
+      })
+    ).toThrowError("INVALID_PLAYER_COUNT");
   });
 
   it("ranks standard hands deterministically", () => {

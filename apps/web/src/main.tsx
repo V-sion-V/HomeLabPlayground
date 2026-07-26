@@ -161,9 +161,11 @@ function App() {
         };
         if (message.type === "lobby") setLobby(message.data as LobbyProjection);
         if (message.type === "projection") setRoom(message.data as RoomProjection);
-        if (message.type === "room.closed") {
+        if (message.type === "room.closed" || message.type === "room.left") {
           setRoom(null);
-          setNotice(t(language, "roomClosed"));
+          setNotice(
+            t(language, message.type === "room.closed" ? "roomClosed" : "removedFromRoom")
+          );
           void refreshLobby();
         }
         if (message.type === "session.replaced") {
@@ -198,7 +200,7 @@ function App() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          commandId: crypto.randomUUID(),
+          commandId: createCommandId(),
           connectionId: session.connectionId,
           aggregateId,
           expectedVersion,
@@ -221,7 +223,10 @@ function App() {
       }
       if (isRoomProjection(result.data)) {
         setRoom({ ...result.data, platformVersion: result.version });
-      } else if ((result.data as { closed?: boolean } | undefined)?.closed) {
+      } else if (
+        (result.data as { closed?: boolean; left?: boolean } | undefined)?.closed ||
+        (result.data as { closed?: boolean; left?: boolean } | undefined)?.left
+      ) {
         setRoom(null);
         await refreshLobby();
       } else {
@@ -694,6 +699,9 @@ function CreateRoomModal({
   const [bigBlind, setBigBlind] = useState(settings.poker.bigBlind);
   const [minBuyIn, setMinBuyIn] = useState(settings.poker.minBuyIn);
   const [maxBuyIn, setMaxBuyIn] = useState(settings.poker.maxBuyIn);
+  const [hostTransferTimeoutSeconds, setHostTransferTimeoutSeconds] = useState(
+    settings.defaultHostTransferTimeoutSeconds
+  );
   const [buyIn, setBuyIn] = useState(settings.poker.minBuyIn);
   const [busy, setBusy] = useState(false);
   const submit = async (event: React.FormEvent) => {
@@ -708,7 +716,7 @@ function CreateRoomModal({
           bigBlind,
           minBuyIn,
           maxBuyIn,
-          hostTransferTimeoutSeconds: settings.defaultHostTransferTimeoutSeconds
+          hostTransferTimeoutSeconds
         },
         buyIn
       );
@@ -733,6 +741,11 @@ function CreateRoomModal({
           <NumberField label={t(language, "bigBlind")} value={bigBlind} onChange={setBigBlind} />
           <NumberField label={t(language, "minBuyIn")} value={minBuyIn} onChange={setMinBuyIn} />
           <NumberField label={t(language, "maxBuyIn")} value={maxBuyIn} onChange={setMaxBuyIn} />
+          <NumberField
+            label={t(language, "hostTimeout")}
+            value={hostTransferTimeoutSeconds}
+            onChange={setHostTransferTimeoutSeconds}
+          />
         </div>
         <NumberField label={t(language, "buyIn")} value={buyIn} onChange={setBuyIn} />
         <div className="modal-actions">
@@ -1084,7 +1097,10 @@ function PlayerTable({
     x: number;
     y: number;
   } | null>(null);
-  const suppressClick = useRef(false);
+  const suppressClick = useRef<{
+    source: "rack" | "cache";
+    expiresAt: number;
+  } | null>(null);
   const seat = room.seats.find((candidate) => candidate.accountId === session.account.id);
   const authorityKey = JSON.stringify([
     room.status,
@@ -1096,6 +1112,7 @@ function PlayerTable({
   const previousAuthority = useRef(authorityKey);
   const total = cache.reduce((sum, value) => sum + value, 0);
   const canAct = room.status === "in_progress" && room.actingAccountId === session.account.id;
+  const raiseLocked = room.raiseLockedAccountIds?.includes(session.account.id) ?? false;
   const callAmount = Math.max(
     0,
     Math.min((room.currentBet ?? 0) - (seat?.currentBet ?? 0), seat?.tableChips ?? 0)
@@ -1109,12 +1126,20 @@ function PlayerTable({
     canAct &&
     total > 0 &&
     total <= (seat?.tableChips ?? 0) &&
-    (isCall || isAllIn || (isRaise && target >= (room.minimumRaise ?? 0)));
+    (
+      isCall ||
+      (isAllIn && (!raiseLocked || target <= (room.currentBet ?? 0))) ||
+      (
+        isRaise &&
+        !raiseLocked &&
+        target >= (room.currentBet ?? 0) + (room.minimumRaise ?? 0)
+      )
+    );
   const confirmLabel = isCall
     ? t(language, "confirmCall")
-    : isRaise
-      ? t(language, "confirmRaise")
-      : t(language, "confirmBet");
+    : (room.currentBet ?? 0) === 0
+      ? t(language, "confirmBet")
+      : t(language, "confirmRaise");
   const now = useNow(Boolean(room.advanceDeadline));
   const countdown = room.advanceDeadline
     ? Math.max(0, (room.advanceDeadline - now) / 1_000)
@@ -1137,11 +1162,11 @@ function PlayerTable({
   }, [muted, room.phase]);
 
   const submitAction = async (kind: string, amount?: number) => {
-    const accepted = await run("poker.action", {
+    await run("poker.action", {
       pokerVersion: room.pokerVersion,
       action: amount === undefined ? { kind } : { kind, amount }
     });
-    if (accepted) setCache([]);
+    setCache([]);
   };
 
   const confirm = async () => {
@@ -1158,7 +1183,10 @@ function PlayerTable({
     if (!gesture || event.pointerType === "mouse") return;
     const moved = Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 12;
     if (!moved) return;
-    suppressClick.current = true;
+    suppressClick.current = {
+      source: gesture.source,
+      expiresAt: performance.now() + 500
+    };
     event.preventDefault();
     if (!canAct) return;
     const targetRect =
@@ -1207,7 +1235,37 @@ function PlayerTable({
               <span>{entry.avatar}</span>
               <b>{entry.username}{entry.accountId === room.hostAccountId ? " ★" : ""}</b>
               <small>{entry.tableChips.toLocaleString()} · {entry.currentBet.toLocaleString()}</small>
+              <small className={entry.connected ? "online" : "offline"}>
+                {entry.connected ? t(language, "online") : t(language, "offline")}
+              </small>
+              {entry.position === room.dealerPosition && (
+                <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
+              )}
               {entry.folded && <em>{t(language, "fold")}</em>}
+              {host && entry.accountId !== session.account.id && (
+                <div className="inline-actions seat-actions">
+                  {entry.connected && (
+                    <button
+                      className="text-button"
+                      onClick={() => void run("room.transfer-host", {
+                        targetAccountId: entry.accountId
+                      })}
+                    >
+                      {t(language, "transferHost")}
+                    </button>
+                  )}
+                  {(!entry.connected || room.phase === "complete") && (
+                    <button
+                      className="text-button danger-text"
+                      onClick={() => void run("room.remove", {
+                        targetAccountId: entry.accountId
+                      })}
+                    >
+                      {t(language, "removePlayer")}
+                    </button>
+                  )}
+                </div>
+              )}
             </article>
           ))}
         </div>
@@ -1268,17 +1326,25 @@ function PlayerTable({
           </div>
         </div>
         {notice && <p className="notice" role="status">{notice}</p>}
-        {room.phase === "showdown" && room.mode === "chips-only" && host && (
+        <HandResultBanner language={language} room={room} />
+        {room.phase === "showdown" &&
+          room.mode === "chips-only" &&
+          room.status === "in_progress" &&
+          host && (
           <WinnerPicker language={language} room={room} run={run} />
         )}
         {room.phase === "complete" && (
           <div className="settlement-actions">
-            {host && (
+            {host && room.mode === "chips-only" && (
               <>
                 <button className="secondary" onClick={() => void run("poker.undo-settlement", { pokerVersion: room.pokerVersion })}>
                   {t(language, "undoSettlement")}
                 </button>
-                <button className="primary" onClick={() => void run("poker.next-hand")}>
+                <button
+                  className="primary"
+                  disabled={room.status !== "in_progress"}
+                  onClick={() => void run("poker.next-hand")}
+                >
                   {t(language, "startNextHand")}
                 </button>
               </>
@@ -1327,10 +1393,14 @@ function PlayerTable({
                 }}
                 onPointerUp={completePointerDrag}
                 onClick={() => {
-                  if (suppressClick.current) {
-                    suppressClick.current = false;
+                  if (
+                    suppressClick.current?.source === "cache" &&
+                    suppressClick.current.expiresAt >= performance.now()
+                  ) {
+                    suppressClick.current = null;
                     return;
                   }
+                  suppressClick.current = null;
                   setCache((current) => current.filter((_, item) => item !== index));
                 }}
               >
@@ -1375,10 +1445,14 @@ function PlayerTable({
               }}
               onPointerUp={completePointerDrag}
               onClick={() => {
-                if (suppressClick.current) {
-                  suppressClick.current = false;
+                if (
+                  suppressClick.current?.source === "rack" &&
+                  suppressClick.current.expiresAt >= performance.now()
+                ) {
+                  suppressClick.current = null;
                   return;
                 }
+                suppressClick.current = null;
                 setCache((current) => [...current, value]);
               }}
               onKeyDown={(event) => {
@@ -1398,7 +1472,10 @@ function PlayerTable({
           </button>
           <button
             className="secondary"
-            disabled={!canAct}
+            disabled={
+              !canAct ||
+              (raiseLocked && allInTarget > (room.currentBet ?? 0))
+            }
             onClick={() => {
               if (callAmount === 0) void submitAction("check");
               else setCache(amountToChips(callAmount));
@@ -1565,6 +1642,9 @@ function PublicDisplay({
               <b>{seat.username}</b>
               <strong>{seat.tableChips.toLocaleString()}</strong>
               <small>{seat.currentBet.toLocaleString()}</small>
+              {seat.position === room.dealerPosition && (
+                <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
+              )}
             </article>
           ))}
         </div>
@@ -1576,6 +1656,7 @@ function PublicDisplay({
           )}
           <p>{phaseLabel(language, room.phase)}</p>
           <div className="pot"><small>{t(language, "pot")}</small><strong>{room.potTotal.toLocaleString()}</strong></div>
+          <HandResultBanner language={language} room={room} />
         </div>
         {room.lastAction && room.lastAction.amount > 0 && (
           <div
@@ -1649,6 +1730,41 @@ function NumberField({
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </label>
+  );
+}
+
+function HandResultBanner({
+  language,
+  room
+}: {
+  language: Language;
+  room: RoomProjection;
+}) {
+  const result = room.lastResult;
+  if (!result) return null;
+  return (
+    <div className="hand-result" role="status">
+      <strong>
+        {result.outcome === "void"
+          ? t(language, "handVoided")
+          : t(language, "handResult")}
+      </strong>
+      {result.outcome === "settled" && result.payouts.length > 0 && (
+        <ul>
+          {result.payouts.map((payout) => {
+            const seat = room.seats.find(
+              (candidate) => candidate.accountId === payout.accountId
+            );
+            return (
+              <li key={payout.accountId}>
+                {seat?.avatar} {seat?.username ?? payout.accountId} +
+                {payout.amount.toLocaleString()}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -1746,6 +1862,25 @@ function writeRecentAccount(account: Pick<Account, "username" | "avatar">): void
   );
 }
 
+function createCommandId(): string {
+  const cryptoApi = globalThis.crypto as (Crypto & {
+    randomUUID?: () => string;
+  }) | undefined;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    return `cmd-${Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("")}`;
+  }
+  return `cmd-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
 type CommandFunction = <T>(
   type: string,
   payload: Record<string, unknown>,
@@ -1837,17 +1972,61 @@ function errorMessage(language: Language, reason: unknown): string {
     STALE_VERSION: ["状态已更新，请重试", "State changed; please try again"],
     ALREADY_IN_ROOM: ["该账户已经在另一房间", "This account is already in another room"],
     ROOM_ALREADY_STARTED: ["牌局已开始，不能加入新玩家", "The game already started; new players cannot join"],
+    ROOM_FULL: ["房间已满", "The room is full"],
     INVALID_BUY_IN: ["买入金额超出房间范围", "Buy-in is outside the room limits"],
     INSUFFICIENT_SCORE: ["账户分数不足", "Not enough account score"],
+    BUY_IN_LIMIT: ["补充后会超过牌桌上限", "The top-up would exceed the table limit"],
+    INVALID_AMOUNT: ["金额必须是正整数", "The amount must be a positive whole number"],
+    INVALID_BASE_SCORE: ["基础分必须是非负整数", "Base score must be a non-negative whole number"],
+    INVALID_ROOM_CONFIG: ["房间配置无效，请检查盲注和买入范围", "Room settings are invalid; check blinds and buy-in limits"],
+    INVALID_LANGUAGE: ["不支持该界面语言", "That interface language is not supported"],
     NOT_ENOUGH_PLAYERS: ["至少需要两名玩家", "At least two players are required"],
     HOST_ONLY: ["只有房主可以执行此操作", "Only the host can do that"],
     TRANSFER_HOST_FIRST: ["请先转让房主", "Transfer the host role first"],
+    TARGET_OFFLINE: ["只能把房主转让给在线玩家", "The new host must be online"],
+    CANNOT_REMOVE_HOST: ["房主不能移除自己，请先转让或关闭房间", "The host cannot remove themselves; transfer or close the room"],
+    PLAYER_STILL_CONNECTED: ["对局中只能移除已断线玩家", "Only disconnected players can be removed during a hand"],
+    PLAYER_NEEDS_TOP_UP: ["至少两名玩家需要先补充筹码", "At least two players must top up first"],
     HAND_IN_PROGRESS: ["请在两手牌之间操作", "This action is available between hands"],
+    ROOM_NOT_IN_PROGRESS: ["牌局尚未开始或已经暂停", "The room is not in progress"],
+    ROOM_NOT_PAUSED: ["牌局当前没有暂停", "The room is not paused"],
+    ROOM_PAUSED: ["牌局已暂停", "The room is paused"],
+    POKER_NOT_STARTED: ["牌局尚未开始", "Poker has not started"],
     ROOMS_MUST_CLOSE: ["开始新赛季前必须关闭全部房间", "Close every room before starting a new season"],
     WRONG_ACTOR: ["当前不是你的行动", "It is not your turn"],
+    CANNOT_CHECK: ["当前需要跟注，不能过牌", "You must call or fold; checking is unavailable"],
+    INVALID_BET: ["下注金额不合法", "The bet amount is invalid"],
     MINIMUM_RAISE: ["加注未达到最低额度", "Raise is below the minimum"],
+    RAISE_NOT_REOPENED: ["较小的全押未重新开放加注，你只能跟注或弃牌", "A short all-in did not reopen raising; call or fold"],
+    INVALID_PHASE: ["当前牌局阶段不允许此操作", "This action is unavailable in the current phase"],
+    SETTLEMENT_UNDO_NOT_AVAILABLE: ["当前结算不能撤销", "This settlement cannot be undone"],
     UNDO_NOT_AVAILABLE: ["下一位玩家已行动，不能撤销", "Undo is no longer available"],
+    WINNER_REQUIRED: ["请为每个底池选择获胜者", "Choose a winner for every pot"],
+    INELIGIBLE_WINNER: ["所选玩家无权赢得该底池", "A selected player is not eligible for that pot"],
+    PLAYER_NOT_IN_ROOM: ["该玩家不在房间中", "That player is not in the room"],
+    PLAYER_NOT_FOUND: ["牌局中找不到该玩家", "That player is not in the hand"],
+    HAND_RESULT_NOT_FOUND: ["找不到可撤销的结算", "No reversible settlement was found"],
+    MANUAL_WINNER_NOT_ALLOWED: ["该模式不能手动选择赢家", "Winners cannot be selected manually in this mode"],
+    AUTOMATIC_WINNER_NOT_ALLOWED: ["该模式需要房主选择赢家", "This mode requires the host to select winners"],
+    BOARD_INCOMPLETE: ["公共牌尚未发完", "The community board is incomplete"],
+    DECK_EXHAUSTED: ["牌堆状态异常", "The deck state is invalid"],
+    INVALID_PLAYER_COUNT: ["德州扑克需要 2 到 10 名玩家", "Texas Hold'em requires 2 to 10 players"],
+    INVALID_SEAT_POSITIONS: ["牌桌座位状态冲突", "Table seat positions are inconsistent"],
+    INVALID_DEALER_POSITION: ["庄家座位无效", "The dealer position is invalid"],
+    INVALID_COMMAND: ["操作格式无效，请刷新后重试", "The command is invalid; refresh and try again"],
+    UNSUPPORTED_COMMAND: ["当前版本不支持此操作", "This action is not supported by this version"],
     ROOM_NOT_FOUND: ["房间不存在或已经关闭", "The room does not exist or has closed"],
+    ACCOUNT_NOT_FOUND: ["账户不存在", "The account does not exist"],
+    ASSET_NOT_FOUND: ["账户资产状态不存在", "Account asset state is missing"],
+    NO_CURRENT_SEASON: ["当前赛季状态不存在", "There is no current season"],
+    DUPLICATE_USERNAME: ["用户名状态冲突", "Username state is inconsistent"],
+    MULTIPLE_ROOM_OCCUPANCY: ["账户不能同时加入多个房间", "An account cannot occupy multiple rooms"],
+    NEGATIVE_ASSET: ["资产状态异常，操作已回滚", "Asset state is invalid; the action was rolled back"],
+    ASSET_CONSERVATION_FAILED: ["资产守恒检查失败，操作已回滚", "Asset conservation failed; the action was rolled back"],
+    INVALID_HAND: ["手牌状态无效", "The hand state is invalid"],
+    ADVANCE_NOT_DUE: ["自动推进时间尚未到达", "The auto-advance deadline has not arrived"],
+    HOST_TIMEOUT_CHANGED: ["房主连接状态已经变化", "The host connection state changed"],
+    INVALID_HOST_CANDIDATE: ["无法选择新的房主", "A new host could not be selected"],
     ENTER_FAILED: ["无法进入家庭服务器", "Cannot enter the home server"],
     STATE_FAILED: ["无法读取权威状态", "Cannot load authoritative state"],
     COMMAND_FAILED: ["操作未被服务器接受", "The server rejected the action"]
