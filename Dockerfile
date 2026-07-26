@@ -1,6 +1,9 @@
 FROM --platform=$BUILDPLATFORM node:24.18.0-bookworm-slim AS build
 
 WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json
