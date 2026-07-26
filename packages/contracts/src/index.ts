@@ -147,6 +147,17 @@ export interface AssetLine {
   createdAt: number;
 }
 
+export interface HandResultSummary {
+  id: string;
+  seasonId: string;
+  roomId: string;
+  handNumber: number;
+  mode: RoomMode;
+  payouts: Array<{ accountId: string; amount: number }>;
+  completedAt: number;
+  reversedAt?: number;
+}
+
 export interface GlobalSettings {
   defaultLanguage: Language;
   defaultHostTransferTimeoutSeconds: number;
@@ -162,6 +173,7 @@ export interface PlatformSnapshot {
   rooms: Record<string, Room>;
   leases: Record<string, { connectionId: string; acquiredAt: number }>;
   ledger: AssetLine[];
+  handResults: HandResultSummary[];
   settings: GlobalSettings;
 }
 
@@ -203,17 +215,57 @@ export interface PublicSeatProjection {
   allIn: boolean;
 }
 
-export interface RoomProjection {
+export interface LobbyRoomProjection {
   id: string;
   name: string;
   mode: RoomMode;
   status: RoomStatus;
   hostAccountId: string;
+  seatCount: number;
+  maxSeats: number;
+  smallBlind: number;
+  bigBlind: number;
+  minBuyIn: number;
+  maxBuyIn: number;
+  seats: PublicSeatProjection[];
+}
+
+export interface LobbyProjection {
+  version: number;
+  rooms: LobbyRoomProjection[];
+  leaderboard: LeaderboardSnapshot[];
+  historicalSeasons: HistoricalSeason[];
+  currentSeason: Season;
+  settings: GlobalSettings;
+  accountRoomId?: string;
+}
+
+export interface RoomProjection {
+  platformVersion: number;
+  id: string;
+  name: string;
+  mode: RoomMode;
+  status: RoomStatus;
+  hostAccountId: string;
+  config: RoomConfig;
   version: number;
   seats: PublicSeatProjection[];
   potTotal: number;
   phase?: HandPhase;
   actingAccountId?: string | null;
+  pokerVersion?: number;
+  currentBet?: number;
+  minimumRaise?: number;
+  handNumber?: number;
+  dealerPosition?: number;
+  lastAction?: {
+    accountId: string;
+    kind: string;
+    amount: number;
+    version: number;
+    reversible: boolean;
+  };
+  pots?: Pot[];
   communityCards?: Array<Card | { hidden: true }>;
   ownHoleCards?: Card[];
   advanceDeadline?: number;

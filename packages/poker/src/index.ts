@@ -289,8 +289,9 @@ export function settleManual(
 
 export function settleAutomatically(state: PokerState): PokerState {
   if (state.mode !== "chips-and-cards") throw new DomainError("AUTOMATIC_WINNER_NOT_ALLOWED");
-  if (state.communityCards.length !== 5) throw new DomainError("BOARD_INCOMPLETE");
   const winnersByPot = state.pots.map((pot) => {
+    if (pot.eligibleAccountIds.length === 1) return [...pot.eligibleAccountIds];
+    if (state.communityCards.length !== 5) throw new DomainError("BOARD_INCOMPLETE");
     const eligible = pot.eligibleAccountIds.map((accountId) => ({
       accountId,
       score: evaluateSeven([

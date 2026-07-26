@@ -2,7 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type {
   Account,
   AssetLine,
+  GlobalSettings,
   HistoricalSeason,
+  LobbyProjection,
   PlatformSnapshot,
   Room,
   RoomConfig,
@@ -43,6 +45,7 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
     rooms: {},
     leases: {},
     ledger: [],
+    handResults: [],
     settings: {
       defaultLanguage: "zh-CN",
       defaultHostTransferTimeoutSeconds: 60,
@@ -56,7 +59,9 @@ export class PlatformDomain {
     public readonly state: PlatformSnapshot,
     private readonly now: () => number = Date.now,
     private readonly id: () => string = randomUUID
-  ) {}
+  ) {
+    state.handResults ??= [];
+  }
 
   get currentSeason() {
     const season = this.state.seasons.find((candidate) => candidate.status === "current");
@@ -109,7 +114,13 @@ export class PlatformDomain {
     this.state.leases[accountId] = { connectionId, acquiredAt: this.now() };
     const room = this.roomForAccount(accountId);
     const seat = room?.seats.find((candidate) => candidate.accountId === accountId);
-    if (seat) seat.connected = true;
+    if (seat && !seat.connected) {
+      seat.connected = true;
+      if (room?.hostAccountId === accountId) delete room.hostDisconnectDeadline;
+      if (room) room.version += 1;
+    } else if (room?.hostAccountId === accountId) {
+      delete room.hostDisconnectDeadline;
+    }
     return connectionId;
   }
 
@@ -117,6 +128,49 @@ export class PlatformDomain {
     if (this.state.leases[accountId]?.connectionId !== connectionId) {
       throw new DomainError("STALE_CONNECTION");
     }
+  }
+
+  updateSettings(settings: GlobalSettings): GlobalSettings {
+    if (!["zh-CN", "en"].includes(settings.defaultLanguage)) {
+      throw new DomainError("INVALID_LANGUAGE");
+    }
+    this.validateRoomConfig({
+      mode: "chips-and-cards",
+      hostTransferTimeoutSeconds: settings.defaultHostTransferTimeoutSeconds,
+      ...settings.poker
+    });
+    this.state.settings = structuredClone(settings);
+    return this.state.settings;
+  }
+
+  lobbyProjection(accountId?: string): LobbyProjection {
+    return {
+      version: this.state.version,
+      rooms: Object.values(this.state.rooms)
+        .map((room) => {
+          const projection = this.projectRoom(room.id, { display: true });
+          return {
+            id: room.id,
+            name: room.name,
+            mode: room.config.mode,
+            status: room.status,
+            hostAccountId: room.hostAccountId,
+            seatCount: room.seats.length,
+            maxSeats: 10,
+            smallBlind: room.config.smallBlind,
+            bigBlind: room.config.bigBlind,
+            minBuyIn: room.config.minBuyIn,
+            maxBuyIn: room.config.maxBuyIn,
+            seats: projection.seats
+          };
+        })
+        .sort((left, right) => left.name.localeCompare(right.name)),
+      leaderboard: this.currentLeaderboard(),
+      historicalSeasons: structuredClone(this.state.historicalSeasons),
+      currentSeason: structuredClone(this.currentSeason),
+      settings: structuredClone(this.state.settings),
+      accountRoomId: accountId ? this.roomForAccount(accountId)?.id : undefined
+    };
   }
 
   createRoom(accountId: string, name: string, config: RoomConfig): Room {
@@ -173,6 +227,24 @@ export class PlatformDomain {
     return room;
   }
 
+  pauseRoom(roomId: string, hostAccountId: string): Room {
+    const room = this.requireRoom(roomId);
+    if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    if (room.status !== "in_progress") throw new DomainError("ROOM_NOT_IN_PROGRESS");
+    room.status = "paused";
+    room.version += 1;
+    return room;
+  }
+
+  resumeRoom(roomId: string, hostAccountId: string): Room {
+    const room = this.requireRoom(roomId);
+    if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    if (room.status !== "paused") throw new DomainError("ROOM_NOT_PAUSED");
+    room.status = "in_progress";
+    room.version += 1;
+    return room;
+  }
+
   transferHost(roomId: string, fromAccountId: string, toAccountId: string): Room {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== fromAccountId) throw new DomainError("HOST_ONLY");
@@ -185,14 +257,80 @@ export class PlatformDomain {
     return room;
   }
 
+  topUp(roomId: string, accountId: string, amount: number): Room {
+    const room = this.requireRoom(roomId);
+    const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+    if (!seat) throw new DomainError("PLAYER_NOT_IN_ROOM");
+    if (room.poker && !["complete", "waiting", "void"].includes(room.poker.phase)) {
+      throw new DomainError("HAND_IN_PROGRESS");
+    }
+    if (!Number.isInteger(amount) || amount <= 0) throw new DomainError("INVALID_AMOUNT");
+    const currentStack =
+      room.poker?.players.find((player) => player.accountId === accountId)?.stack ??
+      seat.tableChips;
+    if (currentStack + amount > room.config.maxBuyIn) throw new DomainError("BUY_IN_LIMIT");
+    if (this.requireAsset(accountId).score < amount) throw new DomainError("INSUFFICIENT_SCORE");
+    this.transfer(accountId, room.id, amount, "top-up");
+    seat.tableChips = currentStack + amount;
+    const pokerPlayer = room.poker?.players.find((player) => player.accountId === accountId);
+    if (pokerPlayer) pokerPlayer.stack += amount;
+    room.version += 1;
+    return room;
+  }
+
+  leaveRoom(roomId: string, accountId: string, forced = false): Room | undefined {
+    const room = this.requireRoom(roomId);
+    const seatIndex = room.seats.findIndex((candidate) => candidate.accountId === accountId);
+    if (seatIndex < 0) throw new DomainError("PLAYER_NOT_IN_ROOM");
+    if (room.hostAccountId === accountId && room.seats.length > 1 && !forced) {
+      throw new DomainError("TRANSFER_HOST_FIRST");
+    }
+    const pokerPlayer = room.poker?.players.find((player) => player.accountId === accountId);
+    const handActive =
+      room.poker && !["complete", "waiting", "void"].includes(room.poker.phase);
+    if (handActive && !forced) throw new DomainError("HAND_IN_PROGRESS");
+    if (pokerPlayer && handActive) pokerPlayer.folded = true;
+    const refundable = pokerPlayer?.stack ?? room.seats[seatIndex]!.tableChips;
+    if (refundable > 0) this.transfer(room.id, accountId, refundable, forced ? "player-removed" : "leave-room");
+    if (pokerPlayer) pokerPlayer.stack = 0;
+    const asset = this.requireAsset(accountId);
+    asset.inGame = false;
+    asset.frozenScore = null;
+    room.seats.splice(seatIndex, 1);
+    room.seats.forEach((seat, position) => {
+      seat.position = position;
+    });
+    if (room.seats.length === 0) {
+      delete this.state.rooms[roomId];
+      return undefined;
+    }
+    if (room.hostAccountId === accountId) room.hostAccountId = room.seats[0]!.accountId;
+    room.version += 1;
+    return room;
+  }
+
   disconnect(roomId: string, accountId: string): void {
     const room = this.requireRoom(roomId);
     const seat = room.seats.find((candidate) => candidate.accountId === accountId);
-    if (seat) seat.connected = false;
+    if (!seat || !seat.connected) return;
+    seat.connected = false;
     if (room.hostAccountId === accountId) {
       room.hostDisconnectDeadline =
         this.now() + room.config.hostTransferTimeoutSeconds * 1_000;
     }
+    room.version += 1;
+  }
+
+  connect(accountId: string): Room | undefined {
+    const room = this.roomForAccount(accountId);
+    const seat = room?.seats.find((candidate) => candidate.accountId === accountId);
+    if (!room || !seat) return room;
+    if (!seat.connected || room.hostDisconnectDeadline) {
+      seat.connected = true;
+      if (room.hostAccountId === accountId) delete room.hostDisconnectDeadline;
+      room.version += 1;
+    }
+    return room;
   }
 
   resolveHostTimeout(roomId: string, pick: (ids: string[]) => string): Room | undefined {
@@ -215,12 +353,27 @@ export class PlatformDomain {
 
   closeRoom(roomId: string): void {
     const room = this.requireRoom(roomId);
-    for (const seat of room.seats) {
-      const refundable = seat.tableChips + seat.currentBet;
-      if (refundable > 0) this.transfer(room.id, seat.accountId, refundable, "room-close");
-      seat.tableChips = 0;
-      seat.currentBet = 0;
-      const asset = this.requireAsset(seat.accountId);
+    const pokerPlayers = new Map(
+      room.poker?.players.map((player) => [player.accountId, player]) ?? []
+    );
+    const accountIds = new Set([
+      ...room.seats.map((seat) => seat.accountId),
+      ...pokerPlayers.keys()
+    ]);
+    for (const accountId of accountIds) {
+      const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+      const pokerPlayer = pokerPlayers.get(accountId);
+      const handActive =
+        room.poker && !["complete", "waiting", "void"].includes(room.poker.phase);
+      const refundable = pokerPlayer
+        ? pokerPlayer.stack + (handActive ? pokerPlayer.totalBet : 0)
+        : (seat?.tableChips ?? 0) + (seat?.currentBet ?? 0);
+      if (refundable > 0) this.transfer(room.id, accountId, refundable, "room-close");
+      if (seat) {
+        seat.tableChips = 0;
+        seat.currentBet = 0;
+      }
+      const asset = this.requireAsset(accountId);
       asset.inGame = false;
       asset.frozenScore = null;
     }
@@ -277,30 +430,54 @@ export class PlatformDomain {
 
   projectRoom(roomId: string, viewer?: { accountId?: string; display?: boolean }): RoomProjection {
     const room = this.requireRoom(roomId);
+    const pokerPlayers = new Map(
+      room.poker?.players.map((player) => [player.accountId, player]) ?? []
+    );
     const projection: RoomProjection = {
+      platformVersion: this.state.version,
       id: room.id,
       name: room.name,
       mode: room.config.mode,
       status: room.status,
       hostAccountId: room.hostAccountId,
+      config: structuredClone(room.config),
       version: room.version,
       seats: room.seats.map((seat) => {
         const account = this.requireAccount(seat.accountId);
+        const pokerPlayer = pokerPlayers.get(seat.accountId);
         return {
           accountId: seat.accountId,
           username: account.username,
           avatar: account.avatar,
           position: seat.position,
           connected: seat.connected,
-          tableChips: seat.tableChips,
-          currentBet: seat.currentBet,
-          folded: seat.folded,
-          allIn: seat.allIn
+          tableChips: pokerPlayer?.stack ?? seat.tableChips,
+          currentBet: pokerPlayer?.roundBet ?? seat.currentBet,
+          folded: pokerPlayer?.folded ?? seat.folded,
+          allIn: pokerPlayer?.allIn ?? seat.allIn
         };
       }),
       potTotal: room.poker?.pots.reduce((sum, pot) => sum + pot.amount, 0) ?? 0,
       phase: room.poker?.phase,
       actingAccountId: room.poker?.actingAccountId,
+      pokerVersion: room.poker?.version,
+      currentBet: room.poker?.currentBet,
+      minimumRaise: room.poker?.minimumRaise,
+      handNumber: room.poker?.handNumber,
+      dealerPosition: room.poker?.dealerPosition,
+      lastAction: room.poker?.lastAction
+        ? {
+            accountId: room.poker.lastAction.accountId,
+            kind: room.poker.lastAction.kind,
+            amount: room.poker.lastAction.amount,
+            version: room.poker.lastAction.version,
+            reversible: room.poker.lastAction.reversible
+          }
+        : undefined,
+      pots: room.poker?.pots.map((pot) => ({
+        amount: pot.amount,
+        eligibleAccountIds: [...pot.eligibleAccountIds]
+      })),
       advanceDeadline: room.poker?.advanceDeadline
     };
     if (room.config.mode === "chips-and-cards") {
@@ -336,6 +513,83 @@ export class PlatformDomain {
         if (seat.tableChips < 0 || seat.currentBet < 0) throw new DomainError("NEGATIVE_ASSET");
       }
     }
+    const issued = this.state.ledger
+      .filter(
+        (line) =>
+          line.seasonId === this.currentSeason.id && line.source === "season-issuance"
+      )
+      .reduce((sum, line) => sum + line.amount, 0);
+    const accountTotal = Object.values(this.state.seasonAssets).reduce(
+      (sum, asset) => sum + asset.score,
+      0
+    );
+    const tableTotal = Object.values(this.state.rooms).reduce((sum, room) => {
+      if (!room.poker) {
+        return sum + room.seats.reduce((roomSum, seat) => roomSum + seat.tableChips, 0);
+      }
+      return (
+        sum +
+        room.poker.players.reduce(
+          (roomSum, player) => roomSum + player.stack + player.totalBet,
+          0
+        )
+      );
+    }, 0);
+    if (accountTotal + tableTotal !== issued) {
+      throw new DomainError("ASSET_CONSERVATION_FAILED");
+    }
+  }
+
+  recordPokerMovement(
+    roomId: string,
+    accountId: string,
+    amount: number,
+    direction: "table-to-pot" | "pot-to-table",
+    reason: string,
+    handNumber: number
+  ): void {
+    if (!Number.isInteger(amount) || amount <= 0) return;
+    const table = `table:${roomId}:${accountId}`;
+    const pot = `pot:${roomId}:${handNumber}`;
+    this.recordMovementPair({
+      accountId,
+      roomId,
+      handNumber,
+      source: direction === "table-to-pot" ? table : pot,
+      destination: direction === "table-to-pot" ? pot : table,
+      amount,
+      reason
+    });
+  }
+
+  recordHandResult(
+    roomId: string,
+    handNumber: number,
+    mode: Room["config"]["mode"],
+    payouts: Array<{ accountId: string; amount: number }>
+  ): void {
+    this.state.handResults.push({
+      id: this.id(),
+      seasonId: this.currentSeason.id,
+      roomId,
+      handNumber,
+      mode,
+      payouts: structuredClone(payouts),
+      completedAt: this.now()
+    });
+  }
+
+  reverseHandResult(roomId: string, handNumber: number): void {
+    const result = [...this.state.handResults]
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.roomId === roomId &&
+          candidate.handNumber === handNumber &&
+          candidate.reversedAt === undefined
+      );
+    if (!result) throw new DomainError("HAND_RESULT_NOT_FOUND");
+    result.reversedAt = this.now();
   }
 
   private issue(accountId: string, amount: number, reason: string): void {
@@ -383,7 +637,42 @@ export class PlatformDomain {
         destination: `asset:${destination}`
       }
     );
-    this.validateInvariants();
+  }
+
+  private recordMovementPair(input: {
+    accountId: string;
+    roomId: string;
+    handNumber: number;
+    source: string;
+    destination: string;
+    amount: number;
+    reason: string;
+  }): void {
+    const groupId = this.id();
+    const common = {
+      groupId,
+      seasonId: this.currentSeason.id,
+      accountId: input.accountId,
+      roomId: input.roomId,
+      handNumber: input.handNumber,
+      amount: input.amount,
+      reason: input.reason,
+      createdAt: this.now()
+    };
+    this.state.ledger.push(
+      {
+        id: this.id(),
+        ...common,
+        source: input.source,
+        destination: `clearing:${groupId}`
+      },
+      {
+        id: this.id(),
+        ...common,
+        source: `clearing:${groupId}`,
+        destination: input.destination
+      }
+    );
   }
 
   private validateRoomConfig(config: RoomConfig): void {
@@ -402,7 +691,7 @@ export class PlatformDomain {
     }
   }
 
-  private roomForAccount(accountId: string): Room | undefined {
+  roomForAccount(accountId: string): Room | undefined {
     return Object.values(this.state.rooms).find((room) =>
       room.seats.some((seat) => seat.accountId === accountId)
     );

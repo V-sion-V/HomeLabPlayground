@@ -7,6 +7,7 @@ import {
   createPokerState,
   evaluateSeven,
   legalActions,
+  settleAutomatically,
   settleManual,
   undoLastAction,
   undoSettlement
@@ -88,6 +89,22 @@ describe("Texas hold'em engine", () => {
     advancePhase(state, 4_000);
     expect(state.phase).toBe("flop");
     expect(state.communityCards).toHaveLength(3);
+  });
+
+  it("awards every pot immediately when all opponents fold before the board completes", () => {
+    const state = createPokerState({
+      players: players.slice(0, 2),
+      mode: "chips-and-cards",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: fixedDeck()
+    });
+    act(state, state.actingAccountId!, { kind: "fold" });
+    expect(state.communityCards).toHaveLength(0);
+    expect(state.phase).toBe("showdown");
+    expect(() => settleAutomatically(state)).not.toThrow();
+    expect(state.phase).toBe("complete");
+    expect(state.pots).toHaveLength(0);
   });
 
   it("ranks standard hands deterministically", () => {

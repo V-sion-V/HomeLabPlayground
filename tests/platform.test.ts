@@ -50,6 +50,35 @@ describe("platform domain", () => {
     expect(domain.state.seasonAssets[alice.id]?.score).toBe(20_000);
     expect(domain.state.historicalSeasons[0]?.entries[0]?.username).toBe("Alice");
   });
+
+  it("transfers a disconnected host after the durable deadline and closes an empty-online room", () => {
+    let now = 1_000;
+    const domain = new PlatformDomain(initialSnapshot(now), () => now, (() => {
+      let id = 0;
+      return () => `id-${++id}`;
+    })());
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const room = domain.createRoom(alice.id, "Timeout", {
+      ...defaultRoomConfig,
+      hostTransferTimeoutSeconds: 30
+    });
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.disconnect(room.id, alice.id);
+    expect(room.hostDisconnectDeadline).toBe(31_000);
+    expect(domain.resolveHostTimeout(room.id, (ids) => ids[0]!)).toBe(room);
+    now = 31_000;
+    expect(domain.resolveHostTimeout(room.id, (ids) => ids[0]!)?.hostAccountId).toBe(bob.id);
+
+    domain.disconnect(room.id, bob.id);
+    now = 61_000;
+    domain.resolveHostTimeout(room.id, (ids) => ids[0]!);
+    expect(domain.state.rooms[room.id]).toBeUndefined();
+    expect(domain.state.seasonAssets[alice.id]?.score).toBe(10_000);
+    expect(domain.state.seasonAssets[bob.id]?.score).toBe(10_000);
+    domain.validateInvariants();
+  });
 });
 
 describe("SQLite command boundary", () => {
