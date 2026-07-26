@@ -36,11 +36,11 @@
 - 路线图：修订 1，`single` + `compact`，P-001 已 `ready`。
 - 阶段计划：修订 1，指纹 `sha256:c52c7decce7ec9b0032160207e0bb37a1ad3f7d08e0f8edec18edfbb49785ab9`。
 - 项目检查：规划后已初始化 Git；本次检查修订为 `5d250e8e3ec3d7cfdf43e2be400caedcedc8239f`，检查前工作树干净，检查后只有本执行状态证据更新；未发现 `AGENTS.md` 或用户工作重叠。
-- 当前安全状态：P-001-T-001 仍有确定性通过证据；P-001-T-002 已完成纠正并重新通过 G-002 与最终聚合的本地部分。客户端现由真实 HTTP/WebSocket、SQLite 和角色投影驱动，不再使用固定演示状态；连接接管、房主断线截止时间、资产守恒、牌桌内部流水和手牌结果摘要也已接入。P-001-T-003 已完成本地最终逐项审计与修正；目标 iStoreOS 的最近一次 Chrome 复验发现局域网非安全 HTTP 来源缺少 `crypto.randomUUID`，本地已加入降级命令 ID 并由生产 E2E 验证。需交付最终增量并由用户重建后再完成目标 Docker/Chrome 门禁。未创建阶段结果或最终记录。
+- 当前安全状态：P-001-T-001 仍有确定性通过证据；P-001-T-002 已完成纠正并重新通过 G-002 与最终聚合的本地部分。客户端现由真实 HTTP/WebSocket、SQLite 和角色投影驱动，不再使用固定演示状态；连接接管、房主断线截止时间、资产守恒、牌桌内部流水和手牌结果摘要也已接入。P-001-T-003 的目标 iStoreOS 已通过健康、非 root 与真实 Chrome 大厅/双玩家/大屏/撤销/结算/关闭兑换主流程；随后逐条审计发现短额大盲仍错误降低开局跟注上限，本地已按标准规则修复并补充累计短额全押重新开放加注及静音持久化证据，`verify:core` 与容量门禁再次通过。需交付这一最终规则增量并由用户重建后再关闭精确源状态的目标门禁。未创建阶段结果或最终记录。
 - 本次生产编辑前基线：Git 修订 `062709aff60e660a42af72833f0c4dd02a38cfb7`。恢复时工作树包含两个上次中断留下且可确定归属的部分编辑：`packages/contracts/src/index.ts` 新增结果类型/投影字段 6 行，`packages/poker/src/index.ts` 新增强制弃牌状态转换 39 行；除此之外无工作树差异。后续预计范围为这两个文件、`packages/domain/src/index.ts`、`apps/server/src/app.ts`、`apps/web/src/main.tsx`、`apps/web/src/locales.ts`、必要样式及对应平台/扑克/服务/E2E 测试。
 - 本次完成条件：逐项审计暴露的核心边界均有实现和确定性证据：重启时在线状态重建、全押自动跑牌、零筹码座位的新手牌处理、对局中只允许移除断线玩家且不会卡住行动者、建房可配置房主时限、结算结果公开展示、反向流水关联原流水、作废结果摘要与旧快照兼容、庄家按钮可见；之后重新通过 `npm run verify:core`、`npm run test:capacity` 与生产构建，再等待最终 iStoreOS Docker/Chrome 证据。
 - 已观察验证：本地生产构建驱动的 Chromium 桌面与 WebKit 手机测试各完成账户/资料/设置/赛季/语言持久化，以及双玩家建房、离开/重进、下注、大屏、刷新恢复、私有牌隔离、新设备接管和关闭兑换，共 4/4 场景通过；其中明确移除 `crypto.randomUUID` 模拟局域网 HTTP，并覆盖桌面键盘/鼠标和手机触摸筹码操作。服务级测试还证明无租约私有投影返回 403、畸形命令返回 400、提前弃牌可在未发完整公共牌时正确结算、结果摘要与结算流水跨 SQLite 重开保留。容量测试以 15 个真实账户、两桌、15 个玩家 WebSocket 和 4 个大屏 WebSocket 验证同步和隐私隔离。
-- 未完成的硬门禁：目标 iStoreOS 仍运行最终增量前镜像；需更新后执行完整无网络、非 root、命名卷及重启状态/资产指纹烟雾，并用 Chrome 对目标部署复验真实大厅、双客户端牌局与公共大屏。该容器运行/恢复门禁不能降级为 finding。
+- 未完成的硬门禁：目标 iStoreOS 当前运行已通过主流程的前一增量镜像，但缺少最新短额大盲规则修复；需再次更新，并以现有排行榜资产证明命名卷跨替换恢复，再执行无网络运行检查和 Chrome 精确源状态复验。该容器运行/恢复门禁不能降级为 finding。
 
 ## 4. 任务状态
 
@@ -48,7 +48,7 @@
 | --- | --- | --- | --- | --- |
 | P-001-T-001 | 完成 | 根配置；`apps/server`；`packages/contracts`、`packages/domain`、`packages/persistence`、`packages/test-support`；平台测试 | lint、typecheck、6/6 定向测试通过 | 本机 Node.js 为 20.13.1，生产目标仍锁定 Node 24；首次 SQLite 迁移测试暴露引导表顺序错误，修复后重跑通过 |
 | P-001-T-002 | 完成（纠正后） | `packages/contracts`、`packages/domain`、`packages/poker`；`apps/server/src/app.ts`；`apps/web/src/**`；真实生产服务 E2E 运行器与平台/扑克/服务测试 | lint、typecheck；8/8 platform/server；6/6 poker；3/3 realtime；Chromium 桌面＋WebKit 手机真实服务 E2E 4/4；生产构建通过 | 原路由桩静态 E2E 已删除；纠正中补充了租约化私有投影、连接接管、房主超时、牌桌流水、结果摘要、纯筹码赢家等待、提前弃牌自动结算、双向拖放和补充筹码 |
-| P-001-T-003 | 进行中，本地审计完成并等待目标部署 | `Dockerfile`、`deploy/**`、生产构建/静态资产检查、容量与 Docker 烟雾、共享契约/规则/服务/客户端边界修正、`vitest.config.ts`、工作流证据 | lint、typecheck、Vitest 32/32、生产 Chromium/WebKit E2E 4/4、15 账户容量 3/3 与生产构建通过；待 iStoreOS Docker 烟雾与目标 Chrome 复验 | 本机仍无 Docker CLI/daemon；最近目标复验暴露局域网 HTTP UUID 缺陷并已在本地修正，完成最终增量更新后继续硬门禁 |
+| P-001-T-003 | 进行中，最终规则增量等待目标部署 | `Dockerfile`、`deploy/**`、生产构建/静态资产检查、容量与 Docker 烟雾、共享契约/规则/服务/客户端边界修正、`vitest.config.ts`、工作流证据 | 最新 `verify:core` 通过：platform/server 14/14、poker 14/14、realtime 3/3、生产 Chromium/WebKit 4/4；15 账户容量 3/3；目标前一增量健康/非 root/Chrome 主流程通过 | 本机仍无 Docker CLI/daemon；逐条审计在目标主流程后发现短额大盲核心边界并已本地修正，需部署最终规则增量后完成离线/重启与精确源状态复验 |
 
 ## 5. 运行累计文件变化
 
@@ -109,6 +109,10 @@
 | 2026-07-27 | P-001-T-003 真实容量回归 | `npm run test:capacity` | 通过：3/3；15 个账户、两桌、15 个玩家 WebSocket、4 个大屏 WebSocket 与空闲大厅互不串房或泄露私有牌 |
 | 2026-07-27 | P-001-T-003 默认全量测试 | `npm test` | 首次因 Vitest 误收集 Playwright 文件而失败；新增 `vitest.config.ts` 后通过，5 个文件、32/32 测试 |
 | 2026-07-27 | P-001-T-003 静态门禁 | `npm run lint`、`npm run typecheck`、`git diff --check` | 通过；无 lint、类型或空白错误 |
+| 2026-07-27 | iStoreOS 容器前一增量 | 用户执行 Compose 替换、`ps`、`/healthz`、容器 `id` 与日志检查 | 通过：服务 `healthy`，`/healthz` 返回版本 11，运行用户 `uid=1000(node)`，启动和健康日志无异常 |
+| 2026-07-27 | iStoreOS Chrome 主流程 | Chrome 在局域网 HTTP 创建筹码＋牌房、V_sion/Focol 双账号入桌、连接接管、开局、撤销、弃牌结算、刷新/重新连接、公共大屏和关闭兑换 | 通过：UUID 降级生效；三端底池 150→200 并可撤销至 150；大屏无手牌/操作；分配阶段约 3 秒且三端显示 `V_sion +200`；关闭后排行榜为 V_sion 10,100、Focol 9,900，总量守恒 |
+| 2026-07-27 | AC-017 逐条审计追加 | 对照标准无上限规则检查短额大盲和连续短额全押 | 发现并修复：短额大盲不再降低完整大盲开局跟注额；多个短额全押累计达到完整加注时重新开放加注；重复赢家输入在任何分配前拒绝 |
+| 2026-07-27 | 最终规则增量聚合 | `npm run verify:core`、`npm run test:capacity` | 通过：lint/typecheck；platform/server 14/14；poker 14/14；realtime 3/3；生产 Chromium/WebKit 4/4（含静音刷新保持）；容量 3/3 |
 
 ## 7. 决策、待确认问题与回答
 

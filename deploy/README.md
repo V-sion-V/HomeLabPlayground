@@ -42,4 +42,4 @@ After a restart:
 3. The lobby shows the expected current season, accounts, rooms, and leaderboard.
 4. Reconnecting players recover their seats; unconfirmed browser chip caches do not appear as bets.
 
-If the container is unhealthy, inspect `docker compose logs home-table`. Logs include command IDs, command types, aggregate IDs, rejection codes, migration results, and invariant failures; they redact connection leases, command payloads, decks, and hole cards.
+If the container is unhealthy, inspect `docker compose logs home-table`. Logs include startup failures, command IDs, command types, aggregate IDs, rejection codes, and invariant failures; they redact connection leases, command payloads, decks, and hole cards.

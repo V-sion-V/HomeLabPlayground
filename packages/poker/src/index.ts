@@ -155,15 +155,11 @@ export function act(
       if (raiseSize >= state.minimumRaise) {
         state.minimumRaise = raiseSize;
         state.raiseLockedAccountIds = [];
-      } else {
-        state.raiseLockedAccountIds = [
-          ...new Set([
-            ...state.raiseLockedAccountIds,
-            ...previouslyActed.filter((candidate) => candidate !== accountId)
-          ])
-        ];
       }
       state.currentBet = action.amount;
+      if (raiseSize < state.minimumRaise) {
+        updateRaiseLocksAfterShortRaise(state, accountId, previouslyActed);
+      }
       state.actedAccountIds = [accountId];
       break;
     }
@@ -180,15 +176,11 @@ export function act(
         if (raiseSize >= state.minimumRaise) {
           state.minimumRaise = raiseSize;
           state.raiseLockedAccountIds = [];
-        } else {
-          state.raiseLockedAccountIds = [
-            ...new Set([
-              ...state.raiseLockedAccountIds,
-              ...previouslyActed.filter((candidate) => candidate !== accountId)
-            ])
-          ];
         }
         state.currentBet = player.roundBet;
+        if (raiseSize < state.minimumRaise) {
+          updateRaiseLocksAfterShortRaise(state, accountId, previouslyActed);
+        }
         state.actedAccountIds = [accountId];
       }
       break;
@@ -370,18 +362,23 @@ export function settleManual(
   if (expectedVersion !== state.version) throw new DomainError("STALE_VERSION");
   if (state.phase !== "showdown") throw new DomainError("INVALID_PHASE");
   if (winnersByPot.length !== state.pots.length) throw new DomainError("WINNER_REQUIRED");
-  state.settlementSnapshot = JSON.stringify(withoutSettlement(state));
-  state.pots.forEach((pot, index) => {
+  const orderedWinners = state.pots.map((pot, index) => {
     const winners = winnersByPot[index] ?? [];
     if (
       winners.length < 1 ||
+      new Set(winners).size !== winners.length ||
       winners.some((winner) => !pot.eligibleAccountIds.includes(winner))
     ) {
       throw new DomainError("INELIGIBLE_WINNER");
     }
-    const ordered = [...winners].sort(
-      (left, right) => requirePlayer(state, left).position - requirePlayer(state, right).position
+    return [...winners].sort(
+      (left, right) =>
+        requirePlayer(state, left).position - requirePlayer(state, right).position
     );
+  });
+  state.settlementSnapshot = JSON.stringify(withoutSettlement(state));
+  state.pots.forEach((pot, index) => {
+    const ordered = orderedWinners[index]!;
     const share = Math.floor(pot.amount / ordered.length);
     let remainder = pot.amount % ordered.length;
     for (const accountId of ordered) {
@@ -497,8 +494,27 @@ function postBlinds(state: PokerState): void {
   const bigIndex = nextIndex(state, smallIndex);
   commit(state.players[smallIndex]!, state.smallBlind);
   commit(state.players[bigIndex]!, state.bigBlind);
-  state.currentBet = state.players[bigIndex]!.roundBet;
+  state.currentBet = state.bigBlind;
   state.pots = calculatePots(state.players);
+}
+
+function updateRaiseLocksAfterShortRaise(
+  state: PokerState,
+  raiserAccountId: string,
+  previouslyActed: string[]
+): void {
+  const candidates = new Set([
+    ...state.raiseLockedAccountIds,
+    ...previouslyActed.filter((accountId) => accountId !== raiserAccountId)
+  ]);
+  state.raiseLockedAccountIds = [...candidates].filter((accountId) => {
+    const player = requirePlayer(state, accountId);
+    return (
+      !player.folded &&
+      !player.allIn &&
+      state.currentBet - player.roundBet < state.minimumRaise
+    );
+  });
 }
 
 function dealHoleCards(state: PokerState): void {

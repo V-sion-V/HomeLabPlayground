@@ -43,6 +43,30 @@ describe("Texas hold'em engine", () => {
     expect(() => undoLastAction(after, "alice", 0)).toThrowError("STALE_VERSION");
   });
 
+  it("keeps the full big blind as the opening wager when the big blind is short", () => {
+    const state = createPokerState({
+      players: [
+        { accountId: "alice", position: 0, stack: 1_000 },
+        { accountId: "bob", position: 1, stack: 50 }
+      ],
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 100,
+      deck: []
+    });
+    expect(state.currentBet).toBe(100);
+    expect(state.players.find((player) => player.accountId === "bob")).toMatchObject({
+      roundBet: 50,
+      allIn: true
+    });
+    expect(legalActions(state, "alice").callAmount).toBe(90);
+    act(state, "alice", { kind: "call" });
+    expect(state.pots).toEqual([
+      { amount: 100, eligibleAccountIds: ["alice", "bob"] },
+      { amount: 50, eligibleAccountIds: ["alice"] }
+    ]);
+  });
+
   it("builds main and side pots from uneven all-ins", () => {
     const pots = calculatePots([
       { ...players[0]!, roundBet: 0, totalBet: 500, folded: false, allIn: false },
@@ -78,6 +102,10 @@ describe("Texas hold'em engine", () => {
     state.pots = [{ amount: 101, eligibleAccountIds: ["alice", "bob"] }];
     state.phase = "showdown";
     const before = state.players.map((player) => player.stack);
+    expect(() => settleManual(state, [["alice", "alice"]])).toThrowError(
+      "INELIGIBLE_WINNER"
+    );
+    expect(state.players.map((player) => player.stack)).toEqual(before);
     settleManual(state, [["alice", "bob"]]);
     expect(state.players[0]?.stack).toBe(before[0]! + 51);
     expect(state.players[1]?.stack).toBe(before[1]! + 50);
@@ -201,6 +229,37 @@ describe("Texas hold'em engine", () => {
     expect(() =>
       act(state, "alice", { kind: "raise", amount: 60 })
     ).toThrowError("RAISE_NOT_REOPENED");
+  });
+
+  it("reopens raising after cumulative short all-ins equal a full raise", () => {
+    const state = createPokerState({
+      players: [
+        { accountId: "alice", position: 0, stack: 1_000 },
+        { accountId: "bob", position: 1, stack: 30 },
+        { accountId: "cara", position: 2, stack: 40 },
+        { accountId: "dan", position: 3, stack: 1_000 }
+      ],
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: []
+    });
+    act(state, "dan", { kind: "call" });
+    act(state, "alice", { kind: "call" });
+    act(state, "bob", { kind: "all-in" });
+    expect(state.raiseLockedAccountIds).toEqual(
+      expect.arrayContaining(["dan", "alice"])
+    );
+    act(state, "cara", { kind: "all-in" });
+
+    expect(state.actingAccountId).toBe("dan");
+    expect(legalActions(state, "dan")).toMatchObject({
+      callAmount: 20,
+      minimumRaiseTo: 60,
+      canRaise: true
+    });
+    expect(state.raiseLockedAccountIds).not.toContain("dan");
+    expect(state.raiseLockedAccountIds).not.toContain("alice");
   });
 
   it("evaluates and distributes automatic main and side pots independently", () => {

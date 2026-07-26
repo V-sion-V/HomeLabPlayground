@@ -123,6 +123,8 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await hostPage.getByRole("button", { name: "静音" }).click();
+    await expect(hostPage.getByRole("button", { name: "开启音效" })).toBeVisible();
 
     await displayPage.goto(displayHref!);
     await expect(displayPage.getByText("只读同步 · 不占玩家名额")).toBeVisible();
@@ -146,8 +148,8 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     if (testInfo.project.name.startsWith("chromium")) {
       await chip25.focus();
       await chip25.press("Enter");
-      await expect(betCache.getByRole("button", { name: "remove-25" })).toHaveCount(1);
-      await betCache.getByRole("button", { name: "remove-25" }).press("Enter");
+      await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
+      await betCache.getByRole("button", { name: "移除 25 筹码" }).press("Enter");
       await chip25.dragTo(betCache);
     } else {
       const chipBox = await chip25.boundingBox();
@@ -165,9 +167,9 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
         clientY: cacheBox!.y + cacheBox!.height / 2
       });
     }
-    await expect(betCache.getByRole("button", { name: "remove-25" })).toHaveCount(1);
-    await betCache.getByRole("button", { name: "remove-25" }).click();
-    await expect(betCache.getByRole("button", { name: "remove-25" })).toHaveCount(0);
+    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
+    await betCache.getByRole("button", { name: "移除 25 筹码" }).click();
+    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(0);
     await actorPage.getByRole("button", { name: "一键跟注" }).click();
     await expect(actorPage.getByRole("button", { name: "确认跟注" })).toBeEnabled();
     await actorPage.getByRole("button", { name: "确认跟注" }).click();
@@ -180,6 +182,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
 
     await hostPage.reload();
     await expect(hostPage.getByText(roomName)).toBeVisible();
+    await expect(hostPage.getByRole("button", { name: "开启音效" })).toBeVisible();
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(hostPage.getByText("本手分配结果")).toBeVisible();
 

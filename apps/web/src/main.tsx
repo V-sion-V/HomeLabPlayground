@@ -1376,7 +1376,10 @@ function PlayerTable({
               <button
                 key={`${chip}-${index}`}
                 className={`poker-chip chip-${chip}`}
-                aria-label={`remove-${chip}`}
+                aria-label={t(language, "removeChip").replace(
+                  "{amount}",
+                  chip.toLocaleString()
+                )}
                 draggable={canAct}
                 disabled={!canAct}
                 onDragStart={(event) => event.dataTransfer.setData("cache-index", String(index))}
@@ -1414,7 +1417,7 @@ function PlayerTable({
         <div
           className="chip-rack"
           ref={chipRackRef}
-          aria-label="chip denominations"
+          aria-label={t(language, "chipDenominations")}
           onDragOver={(event) => {
             if (canAct) event.preventDefault();
           }}
@@ -1807,7 +1810,7 @@ function LanguageToggle({
   setLanguage: (language: Language) => void;
 }) {
   return (
-    <div className="language-toggle" aria-label="language">
+    <div className="language-toggle" aria-label={t(language, "languageSelection")}>
       <button className={language === "zh-CN" ? "active" : ""} onClick={() => setLanguage("zh-CN")} type="button">中</button>
       <button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")} type="button">EN</button>
     </div>
