@@ -1,0 +1,34 @@
+services:
+  home-table:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: home-party-game-platform:0.1.0
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "${PARTY_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_PATH: /data/platform.sqlite
+      STATIC_ROOT: /app/dist/web
+    volumes:
+      - party-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 5
+
+volumes:
+  party-data:
+    name: home-party-game-platform-data

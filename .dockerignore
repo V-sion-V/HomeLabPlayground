@@ -1,0 +1,12 @@
+.git
+.npm-cache
+node_modules
+dist
+data
+docs
+playwright-report
+test-results
+debug.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
