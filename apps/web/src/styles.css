@@ -410,6 +410,8 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 .settlement-player-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settlement-player-list small { color: var(--muted); font-size: .68rem; }
 .settlement-player-list small.ready { color: #83d8af; }
+.settlement-chip-summary { display: grid; justify-items: end; min-width: max-content; }
+.settlement-chip-summary small { white-space: nowrap; }
 .chip-positive { color: #83d8af; }
 .chip-negative { color: #ff9f8f; }
 .showdown-summary {

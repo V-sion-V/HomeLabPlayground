@@ -10,3 +10,7 @@ debug.log
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+deploy/deploy.config.psd1
+deploy/.deploy-local-*
+.release-sha
+.deploy-*

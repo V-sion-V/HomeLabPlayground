@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       platforms:
         - linux/amd64
-    image: home-party-game-platform:0.1.0
+    image: ${PARTY_IMAGE:-home-party-game-platform:0.1.0}
     platform: linux/amd64
     restart: unless-stopped
     ports:

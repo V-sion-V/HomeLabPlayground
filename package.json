@@ -18,6 +18,7 @@
     "test:realtime": "vitest run tests/realtime.test.ts",
     "test:e2e:core": "node scripts/run-e2e.mjs",
     "test:capacity": "vitest run tests/capacity.test.ts",
+    "test:deploy": "vitest run tests/deployment-automation.test.ts -t \"deployment automation local orchestrator\" --testTimeout=30000 && vitest run tests/deployment-automation.test.ts -t \"deployment automation remote integrity and deployment decision\" --testTimeout=30000 && vitest run tests/deployment-automation.test.ts -t \"deployment automation remote state machine pre-cutover\" --testTimeout=30000 && vitest run tests/deployment-automation.test.ts -t \"deployment automation remote state machine recovery\" --testTimeout=30000 && vitest run tests/deployment-automation.test.ts -t \"deployment automation interruption and first-deploy boundaries\" --testTimeout=30000",
     "test": "vitest run",
     "build:server": "tsup apps/server/src/index.ts --format esm --platform node --out-dir dist/server --sourcemap",
     "build:web": "vite build --config apps/web/vite.config.ts",

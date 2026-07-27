@@ -166,6 +166,22 @@ describe("server", () => {
     expect(
       settledProjection
         .json()
+        .lastResult.playerResults.every(
+          (player: { endingChips?: number }) =>
+            Number.isInteger(player.endingChips) && (player.endingChips ?? -1) >= 0
+        )
+    ).toBe(true);
+    expect(
+      settledProjection
+        .json()
+        .lastResult.playerResults.reduce(
+          (sum: number, player: { endingChips: number }) => sum + player.endingChips,
+          0
+        )
+    ).toBe(4_000);
+    expect(
+      settledProjection
+        .json()
         .lastResult.playerResults.reduce(
           (sum: number, player: { chipDelta: number }) => sum + player.chipDelta,
           0
@@ -379,7 +395,11 @@ describe("server", () => {
     expect(settled.status).toBe("accepted");
     const projection = settled.data as {
       lastResult: {
-        playerResults: Array<{ accountId: string; chipDelta: number }>;
+        playerResults: Array<{
+          accountId: string;
+          chipDelta: number;
+          endingChips: number;
+        }>;
         showdown: {
           players: Array<{
             accountId: string;
@@ -392,9 +412,21 @@ describe("server", () => {
     };
     expect(projection.lastResult.playerResults).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ accountId: alice.id, chipDelta: 200 }),
-        expect.objectContaining({ accountId: bob.id, chipDelta: -100 }),
-        expect.objectContaining({ accountId: cara.id, chipDelta: -100 })
+        expect.objectContaining({
+          accountId: alice.id,
+          chipDelta: 200,
+          endingChips: 2_200
+        }),
+        expect.objectContaining({
+          accountId: bob.id,
+          chipDelta: -100,
+          endingChips: 1_900
+        }),
+        expect.objectContaining({
+          accountId: cara.id,
+          chipDelta: -100,
+          endingChips: 1_900
+        })
       ])
     );
     expect(projection.lastResult.showdown.players).toHaveLength(2);

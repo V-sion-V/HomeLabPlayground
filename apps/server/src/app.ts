@@ -1037,7 +1037,8 @@ function recordSettlement(
         accountId: player.accountId,
         amount:
           player.stack -
-          (startingStacks.get(player.accountId) ?? player.stack)
+          (startingStacks.get(player.accountId) ?? player.stack),
+        endingChips: player.stack
       })),
       showdown
     }

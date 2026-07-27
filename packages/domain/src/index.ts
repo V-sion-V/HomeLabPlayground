@@ -761,7 +761,11 @@ export class PlatformDomain {
     outcome: "settled" | "void" = "settled",
     participantAccountIds: string[] = payouts.map((payout) => payout.accountId),
     details?: {
-      chipDeltas: Array<{ accountId: string; amount: number }>;
+      chipDeltas: Array<{
+        accountId: string;
+        amount: number;
+        endingChips: number;
+      }>;
       showdown?: {
         communityCards: Card[];
         players: Array<{
@@ -788,7 +792,8 @@ export class PlatformDomain {
           accountId: delta.accountId,
           username: account.username,
           avatar: account.avatar,
-          chipDelta: delta.amount
+          chipDelta: delta.amount,
+          endingChips: delta.endingChips
         };
       }),
       showdown: details?.showdown

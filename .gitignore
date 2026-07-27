@@ -9,3 +9,5 @@ debug.log
 *.sqlite-shm
 *.sqlite-wal
 .env
+deploy/deploy.config.psd1
+deploy/.deploy-local-*

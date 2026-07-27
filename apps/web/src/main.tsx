@@ -1551,17 +1551,17 @@ function PlayerTable({
             </button>
           )}
         </div>
-        {topUpOpen && seat && (
-          <TopUpModal
-            language={language}
-            maximum={room.config.maxBuyIn - seat.tableChips}
-            onClose={() => setTopUpOpen(false)}
-            onConfirm={async (amount) => {
-              if (await run("room.top-up", { amount })) setTopUpOpen(false);
-            }}
-          />
-        )}
       </section>
+      {topUpOpen && seat && (
+        <TopUpModal
+          language={language}
+          maximum={room.config.maxBuyIn - seat.tableChips}
+          onClose={() => setTopUpOpen(false)}
+          onConfirm={async (amount) => {
+            if (await run("room.top-up", { amount })) setTopUpOpen(false);
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -1841,7 +1841,8 @@ function SettlementPanel({
       accountId,
       username: seat?.username ?? accountId,
       avatar: seat?.avatar ?? "•",
-      chipDelta: payoutByAccount.get(accountId) ?? 0
+      chipDelta: payoutByAccount.get(accountId) ?? 0,
+      endingChips: seat?.tableChips
     };
   });
   const ready = new Set(room.readyAccountIds ?? []);
@@ -1875,6 +1876,7 @@ function SettlementPanel({
             const seat = room.seats.find(
               (candidate) => candidate.accountId === player.accountId
             );
+            const totalChips = seat?.tableChips ?? player.endingChips;
             return (
               <article key={player.accountId}>
                 <span className="result-avatar">{player.avatar}</span>
@@ -1888,10 +1890,16 @@ function SettlementPanel({
                     </small>
                   )}
                 </div>
-                <b className={player.chipDelta >= 0 ? "chip-positive" : "chip-negative"}>
-                  {player.chipDelta >= 0 ? "+" : ""}
-                  {player.chipDelta.toLocaleString()}
-                </b>
+                <div className="settlement-chip-summary">
+                  <b className={player.chipDelta >= 0 ? "chip-positive" : "chip-negative"}>
+                    {player.chipDelta >= 0 ? "+" : ""}
+                    {player.chipDelta.toLocaleString()}
+                  </b>
+                  <small>
+                    {t(language, "totalChips")}{" "}
+                    {totalChips === undefined ? "—" : totalChips.toLocaleString()}
+                  </small>
+                </div>
               </article>
             );
           })}

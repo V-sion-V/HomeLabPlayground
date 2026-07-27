@@ -201,14 +201,35 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await hostPage.waitForTimeout(200);
     const secondTransform = await timerFill.evaluate((element) => getComputedStyle(element).transform);
     expect(secondTransform).not.toBe(firstTransform);
-    await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toBeVisible({
+    const hostSettlement = hostPage.getByRole("dialog", { name: "本手结算" });
+    await expect(hostSettlement).toBeVisible({
       timeout: 8_000
     });
     await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
     await expect(displayPage.getByText("本手结算", { exact: true })).toBeVisible();
     await expect(hostPage.locator(".settlement-player-list article")).toHaveCount(2);
+    await expect(hostSettlement.getByText(/总筹码/)).toHaveCount(2);
+    await expect(displayPage.locator(".settlement-player-list article")).toHaveCount(2);
+    await expect(displayPage.getByText(/总筹码/)).toHaveCount(2);
+
+    const hostResultRow = hostSettlement
+      .locator(".settlement-player-list article")
+      .filter({ hasText: hostName });
+    const totalBeforeText = await hostResultRow.getByText(/总筹码/).textContent();
+    const totalBefore = Number(totalBeforeText?.replace(/[^\d]/g, ""));
+    expect(totalBefore).toBeGreaterThan(0);
+    await hostSettlement.getByRole("button", { name: "补充筹码" }).click();
+    const topUpDialog = hostPage.getByRole("dialog", { name: "补充筹码" });
+    await expect(topUpDialog).toBeVisible();
+    await topUpDialog.getByRole("spinbutton").fill("100");
+    await topUpDialog.getByRole("button", { name: "最终确认" }).click();
+    await expect(topUpDialog).toHaveCount(0);
+    await expect(
+      hostResultRow.getByText(`总筹码 ${(totalBefore + 100).toLocaleString()}`)
+    ).toBeVisible();
+
     await hostPage.waitForTimeout(600);
-    await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
+    await expect(hostSettlement).toBeVisible();
 
     await hostPage.getByRole("button", { name: "准备", exact: true }).click();
     await expect(hostPage.getByRole("button", { name: /已准备/ })).toBeDisabled();

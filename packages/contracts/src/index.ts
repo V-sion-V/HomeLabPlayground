@@ -178,6 +178,7 @@ export interface HandResultSummary {
     username: string;
     avatar: string;
     chipDelta: number;
+    endingChips?: number;
   }>;
   showdown?: {
     communityCards: Card[];
@@ -316,6 +317,7 @@ export interface RoomProjection {
       username: string;
       avatar: string;
       chipDelta: number;
+      endingChips?: number;
     }>;
     showdown?: {
       communityCards: Card[];
