@@ -232,7 +232,26 @@ describe("SQLite command boundary", () => {
     const room = domain.createRoom(alice.id, "Restart", defaultRoomConfig);
     domain.joinRoom(room.id, alice.id, 2_000);
     domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    room.poker.phase = "complete";
+    room.poker.readyAccountIds = [alice.id];
+    room.poker.advanceDeadline = 9_000;
     domain.recordHandResult(room.id, 1, "chips-only", [{ accountId: alice.id, amount: 50 }]);
+    delete (
+      state.settings.poker as {
+        suitColorPreset?: string;
+      }
+    ).suitColorPreset;
     delete (room as unknown as { createdAt?: number }).createdAt;
     delete (
       state.handResults[0] as unknown as {
@@ -261,6 +280,9 @@ describe("SQLite command boundary", () => {
     expect(recovered.handResults[0]?.participantAccountIds).toEqual([alice.id]);
     expect(recovered.rooms[room.id]?.seats[0]?.buyIn).toBe(2_000);
     expect(recovered.rooms[room.id]?.seats[0]?.frozenLeaderboardScore).toBe(10_000);
+    expect(recovered.settings.poker.suitColorPreset).toBe("standard");
+    expect(recovered.rooms[room.id]?.poker?.readyAccountIds).toEqual([]);
+    expect(recovered.rooms[room.id]?.poker?.advanceDeadline).toBeUndefined();
 
     const recoveredAgain = store.recoverAfterRestart();
     expect(recoveredAgain.version).toBe(1);

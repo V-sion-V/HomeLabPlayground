@@ -1,5 +1,12 @@
 import { randomInt } from "node:crypto";
-import type { Card, HandPhase, PokerState, Pot, RoomMode } from "@party/contracts";
+import type {
+  Card,
+  HandCategory,
+  HandPhase,
+  PokerState,
+  Pot,
+  RoomMode
+} from "@party/contracts";
 import { DomainError } from "@party/domain";
 
 const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"] as const;
@@ -82,6 +89,7 @@ export function createPokerState(options: {
     })),
     actedAccountIds: [],
     raiseLockedAccountIds: [],
+    readyAccountIds: [],
     pots: [],
     currentBet: 0,
     minimumRaise: options.bigBlind,
@@ -434,6 +442,21 @@ export function evaluateSeven(cards: Card[]): number {
     best = Math.max(best, evaluateFive(combination));
   }
   return best;
+}
+
+export function handCategoryFromScore(score: number): HandCategory {
+  const categories: HandCategory[] = [
+    "high-card",
+    "one-pair",
+    "two-pair",
+    "three-of-a-kind",
+    "straight",
+    "flush",
+    "full-house",
+    "four-of-a-kind",
+    "straight-flush"
+  ];
+  return categories[Math.floor(score / 15 ** 5)] ?? "high-card";
 }
 
 function evaluateFive(cards: Card[]): number {

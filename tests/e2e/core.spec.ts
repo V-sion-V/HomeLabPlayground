@@ -24,10 +24,12 @@ test("uses real account, settings, profile, season, and language persistence flo
   await page.getByRole("button", { name: "全局设置" }).click();
   let settings = page.getByRole("dialog", { name: "全局设置" });
   await settings.getByLabel("房主转让时限").selectOption("120");
+  await settings.getByLabel("花色配色").selectOption("high-contrast");
   await settings.getByRole("button", { name: "保存" }).click();
   await page.getByRole("button", { name: "全局设置" }).click();
   settings = page.getByRole("dialog", { name: "全局设置" });
   await expect(settings.getByLabel("房主转让时限")).toHaveValue("120");
+  await expect(settings.getByLabel("花色配色")).toHaveValue("high-contrast");
   await settings.getByRole("button", { name: "开始新赛季" }).click();
 
   const season = page.getByRole("dialog", { name: "开始新赛季" });
@@ -96,7 +98,9 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     );
     expect(roomId).toBeTruthy();
     const roomResponse = await hostPage.request.get(`/api/room/${roomId}?display=1`);
-    expect((await roomResponse.json()).config.hostTransferTimeoutSeconds).toBe(45);
+    const roomState = await roomResponse.json();
+    expect(roomState.config.hostTransferTimeoutSeconds).toBe(45);
+    expect(roomState.suitColorPreset).toBe("high-contrast");
 
     await expect(guestPage.getByText(roomName)).toBeVisible();
     await guestPage.getByRole("button", { name: "加入牌局" }).click();
@@ -123,10 +127,24 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await expect(hostPage.locator(".table-title strong")).toHaveText(roomName);
+    await expect(hostPage.locator(".table-title")).toContainText(`当前玩家 · ${hostName}`);
+    await expect(hostPage.locator(".table-controls").getByLabel("语言选择")).toBeVisible();
+    await expect(hostPage.locator(".table-controls").getByRole("button", { name: "静音" })).toBeVisible();
+    await hostPage.setViewportSize({ width: 300, height: 760 });
+    expect(await hostPage.evaluate(() => ({
+      viewport: innerWidth,
+      documentWidth: document.documentElement.scrollWidth
+    }))).toEqual({ viewport: 300, documentWidth: 300 });
+    const ownCard = hostPage.getByLabel("我的手牌").locator("[data-suit]").first();
+    const suit = await ownCard.getAttribute("data-suit");
+    const cardColor = await ownCard.evaluate((element) => getComputedStyle(element).color);
+    expect(cardColor).toBe(highContrastSuitColor(suit));
     await hostPage.getByRole("button", { name: "静音" }).click();
     await expect(hostPage.getByRole("button", { name: "开启音效" })).toBeVisible();
 
     await displayPage.goto(displayHref!);
+    await expect(displayPage.locator("main")).toHaveClass(/suit-theme-high-contrast/);
     await expect(displayPage.getByText("只读同步 · 不占玩家名额")).toBeVisible();
     await expect(displayPage.getByTestId("community-cards").locator("span")).toHaveCount(5);
     await expect(displayPage.getByLabel("庄家按钮")).toHaveCount(1);
@@ -176,15 +194,35 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(observerPage.locator(".pot strong")).toHaveText("200");
     await expect(displayPage.locator(".pot strong")).toHaveText("200");
     await observerPage.getByRole("button", { name: "弃牌" }).click();
-    await expect(hostPage.getByText("本手分配结果")).toBeVisible({ timeout: 7_000 });
-    await expect(guestPage.getByText("本手分配结果")).toBeVisible();
-    await expect(displayPage.getByText("本手分配结果")).toBeVisible();
+    const timerFill = hostPage.locator(".timer-fill");
+    await expect(timerFill).toBeVisible();
+    await expect(timerFill).toHaveCSS("animation-name", "timer-drain");
+    const firstTransform = await timerFill.evaluate((element) => getComputedStyle(element).transform);
+    await hostPage.waitForTimeout(200);
+    const secondTransform = await timerFill.evaluate((element) => getComputedStyle(element).transform);
+    expect(secondTransform).not.toBe(firstTransform);
+    await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toBeVisible({
+      timeout: 8_000
+    });
+    await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
+    await expect(displayPage.getByText("本手结算", { exact: true })).toBeVisible();
+    await expect(hostPage.locator(".settlement-player-list article")).toHaveCount(2);
+    await hostPage.waitForTimeout(600);
+    await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
+
+    await hostPage.getByRole("button", { name: "准备", exact: true }).click();
+    await expect(hostPage.getByRole("button", { name: /已准备/ })).toBeDisabled();
+    await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
+    await guestPage.getByRole("button", { name: "准备", exact: true }).click();
+    await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toHaveCount(0);
+    await expect(guestPage.getByText("第 2 手")).toBeVisible();
+    await expect(displayPage.getByText("本手结算", { exact: true })).toHaveCount(0);
 
     await hostPage.reload();
     await expect(hostPage.getByText(roomName)).toBeVisible();
     await expect(hostPage.getByRole("button", { name: "开启音效" })).toBeVisible();
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
-    await expect(hostPage.getByText("本手分配结果")).toBeVisible();
+    await expect(hostPage.getByText("第 2 手")).toBeVisible();
 
     await enter(takeoverPage, hostName, false);
     await expect(takeoverPage.getByText(roomName)).toBeVisible();
@@ -230,4 +268,14 @@ async function actingPage(first: Page, second: Page): Promise<Page> {
 function uniqueSuffix(projectName: string): string {
   const project = projectName.startsWith("chromium") ? "ch" : "wk";
   return `${project}-${Date.now().toString(36).slice(-6)}`;
+}
+
+function highContrastSuitColor(suit: string | null): string {
+  const colors: Record<string, string> = {
+    hearts: "rgb(217, 47, 72)",
+    diamonds: "rgb(216, 159, 0)",
+    clubs: "rgb(20, 115, 201)",
+    spades: "rgb(17, 24, 32)"
+  };
+  return colors[suit ?? ""] ?? "";
 }

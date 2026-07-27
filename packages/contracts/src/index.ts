@@ -3,6 +3,17 @@ import { z } from "zod";
 export const languages = ["zh-CN", "en"] as const;
 export type Language = (typeof languages)[number];
 export type RoomMode = "chips-only" | "chips-and-cards";
+export type SuitColorPreset = "standard" | "high-contrast";
+export type HandCategory =
+  | "high-card"
+  | "one-pair"
+  | "two-pair"
+  | "three-of-a-kind"
+  | "straight"
+  | "flush"
+  | "full-house"
+  | "four-of-a-kind"
+  | "straight-flush";
 export type RoomStatus = "waiting" | "in_progress" | "paused" | "closing" | "closed";
 export type HandPhase =
   | "waiting"
@@ -95,6 +106,7 @@ export interface PokerState {
   }>;
   actedAccountIds: string[];
   raiseLockedAccountIds: string[];
+  readyAccountIds: string[];
   pots: Pot[];
   currentBet: number;
   minimumRaise: number;
@@ -161,6 +173,21 @@ export interface HandResultSummary {
   outcome: "settled" | "void";
   participantAccountIds: string[];
   payouts: Array<{ accountId: string; amount: number }>;
+  playerResults?: Array<{
+    accountId: string;
+    username: string;
+    avatar: string;
+    chipDelta: number;
+  }>;
+  showdown?: {
+    communityCards: Card[];
+    players: Array<{
+      accountId: string;
+      cards: Card[];
+      handCategory: HandCategory;
+      winner: boolean;
+    }>;
+  };
   completedAt: number;
   reversedAt?: number;
 }
@@ -168,7 +195,9 @@ export interface HandResultSummary {
 export interface GlobalSettings {
   defaultLanguage: Language;
   defaultHostTransferTimeoutSeconds: number;
-  poker: Omit<RoomConfig, "mode" | "hostTransferTimeoutSeconds">;
+  poker: Omit<RoomConfig, "mode" | "hostTransferTimeoutSeconds"> & {
+    suitColorPreset: SuitColorPreset;
+  };
 }
 
 export interface PlatformSnapshot {
@@ -256,6 +285,7 @@ export interface RoomProjection {
   status: RoomStatus;
   hostAccountId: string;
   config: RoomConfig;
+  suitColorPreset: SuitColorPreset;
   version: number;
   createdAt: number;
   seats: PublicSeatProjection[];
@@ -281,9 +311,25 @@ export interface RoomProjection {
     outcome: "settled" | "void";
     participantAccountIds: string[];
     payouts: Array<{ accountId: string; amount: number }>;
+    playerResults?: Array<{
+      accountId: string;
+      username: string;
+      avatar: string;
+      chipDelta: number;
+    }>;
+    showdown?: {
+      communityCards: Card[];
+      players: Array<{
+        accountId: string;
+        cards: Card[];
+        handCategory: HandCategory;
+        winner: boolean;
+      }>;
+    };
   };
   communityCards?: Array<Card | { hidden: true }>;
   ownHoleCards?: Card[];
+  readyAccountIds?: string[];
   advanceDeadline?: number;
 }
 

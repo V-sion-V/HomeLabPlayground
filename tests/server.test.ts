@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import type { Card } from "@party/contracts";
 import { buildApp, dispatch } from "../apps/server/src/app";
 import { initialSnapshot, PlatformDomain } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
@@ -161,8 +162,24 @@ describe("server", () => {
       handNumber: 1,
       outcome: "settled"
     });
+    expect(settledProjection.json().lastResult.playerResults).toHaveLength(2);
+    expect(
+      settledProjection
+        .json()
+        .lastResult.playerResults.reduce(
+          (sum: number, player: { chipDelta: number }) => sum + player.chipDelta,
+          0
+        )
+    ).toBe(0);
+    expect(settledProjection.json().lastResult.showdown).toBeUndefined();
     expect(settledProjection.json().phase).toBe("distribution");
     await new Promise((resolve) => setTimeout(resolve, 3_200));
+    const completedProjection = await app.inject({
+      method: "GET",
+      url: `/api/room/${roomId}?display=1`
+    });
+    expect(completedProjection.json().phase).toBe("complete");
+    expect(completedProjection.json().advanceDeadline).toBeUndefined();
     await app.close();
 
     const restartedApp = await buildApp({ databasePath });
@@ -187,7 +204,7 @@ describe("server", () => {
     reopened.close();
   }, 15_000);
 
-  it("keeps zero-stack seats seated, requires a top-up, and starts the next hand with funded players", () => {
+  it("keeps the settlement open until every seated player is funded, connected, and ready", () => {
     const databasePath = temporaryDatabase();
     const store = new PlatformStore(databasePath);
     const state = initialSnapshot(1_000);
@@ -225,60 +242,174 @@ describe("server", () => {
     }
     store.save(state);
 
-    const rejected = dispatch(store, {
-      commandId: "next-hand-needs-top-up",
+    const aliceReady = dispatch(store, {
+      commandId: "alice-ready",
       connectionId: aliceConnection,
       aggregateId: room.id,
       expectedVersion: 0,
-      type: "poker.next-hand",
-      payload: { accountId: alice.id, roomId: room.id }
+      type: "poker.ready",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id,
+        pokerVersion: 0
+      }
     });
-    expect(rejected.code).toBe("PLAYER_NEEDS_TOP_UP");
+    expect(aliceReady.status).toBe("accepted");
+    expect(store.load().rooms[room.id]?.poker?.phase).toBe("complete");
 
     const topUp = dispatch(store, {
       commandId: "top-up-funded-player",
       connectionId: bobConnection,
       aggregateId: room.id,
-      expectedVersion: 0,
+      expectedVersion: 1,
       type: "room.top-up",
       payload: { accountId: bob.id, roomId: room.id, amount: 1_000 }
     });
     expect(topUp.status).toBe("accepted");
 
-    const nextHand = dispatch(store, {
-      commandId: "next-hand-after-top-up",
-      connectionId: aliceConnection,
-      aggregateId: room.id,
-      expectedVersion: 1,
-      type: "poker.next-hand",
-      payload: { accountId: alice.id, roomId: room.id }
-    });
-    expect(nextHand.status).toBe("accepted");
-    const persistedRoom = store.load().rooms[room.id]!;
-    expect(persistedRoom.seats).toHaveLength(3);
-    expect(persistedRoom.poker?.players.map((player) => player.accountId)).toEqual([
-      alice.id,
-      bob.id
-    ]);
-    expect(persistedRoom.poker?.dealerPosition).toBe(1);
-    expect(persistedRoom.seats.find((seat) => seat.accountId === cara.id)?.tableChips).toBe(0);
-    new PlatformDomain(store.load()).validateInvariants();
-
-    const sittingOutState = store.load();
-    sittingOutState.rooms[room.id]!.poker!.phase = "complete";
-    store.save(sittingOutState);
-    const topUpSittingOutPlayer = dispatch(store, {
-      commandId: "top-up-sitting-out-player",
-      connectionId: caraConnection,
+    const bobReady = dispatch(store, {
+      commandId: "bob-ready",
+      connectionId: bobConnection,
       aggregateId: room.id,
       expectedVersion: 2,
+      type: "poker.ready",
+      payload: {
+        accountId: bob.id,
+        roomId: room.id,
+        pokerVersion: 1
+      }
+    });
+    expect(bobReady.status).toBe("accepted");
+    expect(store.load().rooms[room.id]?.poker?.phase).toBe("complete");
+
+    const topUpSittingOutPlayer = dispatch(store, {
+      commandId: "top-up-zero-stack-player",
+      connectionId: caraConnection,
+      aggregateId: room.id,
+      expectedVersion: 3,
       type: "room.top-up",
       payload: { accountId: cara.id, roomId: room.id, amount: 1_000 }
     });
     expect(topUpSittingOutPlayer.status).toBe("accepted");
-    expect(store.load().rooms[room.id]?.seats.find(
-      (seat) => seat.accountId === cara.id
-    )?.tableChips).toBe(1_000);
+
+    const caraReady = dispatch(store, {
+      commandId: "cara-ready",
+      connectionId: caraConnection,
+      aggregateId: room.id,
+      expectedVersion: 4,
+      type: "poker.ready",
+      payload: {
+        accountId: cara.id,
+        roomId: room.id,
+        pokerVersion: 2
+      }
+    });
+    expect(caraReady.status).toBe("accepted");
+    const persistedRoom = store.load().rooms[room.id]!;
+    expect(persistedRoom.seats).toHaveLength(3);
+    expect(persistedRoom.poker?.players.map((player) => player.accountId)).toEqual([
+      alice.id,
+      bob.id,
+      cara.id
+    ]);
+    expect(persistedRoom.poker?.handNumber).toBe(2);
+    expect(persistedRoom.poker?.dealerPosition).toBe(1);
+    expect(persistedRoom.poker?.readyAccountIds).toEqual([]);
+    new PlatformDomain(store.load()).validateInvariants();
+    store.close();
+  });
+
+  it("publishes only actual showdown cards with winner hand types and signed chip deltas", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice", "🦊");
+    const bob = domain.enterAccount("Bob", "🐼");
+    const cara = domain.enterAccount("Cara", "🐯");
+    const room = domain.createRoom(alice.id, "Showdown", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.joinRoom(room.id, cara.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: "chips-and-cards",
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind,
+      deck: showdownCards(
+        "2C 3D 4H 9S KC AS AD QS QD 5S 6S 7C 8C TC JC QC KH KD AH"
+      )
+    });
+    room.poker.phase = "showdown";
+    room.poker.actingAccountId = null;
+    room.poker.communityCards = showdownCards("2C 3D 4H 9S KC");
+    room.poker.holeCards = {
+      [alice.id]: showdownCards("AS AD"),
+      [bob.id]: showdownCards("QS QD"),
+      [cara.id]: showdownCards("5S 6S")
+    };
+    for (const player of room.poker.players) {
+      player.stack = 1_900;
+      player.roundBet = 0;
+      player.totalBet = 100;
+      player.folded = player.accountId === cara.id;
+      player.allIn = false;
+    }
+    room.poker.pots = [{
+      amount: 300,
+      eligibleAccountIds: [alice.id, bob.id]
+    }];
+    delete room.poker.advanceDeadline;
+    store.save(state);
+
+    const settled = dispatch(store, {
+      commandId: "automatic-showdown",
+      aggregateId: room.id,
+      expectedVersion: 0,
+      type: "system.poker.settle",
+      payload: {
+        roomId: room.id,
+        pokerVersion: room.poker.version
+      }
+    });
+    expect(settled.status).toBe("accepted");
+    const projection = settled.data as {
+      lastResult: {
+        playerResults: Array<{ accountId: string; chipDelta: number }>;
+        showdown: {
+          players: Array<{
+            accountId: string;
+            cards: Card[];
+            handCategory: string;
+            winner: boolean;
+          }>;
+        };
+      };
+    };
+    expect(projection.lastResult.playerResults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ accountId: alice.id, chipDelta: 200 }),
+        expect.objectContaining({ accountId: bob.id, chipDelta: -100 }),
+        expect.objectContaining({ accountId: cara.id, chipDelta: -100 })
+      ])
+    );
+    expect(projection.lastResult.showdown.players).toHaveLength(2);
+    expect(projection.lastResult.showdown.players.map((player) => player.accountId)).toEqual([
+      alice.id,
+      bob.id
+    ]);
+    expect(projection.lastResult.showdown.players[0]).toMatchObject({
+      accountId: alice.id,
+      cards: showdownCards("AS AD"),
+      handCategory: "one-pair",
+      winner: true
+    });
+    expect(JSON.stringify(projection.lastResult.showdown)).not.toContain(cara.id);
+    new PlatformDomain(store.load()).validateInvariants();
     store.close();
   });
 
@@ -444,4 +575,12 @@ async function sendCommand(app: FastifyInstance, payload: Record<string, unknown
     url: "/api/command",
     payload
   });
+}
+
+function showdownCards(input: string): Card[] {
+  const suits = { C: "clubs", D: "diamonds", H: "hearts", S: "spades" } as const;
+  return input.split(" ").map((token) => ({
+    rank: token[0]!,
+    suit: suits[token[1] as keyof typeof suits]
+  }));
 }

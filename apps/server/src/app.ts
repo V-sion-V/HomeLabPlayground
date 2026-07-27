@@ -18,7 +18,9 @@ import {
   act,
   advancePhase,
   createPokerState,
+  evaluateSeven,
   forceFold,
+  handCategoryFromScore,
   settleAutomatically,
   settleManual,
   undoLastAction,
@@ -80,7 +82,9 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     settings: z.object({
       defaultLanguage: z.enum(["zh-CN", "en"]),
       defaultHostTransferTimeoutSeconds: z.number().int().positive(),
-      poker: roomConfigSchema.omit({ mode: true, hostTransferTimeoutSeconds: true })
+      poker: roomConfigSchema
+        .omit({ mode: true, hostTransferTimeoutSeconds: true })
+        .extend({ suitColorPreset: z.enum(["standard", "high-contrast"]) })
     })
   }),
   "room.create": z.object({
@@ -128,7 +132,10 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     ...roomPayload,
     pokerVersion: z.number().int().nonnegative()
   }),
-  "poker.next-hand": z.object(roomPayload),
+  "poker.ready": z.object({
+    ...roomPayload,
+    pokerVersion: z.number().int().nonnegative()
+  }),
   "season.start": z.object({
     ...accountPayload,
     name: z.string().max(80).optional(),
@@ -566,7 +573,8 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         });
       case "room.leave": {
         assertLease();
-        domain.leaveRoom(roomId, accountId);
+        const remaining = domain.leaveRoom(roomId, accountId);
+        if (remaining) startNextHandIfReady(domain, remaining.id);
         return { left: true };
       }
       case "room.remove": {
@@ -592,7 +600,9 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
           forceFold(room.poker, targetAccountId);
         }
         const remaining = domain.leaveRoom(roomId, targetAccountId, true);
-        return remaining ? domain.projectRoom(remaining.id, { accountId }) : { closed: true };
+        if (!remaining) return { closed: true };
+        startNextHandIfReady(domain, remaining.id);
+        return domain.projectRoom(remaining.id, { accountId });
       }
       case "room.close":
         requireHost();
@@ -655,6 +665,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         if (room.poker.phase !== "showdown") throw new DomainError("INVALID_PHASE");
         if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
         const beforeStacks = pokerStacks(room);
+        const startingStacks = pokerStartingStacks(room);
         delete room.poker.advanceDeadline;
         delete room.poker.pausedAdvanceRemainingMs;
         if (room.config.mode === "chips-only") {
@@ -662,7 +673,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         } else {
           settleAutomatically(room.poker);
         }
-        recordSettlement(domain, room, beforeStacks);
+        recordSettlement(domain, room, beforeStacks, startingStacks);
         beginDistribution(room);
         room.version += 1;
         return domain.projectRoom(room.id, { accountId });
@@ -671,6 +682,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         const room = requireRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         const beforeStacks = pokerStacks(room);
+        const startingStacks = pokerStartingStacks(room);
         delete room.poker.advanceDeadline;
         delete room.poker.pausedAdvanceRemainingMs;
         if (room.config.mode === "chips-and-cards") {
@@ -682,7 +694,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
           });
           settleManual(room.poker, winners, room.poker.version);
         }
-        recordSettlement(domain, room, beforeStacks);
+        recordSettlement(domain, room, beforeStacks, startingStacks);
         beginDistribution(room);
         room.version += 1;
         return domain.projectRoom(room.id, { display: true });
@@ -715,7 +727,6 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         delete room.poker.advanceDeadline;
         room.poker.phase = "complete";
         room.poker.version += 1;
-        scheduleNextHand(room);
         room.version += 1;
         return domain.projectRoom(room.id, { display: true });
       }
@@ -748,13 +759,30 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         room.version += 1;
         return domain.projectRoom(room.id, { accountId });
       }
-      case "poker.next-hand":
-        if (requireHost().status !== "in_progress") {
-          throw new DomainError("ROOM_PAUSED");
+      case "poker.ready": {
+        assertLease();
+        const room = requireRoom();
+        if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
+        if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
+        if (room.poker.phase !== "complete") throw new DomainError("HAND_IN_PROGRESS");
+        if (room.poker.version !== Number(payload.pokerVersion)) {
+          throw new DomainError("STALE_VERSION");
         }
-        return startNextHand(domain, roomId, accountId);
-      case "system.poker.next-hand":
-        return startNextHand(domain, roomId);
+        const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+        const player = room.poker.players.find(
+          (candidate) => candidate.accountId === accountId
+        );
+        if (!seat || !player) throw new DomainError("PLAYER_NOT_IN_ROOM");
+        if (!seat.connected) throw new DomainError("PLAYER_OFFLINE");
+        if (player.stack <= 0) throw new DomainError("PLAYER_NEEDS_TOP_UP");
+        if (!room.poker.readyAccountIds.includes(accountId)) {
+          room.poker.readyAccountIds.push(accountId);
+          room.poker.version += 1;
+          room.version += 1;
+        }
+        startNextHandIfReady(domain, room.id, accountId);
+        return domain.projectRoom(room.id, { accountId });
+      }
       case "system.connection.open":
         domain.assertLease(accountId, envelope.connectionId ?? "");
         domain.connect(accountId);
@@ -844,6 +872,37 @@ function startNextHand(domain: PlatformDomain, roomId: string, viewerAccountId?:
   });
 }
 
+function startNextHandIfReady(
+  domain: PlatformDomain,
+  roomId: string,
+  viewerAccountId?: string
+): boolean {
+  const room = domain.state.rooms[roomId];
+  if (
+    !room?.poker ||
+    room.status !== "in_progress" ||
+    room.poker.phase !== "complete" ||
+    room.seats.length < 2
+  ) {
+    return false;
+  }
+  const players = new Map(
+    room.poker.players.map((player) => [player.accountId, player])
+  );
+  const ready = new Set(room.poker.readyAccountIds);
+  if (
+    !room.seats.every((seat) => (
+      seat.connected &&
+      (players.get(seat.accountId)?.stack ?? 0) > 0 &&
+      ready.has(seat.accountId)
+    ))
+  ) {
+    return false;
+  }
+  startNextHand(domain, roomId, viewerAccountId);
+  return true;
+}
+
 function leaseIsCurrent(
   domain: PlatformDomain,
   accountId: string,
@@ -868,6 +927,19 @@ function parseExternalCommand(input: unknown): CommandEnvelope | undefined {
 function pokerStacks(room: { poker?: { players: Array<{ accountId: string; stack: number }> } }) {
   return new Map(
     room.poker?.players.map((player) => [player.accountId, player.stack]) ?? []
+  );
+}
+
+function pokerStartingStacks(room: {
+  poker?: {
+    players: Array<{ accountId: string; stack: number; totalBet: number }>;
+  };
+}) {
+  return new Map(
+    room.poker?.players.map((player) => [
+      player.accountId,
+      player.stack + player.totalBet
+    ]) ?? []
   );
 }
 
@@ -901,10 +973,17 @@ function recordSettlement(
     config: { mode: "chips-only" | "chips-and-cards" };
     poker?: {
       handNumber: number;
-      players: Array<{ accountId: string; stack: number }>;
+      communityCards: NonNullable<Room["poker"]>["communityCards"];
+      holeCards: NonNullable<Room["poker"]>["holeCards"];
+      players: Array<{
+        accountId: string;
+        stack: number;
+        folded: boolean;
+      }>;
     };
   },
-  beforeStacks: Map<string, number>
+  beforeStacks: Map<string, number>,
+  startingStacks: Map<string, number>
 ): void {
   if (!room.poker) return;
   const payouts = room.poker.players
@@ -923,13 +1002,45 @@ function recordSettlement(
       room.poker.handNumber
     );
   }
+  const payoutAccountIds = new Set(payouts.map((payout) => payout.accountId));
+  const livePlayers = room.poker.players.filter((player) => !player.folded);
+  const showdown =
+    room.config.mode === "chips-and-cards" &&
+    livePlayers.length > 1 &&
+    room.poker.communityCards.length === 5
+      ? {
+          communityCards: structuredClone(room.poker.communityCards),
+          players: livePlayers.map((player) => {
+            const cards = room.poker?.holeCards[player.accountId] ?? [];
+            const score = evaluateSeven([
+              ...cards,
+              ...(room.poker?.communityCards ?? [])
+            ]);
+            return {
+              accountId: player.accountId,
+              cards: structuredClone(cards),
+              handCategory: handCategoryFromScore(score),
+              winner: payoutAccountIds.has(player.accountId)
+            };
+          })
+        }
+      : undefined;
   domain.recordHandResult(
     room.id,
     room.poker.handNumber,
     room.config.mode,
     payouts,
     "settled",
-    room.poker.players.map((player) => player.accountId)
+    room.poker.players.map((player) => player.accountId),
+    {
+      chipDeltas: room.poker.players.map((player) => ({
+        accountId: player.accountId,
+        amount:
+          player.stack -
+          (startingStacks.get(player.accountId) ?? player.stack)
+      })),
+      showdown
+    }
   );
 }
 
@@ -937,20 +1048,12 @@ function beginDistribution(room: Room): void {
   if (!room.poker) return;
   room.poker.phase = "distribution";
   room.poker.actingAccountId = null;
+  room.poker.readyAccountIds = [];
   room.poker.lastAction = room.poker.lastAction
     ? { ...room.poker.lastAction, reversible: false }
     : undefined;
   delete room.poker.undoSnapshot;
   room.poker.advanceDeadline = Date.now() + 3_000;
-}
-
-function scheduleNextHand(room: Room): void {
-  if (!room.poker) return;
-  if (room.poker.players.filter((player) => player.stack > 0).length >= 2) {
-    room.poker.advanceDeadline = Date.now() + 5_000;
-  } else {
-    delete room.poker.advanceDeadline;
-  }
 }
 
 function runScheduledPokerAction(store: PlatformStore, roomId: string, deadline: number): void {
@@ -968,7 +1071,6 @@ function runScheduledPokerAction(store: PlatformStore, roomId: string, deadline:
   if (room.poker.phase === "distribution") {
     type = "system.poker.complete-distribution";
   }
-  if (room.poker.phase === "complete") type = "system.poker.next-hand";
   dispatch(store, {
     commandId: `timer:${roomId}:${deadline}:${state.version}`,
     aggregateId: roomId,

@@ -11,6 +11,7 @@ import type {
   Card,
   CommandResult,
   GlobalSettings,
+  HandCategory,
   Language,
   LobbyProjection,
   LobbyRoomProjection,
@@ -431,7 +432,7 @@ function Lobby({
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell suit-theme-${lobby.settings.poker.suitColorPreset}`}>
       <header className="topbar">
         <div>
           <p className="eyebrow">HOME TABLE</p>
@@ -471,7 +472,13 @@ function Lobby({
               return (
                 <article className="room-card" key={entry.id}>
                   <div className="room-identity">
-                    <span className="suit-badge">{entry.mode === "chips-only" ? "♣" : "♦"}</span>
+                    <span
+                      className={`suit-badge ${
+                        entry.mode === "chips-only" ? "suit-clubs" : "suit-diamonds"
+                      }`}
+                    >
+                      {entry.mode === "chips-only" ? "♣" : "♦"}
+                    </span>
                     <div>
                       <h3>{entry.name}</h3>
                       <p>
@@ -836,7 +843,24 @@ function SettingsModal({
         </select>
       </label>
       <details open>
-        <summary>♠ {t(language, "poker")}</summary>
+        <summary><span className="suit-spades">♠</span> {t(language, "poker")}</summary>
+        <label className="setting-row">
+          <span>{t(language, "suitColors")}</span>
+          <select
+            aria-label={t(language, "suitColors")}
+            value={value.poker.suitColorPreset}
+            onChange={(event) => setValue((current) => ({
+              ...current,
+              poker: {
+                ...current.poker,
+                suitColorPreset: event.target.value as GlobalSettings["poker"]["suitColorPreset"]
+              }
+            }))}
+          >
+            <option value="standard">{t(language, "standardSuitColors")}</option>
+            <option value="high-contrast">{t(language, "highContrastSuitColors")}</option>
+          </select>
+        </label>
         <div className="setting-grid">
           <NumberField label={t(language, "smallBlind")} value={value.poker.smallBlind} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, smallBlind: next } }))} />
           <NumberField label={t(language, "bigBlind")} value={value.poker.bigBlind} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, bigBlind: next } }))} />
@@ -1140,11 +1164,6 @@ function PlayerTable({
     : (room.currentBet ?? 0) === 0
       ? t(language, "confirmBet")
       : t(language, "confirmRaise");
-  const now = useNow(Boolean(room.advanceDeadline));
-  const countdown = room.advanceDeadline
-    ? Math.max(0, (room.advanceDeadline - now) / 1_000)
-    : 0;
-
   useEffect(() => {
     if (
       cache.length > 0 &&
@@ -1213,17 +1232,28 @@ function PlayerTable({
   };
 
   return (
-    <main className="table-shell">
+    <main className={`table-shell suit-theme-${room.suitColorPreset}`}>
       <header className="table-topbar">
-        <button className="secondary" onClick={onLobby}>← {t(language, "backLobby")}</button>
-        <div>
-          <strong>{room.name}</strong>
-          <span>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")} · {room.config.smallBlind} / {room.config.bigBlind}</span>
-        </div>
-        <LanguageToggle language={language} setLanguage={setLanguage} />
-        <button className="secondary" onClick={() => setMuted(!muted)}>
-          {muted ? t(language, "unmute") : t(language, "mute")}
+        <button className="secondary back-button" onClick={onLobby}>
+          <span aria-hidden="true">←</span>
+          <span className="back-label">{t(language, "backLobby")}</span>
         </button>
+        <div className="table-title">
+          <strong>{room.name}</strong>
+          <span>{t(language, "currentPlayer")} · {session.account.username}</span>
+          <small>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")} · {room.config.smallBlind} / {room.config.bigBlind}</small>
+        </div>
+        <div className="table-controls">
+          <LanguageToggle language={language} setLanguage={setLanguage} />
+          <button
+            className="secondary mute-button"
+            aria-label={muted ? t(language, "unmute") : t(language, "mute")}
+            onClick={() => setMuted(!muted)}
+          >
+            <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
+            <span className="mute-label">{muted ? t(language, "unmute") : t(language, "mute")}</span>
+          </button>
+        </div>
       </header>
       <section className="poker-felt" aria-label={t(language, "poker")}>
         <div className="table-seats">
@@ -1290,24 +1320,49 @@ function PlayerTable({
           {room.mode === "chips-and-cards" && (
             <div className="cards" aria-label={t(language, "communityCards")}>
               {(room.communityCards ?? []).map((card, index) => (
-                <span key={index}>{cardLabel(card)}</span>
+                <PlayingCard key={index} card={card} />
               ))}
             </div>
           )}
           {room.ownHoleCards && room.ownHoleCards.length > 0 && (
             <div className="own-cards" aria-label={t(language, "myCards")}>
-              {room.ownHoleCards.map((card, index) => <span key={index}>{cardLabel(card)}</span>)}
+              {room.ownHoleCards.map((card, index) => (
+                <PlayingCard key={index} card={card} compact />
+              ))}
             </div>
           )}
           <div className="pot"><small>{t(language, "pot")}</small><strong>{room.potTotal.toLocaleString()}</strong></div>
           {room.advanceDeadline && (
-            <div className="timer" aria-label={t(language, "countdown")}>
-              <span style={{ width: `${Math.min(100, countdown / 3 * 100)}%` }} />
-              <b>{countdown.toFixed(1)}s</b>
-            </div>
+            <CountdownTimer
+              key={room.advanceDeadline}
+              deadline={room.advanceDeadline}
+              language={language}
+            />
           )}
         </div>
       </section>
+      {room.phase === "complete" && room.lastResult && (
+        <SettlementPanel
+          language={language}
+          room={room}
+          currentAccountId={session.account.id}
+          onReady={() => void run("poker.ready", {
+            pokerVersion: room.pokerVersion
+          })}
+          onTopUp={
+            seat && seat.tableChips < room.config.maxBuyIn
+              ? () => setTopUpOpen(true)
+              : undefined
+          }
+          onUndo={
+            host && room.mode === "chips-only"
+              ? () => void run("poker.undo-settlement", {
+                  pokerVersion: room.pokerVersion
+                })
+              : undefined
+          }
+        />
+      )}
       <section className="action-dock">
         <div className="turn-line">
           <div><span className="pulse" />{canAct ? t(language, "yourTurn") : t(language, "notYourTurn")}</div>
@@ -1326,30 +1381,12 @@ function PlayerTable({
           </div>
         </div>
         {notice && <p className="notice" role="status">{notice}</p>}
-        <HandResultBanner language={language} room={room} />
+        {room.phase !== "complete" && <HandResultBanner language={language} room={room} />}
         {room.phase === "showdown" &&
           room.mode === "chips-only" &&
           room.status === "in_progress" &&
           host && (
           <WinnerPicker language={language} room={room} run={run} />
-        )}
-        {room.phase === "complete" && (
-          <div className="settlement-actions">
-            {host && room.mode === "chips-only" && (
-              <>
-                <button className="secondary" onClick={() => void run("poker.undo-settlement", { pokerVersion: room.pokerVersion })}>
-                  {t(language, "undoSettlement")}
-                </button>
-                <button
-                  className="primary"
-                  disabled={room.status !== "in_progress"}
-                  onClick={() => void run("poker.next-hand")}
-                >
-                  {t(language, "startNextHand")}
-                </button>
-              </>
-            )}
-          </div>
         )}
         <div
           className="bet-cache"
@@ -1628,7 +1665,7 @@ function PublicDisplay({
   if (error) return <main className="loading-shell"><p className="error">{error}</p></main>;
   if (!room) return <Loading language={language} />;
   return (
-    <main className="display-shell">
+    <main className={`display-shell suit-theme-${room.suitColorPreset}`}>
       <header className="display-header">
         <div>
           <p className="eyebrow">{t(language, "display")}</p>
@@ -1654,12 +1691,14 @@ function PublicDisplay({
         <div className="display-board">
           {room.mode === "chips-and-cards" && (
             <div className="cards" data-testid="community-cards">
-              {(room.communityCards ?? []).map((card, index) => <span key={index}>{cardLabel(card)}</span>)}
+              {(room.communityCards ?? []).map((card, index) => (
+                <PlayingCard key={index} card={card} />
+              ))}
             </div>
           )}
           <p>{phaseLabel(language, room.phase)}</p>
           <div className="pot"><small>{t(language, "pot")}</small><strong>{room.potTotal.toLocaleString()}</strong></div>
-          <HandResultBanner language={language} room={room} />
+          {room.phase !== "complete" && <HandResultBanner language={language} room={room} />}
         </div>
         {room.lastAction && room.lastAction.amount > 0 && (
           <div
@@ -1676,6 +1715,9 @@ function PublicDisplay({
           >
             +{room.lastAction.amount.toLocaleString()}
           </div>
+        )}
+        {room.phase === "complete" && room.lastResult && (
+          <SettlementPanel language={language} room={room} display />
         )}
       </section>
     </main>
@@ -1771,6 +1813,217 @@ function HandResultBanner({
   );
 }
 
+function SettlementPanel({
+  language,
+  room,
+  currentAccountId,
+  onReady,
+  onTopUp,
+  onUndo,
+  display = false
+}: {
+  language: Language;
+  room: RoomProjection;
+  currentAccountId?: string;
+  onReady?: () => void;
+  onTopUp?: () => void;
+  onUndo?: () => void;
+  display?: boolean;
+}) {
+  const result = room.lastResult;
+  if (!result) return null;
+  const payoutByAccount = new Map(
+    result.payouts.map((payout) => [payout.accountId, payout.amount])
+  );
+  const players = result.playerResults ?? result.participantAccountIds.map((accountId) => {
+    const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+    return {
+      accountId,
+      username: seat?.username ?? accountId,
+      avatar: seat?.avatar ?? "•",
+      chipDelta: payoutByAccount.get(accountId) ?? 0
+    };
+  });
+  const ready = new Set(room.readyAccountIds ?? []);
+  const currentSeat = room.seats.find(
+    (seat) => seat.accountId === currentAccountId
+  );
+  const currentReady = Boolean(currentAccountId && ready.has(currentAccountId));
+  const canReady = Boolean(
+    currentSeat &&
+    currentSeat.connected &&
+    currentSeat.tableChips > 0 &&
+    room.status === "in_progress" &&
+    !currentReady
+  );
+  return (
+    <div className={`settlement-layer${display ? " display-settlement" : ""}`}>
+      <section
+        className="settlement-panel"
+        role={display ? "status" : "dialog"}
+        aria-label={t(language, "settlementTitle")}
+      >
+        <header>
+          <div>
+            <p className="eyebrow">{formatTemplate(t(language, "hand"), result.handNumber)}</p>
+            <h2>{t(language, "settlementTitle")}</h2>
+          </div>
+          <span>{t(language, "waitingForReady")}</span>
+        </header>
+        <div className="settlement-player-list">
+          {players.map((player) => {
+            const seat = room.seats.find(
+              (candidate) => candidate.accountId === player.accountId
+            );
+            return (
+              <article key={player.accountId}>
+                <span className="result-avatar">{player.avatar}</span>
+                <div>
+                  <strong>{player.username}</strong>
+                  {seat && (
+                    <small className={ready.has(player.accountId) ? "ready" : ""}>
+                      {ready.has(player.accountId)
+                        ? `✓ ${t(language, "readyDone")}`
+                        : t(language, "waitingForReady")}
+                    </small>
+                  )}
+                </div>
+                <b className={player.chipDelta >= 0 ? "chip-positive" : "chip-negative"}>
+                  {player.chipDelta >= 0 ? "+" : ""}
+                  {player.chipDelta.toLocaleString()}
+                </b>
+              </article>
+            );
+          })}
+        </div>
+        {result.showdown && (
+          <section className="showdown-summary">
+            <div className="cards settlement-board" aria-label={t(language, "communityCards")}>
+              {result.showdown.communityCards.map((card, index) => (
+                <PlayingCard key={index} card={card} compact />
+              ))}
+            </div>
+            <div className="showdown-player-list">
+              {result.showdown.players.map((player) => {
+                const profile = players.find(
+                  (candidate) => candidate.accountId === player.accountId
+                );
+                return (
+                  <article
+                    key={player.accountId}
+                    className={player.winner ? "winner" : ""}
+                  >
+                    <div>
+                      <strong>{profile?.avatar} {profile?.username ?? player.accountId}</strong>
+                      {player.winner && (
+                        <small>
+                          {t(language, "winner")} · {handCategoryLabel(language, player.handCategory)}
+                        </small>
+                      )}
+                    </div>
+                    <div className="showdown-cards">
+                      {player.cards.map((card, index) => (
+                        <PlayingCard key={index} card={card} compact />
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+        {!display && (
+          <footer>
+            {currentSeat && currentSeat.tableChips <= 0 && (
+              <span className="ready-warning">{t(language, "needsTopUpToReady")}</span>
+            )}
+            <div className="settlement-actions">
+              {onUndo && (
+                <button className="secondary" onClick={onUndo}>
+                  {t(language, "undoSettlement")}
+                </button>
+              )}
+              {onTopUp && (
+                <button className="secondary" onClick={onTopUp}>
+                  {t(language, "topUp")}
+                </button>
+              )}
+              <button
+                className="primary"
+                disabled={!canReady}
+                onClick={onReady}
+              >
+                {currentReady ? `✓ ${t(language, "readyDone")}` : t(language, "ready")}
+              </button>
+            </div>
+          </footer>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function PlayingCard({
+  card,
+  compact = false
+}: {
+  card: Card | { hidden: true };
+  compact?: boolean;
+}) {
+  if ("hidden" in card) {
+    return (
+      <span className={`playing-card card-back${compact ? " compact-card" : ""}`}>
+        🂠
+      </span>
+    );
+  }
+  const suits = { clubs: "♣", diamonds: "♦", hearts: "♥", spades: "♠" };
+  return (
+    <span
+      className={`playing-card suit-${card.suit}${compact ? " compact-card" : ""}`}
+      data-suit={card.suit}
+    >
+      {card.rank}{suits[card.suit]}
+    </span>
+  );
+}
+
+function CountdownTimer({
+  deadline,
+  language
+}: {
+  deadline: number;
+  language: Language;
+}) {
+  const label = useRef<HTMLElement>(null);
+  const remaining = Math.max(0, deadline - Date.now());
+  const progress = Math.min(1, remaining / 3_000);
+
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      const next = Math.max(0, deadline - Date.now());
+      if (label.current) label.current.textContent = `${(next / 1_000).toFixed(1)}s`;
+      if (next > 0) frame = requestAnimationFrame(update);
+    };
+    update();
+    return () => cancelAnimationFrame(frame);
+  }, [deadline]);
+
+  return (
+    <div className="timer" aria-label={t(language, "countdown")}>
+      <span
+        className="timer-fill"
+        style={{
+          "--timer-duration": `${remaining}ms`,
+          "--timer-start": progress
+        } as React.CSSProperties}
+      />
+      <b ref={label}>{(remaining / 1_000).toFixed(1)}s</b>
+    </div>
+  );
+}
+
 function TopUpModal({
   language,
   maximum,
@@ -1835,16 +2088,6 @@ function useStored<T>(key: string, initial: T): [T, (value: T) => void] {
     [key]
   );
   return [value, setStored];
-}
-
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
 }
 
 function readRecentAccount(): Pick<Account, "username" | "avatar"> | null {
@@ -1912,12 +2155,6 @@ function amountToChips(amount: number): number[] {
   return result;
 }
 
-function cardLabel(card: Card | { hidden: true }): string {
-  if ("hidden" in card) return "🂠";
-  const suits = { clubs: "♣", diamonds: "♦", hearts: "♥", spades: "♠" };
-  return `${card.rank}${suits[card.suit]}`;
-}
-
 function roomStatus(language: Language, status: RoomProjection["status"]): string {
   const labels = {
     waiting: t(language, "waiting"),
@@ -1956,6 +2193,21 @@ function phaseLabel(language: Language, phase?: RoomProjection["phase"]): string
   };
   if (!phase) return language === "zh-CN" ? "等待开始" : "Waiting to start";
   return (language === "zh-CN" ? zh : en)[phase];
+}
+
+function handCategoryLabel(language: Language, category: HandCategory): string {
+  const keys: Record<HandCategory, Parameters<typeof t>[1]> = {
+    "high-card": "highCard",
+    "one-pair": "onePair",
+    "two-pair": "twoPair",
+    "three-of-a-kind": "threeOfAKind",
+    straight: "straight",
+    flush: "flush",
+    "full-house": "fullHouse",
+    "four-of-a-kind": "fourOfAKind",
+    "straight-flush": "straightFlush"
+  };
+  return t(language, keys[category]);
 }
 
 function rankBadge(rank: number): string {

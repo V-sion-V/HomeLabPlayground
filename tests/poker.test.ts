@@ -7,6 +7,7 @@ import {
   createPokerState,
   evaluateSeven,
   forceFold,
+  handCategoryFromScore,
   legalActions,
   settleAutomatically,
   settleManual,
@@ -328,6 +329,9 @@ describe("Texas hold'em engine", () => {
     const fullHouse = cards("KH KD KC 2S 2D 3C 4H");
     expect(evaluateSeven(straightFlush)).toBeGreaterThan(evaluateSeven(quads));
     expect(evaluateSeven(quads)).toBeGreaterThan(evaluateSeven(fullHouse));
+    expect(handCategoryFromScore(evaluateSeven(straightFlush))).toBe("straight-flush");
+    expect(handCategoryFromScore(evaluateSeven(quads))).toBe("four-of-a-kind");
+    expect(handCategoryFromScore(evaluateSeven(fullHouse))).toBe("full-house");
   });
 });
 

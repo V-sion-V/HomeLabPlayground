@@ -2,7 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type {
   Account,
   AssetLine,
+  Card,
   GlobalSettings,
+  HandCategory,
   HistoricalSeason,
   LobbyProjection,
   PlatformSnapshot,
@@ -49,7 +51,13 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
     settings: {
       defaultLanguage: "zh-CN",
       defaultHostTransferTimeoutSeconds: 60,
-      poker: { smallBlind: 50, bigBlind: 100, minBuyIn: 2_000, maxBuyIn: 20_000 }
+      poker: {
+        smallBlind: 50,
+        bigBlind: 100,
+        minBuyIn: 2_000,
+        maxBuyIn: 20_000,
+        suitColorPreset: "standard"
+      }
     }
   };
 }
@@ -62,6 +70,13 @@ export class PlatformDomain {
     private readonly now: () => number = Date.now,
     private readonly id: () => string = randomUUID
   ) {
+    const legacyPokerSettings = state.settings.poker as typeof state.settings.poker & {
+      suitColorPreset?: GlobalSettings["poker"]["suitColorPreset"];
+    };
+    if (!legacyPokerSettings.suitColorPreset) {
+      legacyPokerSettings.suitColorPreset = "standard";
+      this.normalizedPersistedState = true;
+    }
     if (!Array.isArray(state.handResults)) {
       state.handResults = [];
       this.normalizedPersistedState = true;
@@ -108,6 +123,15 @@ export class PlatformDomain {
       }
       if (room.poker && !Array.isArray(room.poker.raiseLockedAccountIds)) {
         room.poker.raiseLockedAccountIds = [];
+        this.normalizedPersistedState = true;
+      }
+      if (room.poker && !Array.isArray(room.poker.readyAccountIds)) {
+        room.poker.readyAccountIds = [];
+        this.normalizedPersistedState = true;
+      }
+      if (room.poker?.phase === "complete" && room.poker.advanceDeadline !== undefined) {
+        delete room.poker.advanceDeadline;
+        delete room.poker.pausedAdvanceRemainingMs;
         this.normalizedPersistedState = true;
       }
     }
@@ -183,6 +207,9 @@ export class PlatformDomain {
   updateSettings(settings: GlobalSettings): GlobalSettings {
     if (!["zh-CN", "en"].includes(settings.defaultLanguage)) {
       throw new DomainError("INVALID_LANGUAGE");
+    }
+    if (!["standard", "high-contrast"].includes(settings.poker.suitColorPreset)) {
+      throw new DomainError("INVALID_SUIT_COLOR_PRESET");
     }
     this.validateRoomConfig({
       mode: "chips-and-cards",
@@ -384,6 +411,12 @@ export class PlatformDomain {
     const seat = room.seats.find((candidate) => candidate.accountId === accountId);
     if (!seat || !seat.connected) return;
     seat.connected = false;
+    if (room.poker?.readyAccountIds.includes(accountId)) {
+      room.poker.readyAccountIds = room.poker.readyAccountIds.filter(
+        (candidate) => candidate !== accountId
+      );
+      room.poker.version += 1;
+    }
     if (room.hostAccountId === accountId) {
       room.hostDisconnectDeadline =
         this.now() + room.config.hostTransferTimeoutSeconds * 1_000;
@@ -425,6 +458,11 @@ export class PlatformDomain {
     let changed = this.normalizedPersistedState;
     for (const room of Object.values(this.state.rooms)) {
       let roomChanged = false;
+      if (room.poker && room.poker.readyAccountIds.length > 0) {
+        room.poker.readyAccountIds = [];
+        room.poker.version += 1;
+        roomChanged = true;
+      }
       for (const seat of room.seats) {
         if (seat.connected) {
           seat.connected = false;
@@ -553,6 +591,7 @@ export class PlatformDomain {
       status: room.status,
       hostAccountId: room.hostAccountId,
       config: structuredClone(room.config),
+      suitColorPreset: this.state.settings.poker.suitColorPreset,
       version: room.version,
       createdAt: room.createdAt,
       seats: [...room.seats]
@@ -596,6 +635,7 @@ export class PlatformDomain {
         amount: pot.amount,
         eligibleAccountIds: [...pot.eligibleAccountIds]
       })),
+      readyAccountIds: room.poker ? [...room.poker.readyAccountIds] : undefined,
       advanceDeadline: room.poker?.advanceDeadline
     };
     const lastResult = [...this.state.handResults]
@@ -611,7 +651,13 @@ export class PlatformDomain {
         handNumber: lastResult.handNumber,
         outcome: lastResult.outcome,
         participantAccountIds: [...lastResult.participantAccountIds],
-        payouts: structuredClone(lastResult.payouts)
+        payouts: structuredClone(lastResult.payouts),
+        playerResults: lastResult.playerResults
+          ? structuredClone(lastResult.playerResults)
+          : undefined,
+        showdown: lastResult.showdown
+          ? structuredClone(lastResult.showdown)
+          : undefined
       };
     }
     if (room.config.mode === "chips-and-cards") {
@@ -713,7 +759,19 @@ export class PlatformDomain {
     mode: Room["config"]["mode"],
     payouts: Array<{ accountId: string; amount: number }>,
     outcome: "settled" | "void" = "settled",
-    participantAccountIds: string[] = payouts.map((payout) => payout.accountId)
+    participantAccountIds: string[] = payouts.map((payout) => payout.accountId),
+    details?: {
+      chipDeltas: Array<{ accountId: string; amount: number }>;
+      showdown?: {
+        communityCards: Card[];
+        players: Array<{
+          accountId: string;
+          cards: Card[];
+          handCategory: HandCategory;
+          winner: boolean;
+        }>;
+      };
+    }
   ): void {
     this.state.handResults.push({
       id: this.id(),
@@ -724,6 +782,18 @@ export class PlatformDomain {
       outcome,
       participantAccountIds: [...new Set(participantAccountIds)],
       payouts: structuredClone(payouts),
+      playerResults: details?.chipDeltas.map((delta) => {
+        const account = this.requireAccount(delta.accountId);
+        return {
+          accountId: delta.accountId,
+          username: account.username,
+          avatar: account.avatar,
+          chipDelta: delta.amount
+        };
+      }),
+      showdown: details?.showdown
+        ? structuredClone(details.showdown)
+        : undefined,
       completedAt: this.now()
     });
   }
