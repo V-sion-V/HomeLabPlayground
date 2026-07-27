@@ -1,5 +1,7 @@
 FROM --platform=$BUILDPLATFORM node:24.18.0-bookworm-slim AS build
 
+ENV npm_config_nodedir=/usr/local
+
 WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \

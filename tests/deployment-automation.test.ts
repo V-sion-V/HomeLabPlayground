@@ -19,6 +19,7 @@ const bash = "C:\\Program Files\\Git\\bin\\bash.exe";
 const remoteScriptSource = resolve(repositoryRoot, "deploy/remote-deploy.sh");
 const composeSource = resolve(repositoryRoot, "deploy/compose.yml");
 const deployScriptSource = resolve(repositoryRoot, "deploy/deploy.ps1");
+const dockerfileSource = resolve(repositoryRoot, "Dockerfile");
 const fakeOpenSshSource = resolve(
   repositoryRoot,
   "tests/fixtures/deployment-automation/fake-open-ssh.mjs"
@@ -27,6 +28,81 @@ const fakeDockerSource = resolve(
   repositoryRoot,
   "tests/fixtures/deployment-automation/fake-docker.mjs"
 );
+const nativeSshProbeSource = String.raw`
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+public static class Program
+{
+    private static string Json(string value)
+    {
+        return "\"" + value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r", "\\r")
+            .Replace("\n", "\\n")
+            .Replace("\t", "\\t") + "\"";
+    }
+
+    public static int Main(string[] args)
+    {
+        var logPath = Environment.GetEnvironmentVariable("FAKE_OPENSSH_LOG");
+        if (String.IsNullOrEmpty(logPath))
+        {
+            Console.Error.WriteLine("FAKE_OPENSSH_LOG is required");
+            return 90;
+        }
+
+        var tool = Path.GetFileNameWithoutExtension(
+            Environment.GetCommandLineArgs()[0]
+        ).ToLowerInvariant();
+        var payload = "{\"tool\":" + Json(tool) + ",\"args\":[" +
+            String.Join(",", args.Select(Json)) + "]}";
+        File.AppendAllText(
+            logPath,
+            payload + Environment.NewLine,
+            new UTF8Encoding(false)
+        );
+
+        if (tool != "ssh")
+        {
+            Console.Error.WriteLine("Unexpected native probe tool: " + tool);
+            return 91;
+        }
+
+        var behavior = Environment.GetEnvironmentVariable("FAKE_OPENSSH_BEHAVIOR");
+        if (behavior == "probe-fail")
+        {
+            Console.Error.WriteLine("simulated SSH preflight failure");
+            return 41;
+        }
+
+        var remoteCommand = args.Length == 0 ? "" : args[args.Length - 1];
+        if (behavior == "noop")
+        {
+            if (remoteCommand.Contains("printf NOOP\\n"))
+            {
+                Console.WriteLine("NOOPn");
+            }
+            else if (remoteCommand.Contains("printf NOOP"))
+            {
+                Console.WriteLine("NOOP");
+            }
+            else
+            {
+                Console.WriteLine("DEPLOY");
+            }
+        }
+        else
+        {
+            Console.WriteLine("DEPLOY");
+        }
+        return 0;
+    }
+}
+`;
 const temporaryRoots = new Set<string>();
 
 afterEach(() => {
@@ -53,8 +129,10 @@ describe("deployment automation local orchestrator", () => {
 
     const passwordMode = runLocalDeploy(fixture, "noop");
     expect(passwordMode.status, passwordMode.output).toBe(0);
-    expect(passwordMode.output).toContain("deployment is a no-op");
     let events = readJsonLines(fixture.openSshLog);
+    expect(passwordMode.output, JSON.stringify(events)).toContain(
+      "deployment is a no-op"
+    );
     expect(events).toHaveLength(1);
     expect(events[0]?.tool).toBe("ssh");
     expect(events[0]?.args).not.toContain("-i");
@@ -72,6 +150,36 @@ describe("deployment automation local orchestrator", () => {
     expect(events[0]?.args).toContain("-i");
     expect(events[0]?.args).toContain(identity);
     expect(JSON.stringify(events)).not.toContain("fake private key path only");
+  });
+
+  it("keeps probe tokens exact across the Windows native process boundary", () => {
+    const fixture = createLocalRepository();
+    compileNativeSshProbe(join(fixture.fakeBin, "ssh.exe"));
+
+    const result = runLocalDeploy(fixture, "noop");
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain("deployment is a no-op");
+    const events = readJsonLines(fixture.openSshLog);
+    expect(events).toHaveLength(1);
+    const probeCommand = events[0]?.args.at(-1);
+    expect(probeCommand).toContain("printf NOOP");
+    expect(probeCommand).not.toContain("printf NOOP\\n");
+    expect(probeCommand).toContain("printf DEPLOY");
+    expect(probeCommand).not.toContain("printf DEPLOY\\n");
+    expect(events.some((event) => event.tool === "scp")).toBe(false);
+    expect(existsSync(fixture.scpCapture)).toBe(false);
+  });
+
+  it("uses the official Node image headers for native dependency builds", () => {
+    const dockerfile = readFileSync(dockerfileSource, "utf8");
+    const headerConfiguration = dockerfile.indexOf(
+      "ENV npm_config_nodedir=/usr/local"
+    );
+    const dependencyInstall = dockerfile.indexOf("RUN npm ci");
+
+    expect(headerConfiguration).toBeGreaterThan(-1);
+    expect(dependencyInstall).toBeGreaterThan(headerConfiguration);
   });
 
   it("uploads only committed HEAD artifacts and preserves remote failure exit status", () => {
@@ -522,6 +630,28 @@ function createLocalRepository(): LocalFixture {
 
   writeConfig(configPath);
   return { root, repository, fakeBin, configPath, openSshLog, scpCapture };
+}
+
+function compileNativeSshProbe(outputPath: string) {
+  const encodedCommand = Buffer.from(
+    `$source = @'\n${nativeSshProbeSource}\n'@\n` +
+      `Add-Type -TypeDefinition $source -Language CSharp ` +
+      `-OutputAssembly '${outputPath.replaceAll("'", "''")}' ` +
+      "-OutputType ConsoleApplication",
+    "utf16le"
+  ).toString("base64");
+  const result = spawnSync(
+    powershell,
+    ["-NoProfile", "-EncodedCommand", encodedCommand],
+    { encoding: "utf8", timeout: 20_000 }
+  );
+  if (result.status !== 0 || !existsSync(outputPath)) {
+    throw new Error(
+      `Could not compile native SSH probe fixture: ${result.stdout ?? ""}${
+        result.stderr ?? ""
+      }`
+    );
+  }
 }
 
 function runLocalDeploy(
