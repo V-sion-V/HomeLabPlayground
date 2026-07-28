@@ -22,6 +22,20 @@ const players = [
 ];
 
 describe("Texas hold'em engine", () => {
+  it("stores a per-hand denomination snapshot without sharing the caller array", () => {
+    const denominations = [1, 20, 100];
+    const state = createPokerState({
+      players,
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 20,
+      denominations,
+      deck: []
+    });
+    denominations.push(500);
+    expect(state.denominations).toEqual([1, 20, 100]);
+  });
+
   it("posts blinds, enforces the actor and minimum raise, and supports atomic undo", () => {
     const state = createPokerState({
       players,

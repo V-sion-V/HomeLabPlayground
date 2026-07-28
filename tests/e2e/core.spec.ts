@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { productConfig } from "@party/contracts";
 
 test.describe.configure({ mode: "serial" });
 
@@ -14,6 +15,10 @@ test("uses real account, settings, profile, season, and language persistence flo
   await emulateLanHttp(page);
   await enter(page, username);
   await expect(page.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+  await page.getByRole("button", { name: "切换到暗色主题" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
   await page.getByRole("button", { name: new RegExp(username) }).click();
   const profile = page.getByRole("dialog", { name: "账户资料" });
@@ -23,13 +28,19 @@ test("uses real account, settings, profile, season, and language persistence flo
 
   await page.getByRole("button", { name: "全局设置" }).click();
   let settings = page.getByRole("dialog", { name: "全局设置" });
-  await settings.getByLabel("房主转让时限").selectOption("120");
-  await settings.getByLabel("花色配色").selectOption("high-contrast");
+  await expect(settings.getByLabel("花色配色")).toBeHidden();
+  await selectStyledOption(settings, "房主转让时限", "120s");
+  await settings.getByRole("button", { name: /德州扑克/ }).click();
+  await selectStyledOption(settings, "花色配色", "高对比度");
+  await settings.getByLabel("筹码面值 6").fill("1000");
   await settings.getByRole("button", { name: "保存" }).click();
   await page.getByRole("button", { name: "全局设置" }).click();
   settings = page.getByRole("dialog", { name: "全局设置" });
-  await expect(settings.getByLabel("房主转让时限")).toHaveValue("120");
-  await expect(settings.getByLabel("花色配色")).toHaveValue("high-contrast");
+  await expect(settings.getByLabel("房主转让时限")).toContainText("120s");
+  await expect(settings.getByLabel("花色配色")).toBeHidden();
+  await settings.getByRole("button", { name: /德州扑克/ }).click();
+  await expect(settings.getByLabel("花色配色")).toContainText("高对比度");
+  await expect(settings.getByLabel("筹码面值 6")).toHaveValue("1000");
   await settings.getByRole("button", { name: "开始新赛季" }).click();
 
   const season = page.getByRole("dialog", { name: "开始新赛季" });
@@ -58,13 +69,19 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   browser,
   page: hostPage
 }, testInfo) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const suffix = uniqueSuffix(testInfo.project.name);
   const hostName = `房主-${suffix}`;
   const guestName = `玩家-${suffix}`;
+  const unreadyName = `未准备-${suffix}`;
+  const lateName = `中途加入-${suffix}`;
   const roomName = `真实牌局-${suffix}`;
   const guestContext = await browser.newContext();
   const guestPage = await guestContext.newPage();
+  const unreadyContext = await browser.newContext();
+  const unreadyPage = await unreadyContext.newPage();
+  const lateContext = await browser.newContext();
+  const latePage = await lateContext.newPage();
   const displayContext = await browser.newContext();
   const displayPage = await displayContext.newPage();
   const takeoverContext = await browser.newContext();
@@ -74,16 +91,19 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await Promise.all([
       emulateLanHttp(hostPage),
       emulateLanHttp(guestPage),
+      emulateLanHttp(unreadyPage),
+      emulateLanHttp(latePage),
       emulateLanHttp(displayPage),
       emulateLanHttp(takeoverPage)
     ]);
     await enter(hostPage, hostName);
     await enter(guestPage, guestName);
+    await enter(unreadyPage, unreadyName);
 
     await hostPage.getByRole("button", { name: /创建房间/ }).click();
     const create = hostPage.getByRole("dialog", { name: "创建德州扑克房间" });
     await create.getByLabel("房间名称").fill(roomName);
-    await create.getByLabel("游戏模式").selectOption("chips-and-cards");
+    await selectStyledOption(create, "游戏模式", "筹码＋牌");
     await expect(create.getByLabel("房主转让时限")).toHaveValue("120");
     await create.getByLabel("房主转让时限").fill("45");
     await create.getByLabel("买入筹码").fill("2000");
@@ -110,6 +130,10 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
 
     await expect(hostPage.getByText(guestName)).toBeVisible();
     await guestPage.getByRole("button", { name: "离开房间" }).click();
+    await guestPage
+      .getByRole("alertdialog", { name: "确认退出房间" })
+      .getByRole("button", { name: "离开房间" })
+      .click();
     await expect(guestPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
     await expect(hostPage.getByText(guestName)).toHaveCount(0);
     await guestPage
@@ -121,12 +145,61 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await rejoin.getByLabel("买入筹码").fill("2000");
     await rejoin.getByRole("button", { name: "加入牌局" }).click();
     await expect(hostPage.getByText(guestName)).toBeVisible();
+    await unreadyPage
+      .locator(".room-card")
+      .filter({ hasText: roomName })
+      .getByRole("button", { name: "加入牌局" })
+      .click();
+    const unreadyJoin = unreadyPage.getByRole("dialog", {
+      name: "选择买入金额"
+    });
+    await unreadyJoin.getByLabel("买入筹码").fill("2000");
+    await unreadyJoin.getByRole("button", { name: "加入牌局" }).click();
+    await guestPage.getByRole("button", { name: "准备", exact: true }).click();
     await hostPage.getByRole("button", { name: "开始牌局" }).click();
+    const startConfirmation = hostPage.getByRole("alertdialog", {
+      name: "让未准备玩家进入观众席？"
+    });
+    await expect(startConfirmation).toBeVisible();
+    await startConfirmation
+      .getByRole("button", { name: "开始牌局" })
+      .click();
     await expect(hostPage.getByLabel("德州扑克")).toBeVisible();
     await expect(guestPage.getByLabel("德州扑克")).toBeVisible();
+    await expect(unreadyPage.getByText("正在观战")).toBeVisible();
+    await expect(unreadyPage.getByLabel("我的手牌")).toHaveCount(0);
     await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await hostPage
+      .getByRole("button", { name: `${unreadyName} 成员操作` })
+      .click();
+    await hostPage.getByRole("menuitem", { name: "移除玩家" }).click();
+    const kickConfirmation = hostPage.getByRole("alertdialog", {
+      name: "确认踢出玩家"
+    });
+    await expect(kickConfirmation).toContainText(unreadyName);
+    await kickConfirmation
+      .getByRole("button", { name: "移除玩家" })
+      .click();
+    await expect(
+      unreadyPage.getByRole("heading", { name: "聚会大厅" })
+    ).toBeVisible();
+
+    await enter(latePage, lateName);
+    await latePage
+      .locator(".room-card")
+      .filter({ hasText: roomName })
+      .getByRole("button", { name: "加入牌局" })
+      .click();
+    const lateJoin = latePage.getByRole("dialog", {
+      name: "选择买入金额"
+    });
+    await lateJoin.getByLabel("买入筹码").fill("2000");
+    await lateJoin.getByRole("button", { name: "加入牌局" }).click();
+    await expect(latePage.getByText("正在观战")).toBeVisible();
+    await expect(latePage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(latePage.getByRole("button", { name: /确认|弃牌|全押/ })).toHaveCount(0);
     await expect(hostPage.locator(".table-title strong")).toHaveText(roomName);
     await expect(hostPage.locator(".table-title")).toContainText(`当前玩家 · ${hostName}`);
     await expect(hostPage.locator(".table-controls").getByLabel("语言选择")).toBeVisible();
@@ -207,9 +280,9 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     });
     await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
     await expect(displayPage.getByText("本手结算", { exact: true })).toBeVisible();
-    await expect(hostPage.locator(".settlement-player-list article")).toHaveCount(2);
+    await expect(hostPage.locator(".settlement-player-list article")).toHaveCount(3);
     await expect(hostSettlement.getByText(/总筹码/)).toHaveCount(2);
-    await expect(displayPage.locator(".settlement-player-list article")).toHaveCount(2);
+    await expect(displayPage.locator(".settlement-player-list article")).toHaveCount(3);
     await expect(displayPage.getByText(/总筹码/)).toHaveCount(2);
 
     const hostResultRow = hostSettlement
@@ -231,12 +304,23 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await hostPage.waitForTimeout(600);
     await expect(hostSettlement).toBeVisible();
 
-    await hostPage.getByRole("button", { name: "准备", exact: true }).click();
-    await expect(hostPage.getByRole("button", { name: /已准备/ })).toBeDisabled();
+    await expect(hostPage.getByText("房主自动参赛")).toBeVisible();
+    await expect(hostPage.getByRole("button", { name: "准备", exact: true })).toHaveCount(0);
     await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
-    await guestPage.getByRole("button", { name: "准备", exact: true }).click();
+    await latePage.getByRole("button", { name: "准备", exact: true }).click();
+    await hostPage.getByRole("button", { name: "开始下一手" }).click();
+    const nextHandConfirmation = hostPage.getByRole("alertdialog", {
+      name: "让未准备玩家进入观众席？"
+    });
+    await expect(nextHandConfirmation).toBeVisible();
+    await nextHandConfirmation
+      .getByRole("button", { name: "开始下一手" })
+      .click();
     await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toHaveCount(0);
-    await expect(guestPage.getByText("第 2 手")).toBeVisible();
+    await expect(latePage.getByText("第 2 手")).toBeVisible();
+    await expect(latePage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await expect(guestPage.getByText("正在观战")).toBeVisible();
+    await expect(guestPage.getByLabel("我的手牌")).toHaveCount(0);
     await expect(displayPage.getByText("本手结算", { exact: true })).toHaveCount(0);
 
     await hostPage.reload();
@@ -249,12 +333,36 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(takeoverPage.getByText(roomName)).toBeVisible();
     await expect(hostPage.getByRole("alert")).toContainText("新设备");
 
-    await takeoverPage.getByRole("button", { name: "结束并兑换" }).click();
+    await takeoverPage.getByRole("button", { name: "离开房间" }).click();
+    const leaveConfirmation = takeoverPage.getByRole("alertdialog", {
+      name: "确认退出房间"
+    });
+    await expect(leaveConfirmation).toContainText("房主将随机转让");
+    await leaveConfirmation
+      .getByRole("button", { name: "离开房间" })
+      .click();
     await expect(takeoverPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+    const successorPage =
+      (await guestPage.getByRole("button", { name: "结束并兑换" }).count()) > 0
+        ? guestPage
+        : latePage;
+    await expect(
+      successorPage.getByRole("button", { name: "结束并兑换" })
+    ).toBeVisible();
+    await successorPage.getByRole("button", { name: "结束并兑换" }).click();
+    const closeConfirmation = successorPage.getByRole("alertdialog", {
+      name: "确认关闭房间"
+    });
+    await closeConfirmation
+      .getByRole("button", { name: "结束并兑换" })
+      .click();
     await expect(guestPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+    await expect(latePage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
   } finally {
     await Promise.all([
       guestContext.close(),
+      unreadyContext.close(),
+      lateContext.close(),
       displayContext.close(),
       takeoverContext.close()
     ]);
@@ -280,6 +388,15 @@ async function enter(page: Page, username: string, expectLobby = true): Promise<
   }
 }
 
+async function selectStyledOption(
+  scope: Page | Locator,
+  label: string,
+  option: string
+): Promise<void> {
+  await scope.getByLabel(label).click();
+  await scope.getByRole("option", { name: option, exact: true }).click();
+}
+
 async function actingPage(first: Page, second: Page): Promise<Page> {
   if (await first.getByText("轮到你行动").isVisible()) return first;
   await expect(second.getByText("轮到你行动")).toBeVisible();
@@ -292,11 +409,13 @@ function uniqueSuffix(projectName: string): string {
 }
 
 function highContrastSuitColor(suit: string | null): string {
-  const colors: Record<string, string> = {
-    hearts: "rgb(217, 47, 72)",
-    diamonds: "rgb(216, 159, 0)",
-    clubs: "rgb(20, 115, 201)",
-    spades: "rgb(17, 24, 32)"
-  };
-  return colors[suit ?? ""] ?? "";
+  const configured = (
+    productConfig.suits["high-contrast"] as Record<string, string>
+  )[suit ?? ""];
+  if (!configured) return "";
+  const channels = configured
+    .slice(1)
+    .match(/.{2}/g)
+    ?.map((channel) => Number.parseInt(channel, 16));
+  return channels ? `rgb(${channels.join(", ")})` : "";
 }

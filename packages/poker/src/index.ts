@@ -7,6 +7,7 @@ import type {
   Pot,
   RoomMode
 } from "@party/contracts";
+import { DEFAULT_DENOMINATIONS } from "@party/contracts";
 import { DomainError } from "@party/domain";
 
 const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"] as const;
@@ -48,6 +49,7 @@ export function createPokerState(options: {
   smallBlind: number;
   bigBlind: number;
   dealerPosition?: number;
+  denominations?: readonly number[];
   deck?: Card[];
   now?: number;
 }): PokerState {
@@ -90,6 +92,7 @@ export function createPokerState(options: {
     actedAccountIds: [],
     raiseLockedAccountIds: [],
     readyAccountIds: [],
+    denominations: [...(options.denominations ?? DEFAULT_DENOMINATIONS)],
     pots: [],
     currentBet: 0,
     minimumRaise: options.bigBlind,

@@ -84,7 +84,10 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
       defaultHostTransferTimeoutSeconds: z.number().int().positive(),
       poker: roomConfigSchema
         .omit({ mode: true, hostTransferTimeoutSeconds: true })
-        .extend({ suitColorPreset: z.enum(["standard", "high-contrast"]) })
+        .extend({
+          suitColorPreset: z.enum(["standard", "high-contrast"]),
+          denominations: z.array(z.number())
+        })
     })
   }),
   "room.create": z.object({
@@ -97,7 +100,11 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     ...roomPayload,
     buyIn: z.number().int().positive()
   }),
-  "room.start": z.object(roomPayload),
+  "room.start": z.object({
+    ...roomPayload,
+    pokerVersion: z.number().int().nonnegative().optional(),
+    confirmUnready: z.boolean().optional()
+  }),
   "room.pause": z.object(roomPayload),
   "room.resume": z.object(roomPayload),
   "room.transfer-host": z.object({
@@ -108,10 +115,14 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     ...roomPayload,
     amount: z.number().int().positive()
   }),
-  "room.leave": z.object(roomPayload),
+  "room.leave": z.object({
+    ...roomPayload,
+    confirmed: z.boolean().optional()
+  }),
   "room.remove": z.object({
     ...roomPayload,
-    targetAccountId: z.string().min(1).max(128)
+    targetAccountId: z.string().min(1).max(128),
+    confirmed: z.boolean().optional()
   }),
   "room.close": z.object(roomPayload),
   "poker.action": z.object({
@@ -134,7 +145,8 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
   }),
   "poker.ready": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative()
+    pokerVersion: z.number().int().nonnegative().optional(),
+    ready: z.boolean().optional()
   }),
   "season.start": z.object({
     ...accountPayload,
@@ -540,19 +552,13 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         );
       case "room.start": {
         requireHost();
-        const room = domain.startRoom(roomId, accountId);
-        room.poker = createPokerState({
-          players: room.seats.map((seat) => ({
-            accountId: seat.accountId,
-            position: seat.position,
-            stack: seat.tableChips
-          })),
-          mode: room.config.mode,
-          smallBlind: room.config.smallBlind,
-          bigBlind: room.config.bigBlind
+        return startSelectedHand(domain, roomId, accountId, {
+          pokerVersion:
+            payload.pokerVersion === undefined
+              ? undefined
+              : Number(payload.pokerVersion),
+          confirmUnready: payload.confirmUnready === true
         });
-        recordInitialBets(domain, room);
-        return domain.projectRoom(room.id, { accountId });
       }
       case "room.pause":
         requireHost();
@@ -573,8 +579,28 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         });
       case "room.leave": {
         assertLease();
-        const remaining = domain.leaveRoom(roomId, accountId);
-        if (remaining) startNextHandIfReady(domain, remaining.id);
+        const room = requireRoom();
+        const leavingHost = room.hostAccountId === accountId;
+        if (leavingHost) {
+          const candidates = room.seats.filter(
+            (seat) => seat.accountId !== accountId && seat.connected
+          );
+          if (candidates.length === 0) {
+            domain.closeRoom(roomId);
+            return { left: true, closed: true };
+          }
+          if (
+            room.poker &&
+            !["complete", "waiting", "void"].includes(room.poker.phase) &&
+            room.poker.players.some((player) => player.accountId === accountId)
+          ) {
+            forceFold(room.poker, accountId);
+          }
+          const nextHost = candidates[randomInt(candidates.length)]!;
+          domain.leaveRoom(roomId, accountId, true, nextHost.accountId);
+          return { left: true, hostAccountId: nextHost.accountId };
+        }
+        domain.leaveRoom(roomId, accountId);
         return { left: true };
       }
       case "room.remove": {
@@ -590,9 +616,6 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         const handActive = Boolean(
           room.poker && !["complete", "waiting", "void"].includes(room.poker.phase)
         );
-        if (handActive && targetSeat.connected) {
-          throw new DomainError("PLAYER_STILL_CONNECTED");
-        }
         if (
           handActive &&
           room.poker?.players.some((player) => player.accountId === targetAccountId)
@@ -601,7 +624,6 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         }
         const remaining = domain.leaveRoom(roomId, targetAccountId, true);
         if (!remaining) return { closed: true };
-        startNextHandIfReady(domain, remaining.id);
         return domain.projectRoom(remaining.id, { accountId });
       }
       case "room.close":
@@ -762,25 +784,14 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       case "poker.ready": {
         assertLease();
         const room = requireRoom();
-        if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
-        if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
-        if (room.poker.phase !== "complete") throw new DomainError("HAND_IN_PROGRESS");
-        if (room.poker.version !== Number(payload.pokerVersion)) {
-          throw new DomainError("STALE_VERSION");
-        }
-        const seat = room.seats.find((candidate) => candidate.accountId === accountId);
-        const player = room.poker.players.find(
-          (candidate) => candidate.accountId === accountId
+        domain.setReady(
+          room.id,
+          accountId,
+          payload.ready !== false,
+          payload.pokerVersion === undefined
+            ? undefined
+            : Number(payload.pokerVersion)
         );
-        if (!seat || !player) throw new DomainError("PLAYER_NOT_IN_ROOM");
-        if (!seat.connected) throw new DomainError("PLAYER_OFFLINE");
-        if (player.stack <= 0) throw new DomainError("PLAYER_NEEDS_TOP_UP");
-        if (!room.poker.readyAccountIds.includes(accountId)) {
-          room.poker.readyAccountIds.push(accountId);
-          room.poker.version += 1;
-          room.version += 1;
-        }
-        startNextHandIfReady(domain, room.id, accountId);
         return domain.projectRoom(room.id, { accountId });
       }
       case "system.connection.open":
@@ -816,91 +827,87 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
   });
 }
 
-function startNextHand(domain: PlatformDomain, roomId: string, viewerAccountId?: string) {
-  const room = domain.state.rooms[roomId];
-  if (!room?.poker) throw new DomainError("POKER_NOT_STARTED");
-  if (room.poker.phase !== "complete") throw new DomainError("HAND_IN_PROGRESS");
-  const previous = room.poker;
-  const seatStacks = room.seats.map((seat) => {
-    const oldPlayer = previous.players.find((player) => player.accountId === seat.accountId);
-    return {
-      seat,
-      stack: oldPlayer?.stack ?? seat.tableChips
-    };
-  });
-  const players = seatStacks
-    .filter((entry) => entry.stack > 0)
-    .map(({ seat, stack }) => ({
-      accountId: seat.accountId,
-      position: seat.position,
-      stack
-    }));
-  if (players.length < 2) {
-    if (viewerAccountId) throw new DomainError("PLAYER_NEEDS_TOP_UP");
-    for (const { seat, stack } of seatStacks) {
-      seat.tableChips = stack;
-      seat.currentBet = 0;
-      seat.folded = false;
-      seat.allIn = false;
-    }
-    delete previous.advanceDeadline;
-    room.version += 1;
-    return domain.projectRoom(room.id, { display: true });
+function startSelectedHand(
+  domain: PlatformDomain,
+  roomId: string,
+  hostAccountId: string,
+  options: {
+    pokerVersion?: number;
+    confirmUnready: boolean;
   }
+) {
+  const room = domain.state.rooms[roomId];
+  if (!room) throw new DomainError("ROOM_NOT_FOUND");
+  if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+  const waiting = room.status === "waiting";
+  const complete = room.poker?.phase === "complete";
+  if (!waiting && !complete) throw new DomainError("HAND_IN_PROGRESS");
+  if (complete && room.status !== "in_progress") {
+    throw new DomainError("ROOM_PAUSED");
+  }
+  if (complete && room.poker?.version !== options.pokerVersion) {
+    throw new DomainError("STALE_VERSION");
+  }
+  const previous = room.poker;
+  const previousPlayers = new Map(
+    previous?.players.map((player) => [player.accountId, player]) ?? []
+  );
+  const seatStacks = room.seats.map((seat) => ({
+    seat,
+    stack: previousPlayers.get(seat.accountId)?.stack ?? seat.tableChips
+  }));
+  const hostEntry = seatStacks.find(
+    ({ seat }) => seat.accountId === hostAccountId
+  );
+  if (!hostEntry) throw new DomainError("PLAYER_NOT_IN_ROOM");
+  if (!hostEntry.seat.connected) throw new DomainError("PLAYER_OFFLINE");
+  if (hostEntry.stack <= 0) throw new DomainError("HOST_NEEDS_TOP_UP");
+
+  const ready = new Set(domain.readyAccountIdsForRoom(room));
+  const selected = seatStacks.filter(
+    ({ seat, stack }) =>
+      seat.accountId === hostAccountId ||
+      (ready.has(seat.accountId) && seat.connected && stack > 0)
+  );
+  if (selected.length < 2) throw new DomainError("NOT_ENOUGH_READY_PLAYERS");
+  const selectedIds = new Set(selected.map(({ seat }) => seat.accountId));
+  const unreadyMembers = room.seats.filter(
+    (seat) => seat.accountId !== hostAccountId && !selectedIds.has(seat.accountId)
+  );
+  if (unreadyMembers.length > 0 && !options.confirmUnready) {
+    throw new DomainError("UNREADY_PLAYERS_REQUIRE_CONFIRMATION");
+  }
+
   for (const { seat, stack } of seatStacks) {
     seat.tableChips = stack;
     seat.currentBet = 0;
     seat.folded = false;
     seat.allIn = false;
   }
+  const players = selected.map(({ seat, stack }) => ({
+    accountId: seat.accountId,
+    position: seat.position,
+    stack
+  }));
   const positions = players.map((player) => player.position).sort((a, b) => a - b);
-  const dealerPosition =
-    positions.find((position) => position > previous.dealerPosition) ?? positions[0]!;
+  const dealerPosition = previous
+    ? positions.find((position) => position > previous.dealerPosition) ?? positions[0]!
+    : undefined;
+
+  if (waiting) domain.startRoom(room.id, hostAccountId);
+  room.waitingReadyAccountIds = [];
   room.poker = createPokerState({
     players,
     mode: room.config.mode,
     smallBlind: room.config.smallBlind,
     bigBlind: room.config.bigBlind,
-    dealerPosition
+    dealerPosition,
+    denominations: domain.state.settings.poker.denominations
   });
-  room.poker.handNumber = previous.handNumber + 1;
+  if (previous) room.poker.handNumber = previous.handNumber + 1;
   recordInitialBets(domain, room);
   room.version += 1;
-  return domain.projectRoom(room.id, {
-    accountId: viewerAccountId,
-    display: !viewerAccountId
-  });
-}
-
-function startNextHandIfReady(
-  domain: PlatformDomain,
-  roomId: string,
-  viewerAccountId?: string
-): boolean {
-  const room = domain.state.rooms[roomId];
-  if (
-    !room?.poker ||
-    room.status !== "in_progress" ||
-    room.poker.phase !== "complete" ||
-    room.seats.length < 2
-  ) {
-    return false;
-  }
-  const players = new Map(
-    room.poker.players.map((player) => [player.accountId, player])
-  );
-  const ready = new Set(room.poker.readyAccountIds);
-  if (
-    !room.seats.every((seat) => (
-      seat.connected &&
-      (players.get(seat.accountId)?.stack ?? 0) > 0 &&
-      ready.has(seat.accountId)
-    ))
-  ) {
-    return false;
-  }
-  startNextHand(domain, roomId, viewerAccountId);
-  return true;
+  return domain.projectRoom(room.id, { accountId: hostAccountId });
 }
 
 function leaseIsCurrent(

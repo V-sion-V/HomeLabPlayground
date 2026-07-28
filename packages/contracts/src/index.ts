@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./product-config";
+
 export const languages = ["zh-CN", "en"] as const;
 export type Language = (typeof languages)[number];
 export type RoomMode = "chips-only" | "chips-and-cards";
@@ -107,6 +109,7 @@ export interface PokerState {
   actedAccountIds: string[];
   raiseLockedAccountIds: string[];
   readyAccountIds: string[];
+  denominations: number[];
   pots: Pot[];
   currentBet: number;
   minimumRaise: number;
@@ -143,6 +146,7 @@ export interface Room {
   hostAccountId: string;
   config: RoomConfig;
   seats: Seat[];
+  waitingReadyAccountIds: string[];
   version: number;
   createdAt: number;
   hostDisconnectDeadline?: number;
@@ -198,6 +202,7 @@ export interface GlobalSettings {
   defaultHostTransferTimeoutSeconds: number;
   poker: Omit<RoomConfig, "mode" | "hostTransferTimeoutSeconds"> & {
     suitColorPreset: SuitColorPreset;
+    denominations: number[];
   };
 }
 
@@ -250,6 +255,7 @@ export interface PublicSeatProjection {
   currentBet: number;
   folded: boolean;
   allIn: boolean;
+  role: "member" | "participant" | "spectator";
 }
 
 export interface LobbyRoomProjection {
@@ -290,6 +296,8 @@ export interface RoomProjection {
   version: number;
   createdAt: number;
   seats: PublicSeatProjection[];
+  viewerRole: "member" | "participant" | "spectator" | "display";
+  effectiveDenominations: number[];
   potTotal: number;
   phase?: HandPhase;
   actingAccountId?: string | null;

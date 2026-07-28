@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_DENOMINATIONS, fallbackAvatar } from "@party/contracts";
 import { PlatformDomain, initialSnapshot } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
 import { createPokerState } from "@party/poker";
@@ -172,6 +173,93 @@ describe("platform domain", () => {
     ]);
     domain.validateInvariants();
   });
+
+  it("validates configured avatars and denominations while preserving hand snapshots", () => {
+    const domain = new PlatformDomain(initialSnapshot());
+    expect(() => domain.enterAccount("Invalid", fallbackAvatar)).toThrowError(
+      "INVALID_AVATAR"
+    );
+    const alice = domain.enterAccount("Alice", "🦊");
+    const bob = domain.enterAccount("Bob", "🐼");
+    expect(() => domain.updateProfile(alice.id, "Alice", "🙂")).toThrowError(
+      "INVALID_AVATAR"
+    );
+    const room = domain.createRoom(alice.id, "Snapshots", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind,
+      denominations: DEFAULT_DENOMINATIONS
+    });
+
+    domain.updateSettings({
+      ...domain.state.settings,
+      poker: {
+        ...domain.state.settings.poker,
+        denominations: [100, 1, 5]
+      }
+    });
+    expect(domain.state.settings.poker.denominations).toEqual([1, 5, 100]);
+    expect(domain.projectRoom(room.id, { display: true }).effectiveDenominations).toEqual(
+      DEFAULT_DENOMINATIONS
+    );
+    room.poker.phase = "complete";
+    expect(domain.projectRoom(room.id, { display: true }).effectiveDenominations).toEqual([
+      1,
+      5,
+      100
+    ]);
+    expect(() =>
+      domain.updateSettings({
+        ...domain.state.settings,
+        poker: {
+          ...domain.state.settings.poker,
+          denominations: [5, 5]
+        }
+      })
+    ).toThrowError("INVALID_DENOMINATIONS");
+  });
+
+  it("keeps active-hand joiners as spectators without private cards", () => {
+    const domain = new PlatformDomain(initialSnapshot());
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const cara = domain.enterAccount("Cara");
+    const room = domain.createRoom(alice.id, "Watch", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+
+    domain.joinRoom(room.id, cara.id, 2_000);
+    const projection = domain.projectRoom(room.id, { accountId: cara.id });
+    expect(projection.viewerRole).toBe("spectator");
+    expect(projection.seats.find((seat) => seat.accountId === cara.id)?.role).toBe(
+      "spectator"
+    );
+    expect(projection.ownHoleCards).toBeUndefined();
+    expect(room.poker.players.some((player) => player.accountId === cara.id)).toBe(false);
+    domain.leaveRoom(room.id, cara.id);
+    expect(domain.state.seasonAssets[cara.id]?.score).toBe(10_000);
+    domain.validateInvariants();
+  });
 });
 
 describe("SQLite command boundary", () => {
@@ -247,11 +335,46 @@ describe("SQLite command boundary", () => {
     room.poker.readyAccountIds = [alice.id];
     room.poker.advanceDeadline = 9_000;
     domain.recordHandResult(room.id, 1, "chips-only", [{ accountId: alice.id, amount: 50 }]);
+    state.accounts[alice.id]!.avatar = "legacy-avatar";
+    state.historicalSeasons.push({
+      season: {
+        id: "historical-season",
+        name: "Historical",
+        baseScore: 10_000,
+        status: "historical",
+        startedAt: 0,
+        endedAt: 1
+      },
+      entries: [
+        {
+          accountId: alice.id,
+          username: "Alice",
+          avatar: "legacy-avatar",
+          score: 10_000,
+          rank: 1
+        }
+      ]
+    });
     delete (
       state.settings.poker as {
         suitColorPreset?: string;
       }
     ).suitColorPreset;
+    delete (
+      state.settings.poker as {
+        denominations?: number[];
+      }
+    ).denominations;
+    delete (
+      room.poker as {
+        denominations?: number[];
+      }
+    ).denominations;
+    delete (
+      room as {
+        waitingReadyAccountIds?: string[];
+      }
+    ).waitingReadyAccountIds;
     delete (room as unknown as { createdAt?: number }).createdAt;
     delete (
       state.handResults[0] as unknown as {
@@ -281,8 +404,17 @@ describe("SQLite command boundary", () => {
     expect(recovered.rooms[room.id]?.seats[0]?.buyIn).toBe(2_000);
     expect(recovered.rooms[room.id]?.seats[0]?.frozenLeaderboardScore).toBe(10_000);
     expect(recovered.settings.poker.suitColorPreset).toBe("standard");
+    expect(recovered.settings.poker.denominations).toEqual(DEFAULT_DENOMINATIONS);
+    expect(recovered.rooms[room.id]?.poker?.denominations).toEqual(
+      DEFAULT_DENOMINATIONS
+    );
+    expect(recovered.rooms[room.id]?.waitingReadyAccountIds).toEqual([]);
     expect(recovered.rooms[room.id]?.poker?.readyAccountIds).toEqual([]);
     expect(recovered.rooms[room.id]?.poker?.advanceDeadline).toBeUndefined();
+    expect(recovered.accounts[alice.id]?.avatar).toBe(fallbackAvatar);
+    expect(recovered.historicalSeasons[0]?.entries[0]?.avatar).toBe(
+      "legacy-avatar"
+    );
 
     const recoveredAgain = store.recoverAfterRestart();
     expect(recoveredAgain.version).toBe(1);

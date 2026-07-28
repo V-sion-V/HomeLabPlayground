@@ -76,6 +76,21 @@ describe("server", () => {
     expect(join.statusCode).toBe(200);
     version = join.json().version;
 
+    const ready = await sendCommand(app, {
+      commandId: "command-ready-bob",
+      connectionId: bob.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.ready",
+      payload: {
+        accountId: bob.account.id,
+        roomId,
+        ready: true
+      }
+    });
+    expect(ready.statusCode).toBe(200);
+    version = ready.json().version;
+
     const start = await sendCommand(app, {
       commandId: "command-start-room",
       connectionId: alice.connectionId,
@@ -96,22 +111,22 @@ describe("server", () => {
       payload: { accountId: alice.account.id, roomId }
     });
     expect(duplicateStart.statusCode).toBe(409);
-    expect(duplicateStart.json().code).toBe("ROOM_ALREADY_STARTED");
+    expect(duplicateStart.json().code).toBe("HAND_IN_PROGRESS");
 
-    const removeConnected = await sendCommand(app, {
-      commandId: "command-remove-connected",
-      connectionId: alice.connectionId,
+    const unauthorizedRemove = await sendCommand(app, {
+      commandId: "command-unauthorized-remove",
+      connectionId: bob.connectionId,
       aggregateId: roomId,
       expectedVersion: version,
       type: "room.remove",
       payload: {
-        accountId: alice.account.id,
+        accountId: bob.account.id,
         roomId,
-        targetAccountId: bob.account.id
+        targetAccountId: alice.account.id
       }
     });
-    expect(removeConnected.statusCode).toBe(409);
-    expect(removeConnected.json().code).toBe("PLAYER_STILL_CONNECTED");
+    expect(unauthorizedRemove.statusCode).toBe(409);
+    expect(unauthorizedRemove.json().code).toBe("HOST_ONLY");
 
     const privateProjection = await app.inject({
       method: "GET",
@@ -220,7 +235,7 @@ describe("server", () => {
     reopened.close();
   }, 15_000);
 
-  it("keeps the settlement open until every seated player is funded, connected, and ready", () => {
+  it("keeps settlement open after readiness until the host explicitly starts selected players", () => {
     const databasePath = temporaryDatabase();
     const store = new PlatformStore(databasePath);
     const state = initialSnapshot(1_000);
@@ -258,26 +273,11 @@ describe("server", () => {
     }
     store.save(state);
 
-    const aliceReady = dispatch(store, {
-      commandId: "alice-ready",
-      connectionId: aliceConnection,
-      aggregateId: room.id,
-      expectedVersion: 0,
-      type: "poker.ready",
-      payload: {
-        accountId: alice.id,
-        roomId: room.id,
-        pokerVersion: 0
-      }
-    });
-    expect(aliceReady.status).toBe("accepted");
-    expect(store.load().rooms[room.id]?.poker?.phase).toBe("complete");
-
     const topUp = dispatch(store, {
       commandId: "top-up-funded-player",
       connectionId: bobConnection,
       aggregateId: room.id,
-      expectedVersion: 1,
+      expectedVersion: 0,
       type: "room.top-up",
       payload: { accountId: bob.id, roomId: room.id, amount: 1_000 }
     });
@@ -287,12 +287,13 @@ describe("server", () => {
       commandId: "bob-ready",
       connectionId: bobConnection,
       aggregateId: room.id,
-      expectedVersion: 2,
+      expectedVersion: 1,
       type: "poker.ready",
       payload: {
         accountId: bob.id,
         roomId: room.id,
-        pokerVersion: 1
+        pokerVersion: 0,
+        ready: true
       }
     });
     expect(bobReady.status).toBe("accepted");
@@ -302,7 +303,7 @@ describe("server", () => {
       commandId: "top-up-zero-stack-player",
       connectionId: caraConnection,
       aggregateId: room.id,
-      expectedVersion: 3,
+      expectedVersion: 2,
       type: "room.top-up",
       payload: { accountId: cara.id, roomId: room.id, amount: 1_000 }
     });
@@ -312,15 +313,31 @@ describe("server", () => {
       commandId: "cara-ready",
       connectionId: caraConnection,
       aggregateId: room.id,
-      expectedVersion: 4,
+      expectedVersion: 3,
       type: "poker.ready",
       payload: {
         accountId: cara.id,
         roomId: room.id,
-        pokerVersion: 2
+        pokerVersion: 1,
+        ready: true
       }
     });
     expect(caraReady.status).toBe("accepted");
+    expect(store.load().rooms[room.id]?.poker?.phase).toBe("complete");
+
+    const started = dispatch(store, {
+      commandId: "host-starts-next-hand",
+      connectionId: aliceConnection,
+      aggregateId: room.id,
+      expectedVersion: 4,
+      type: "room.start",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id,
+        pokerVersion: 2
+      }
+    });
+    expect(started.status).toBe("accepted");
     const persistedRoom = store.load().rooms[room.id]!;
     expect(persistedRoom.seats).toHaveLength(3);
     expect(persistedRoom.poker?.players.map((player) => player.accountId)).toEqual([
@@ -332,6 +349,228 @@ describe("server", () => {
     expect(persistedRoom.poker?.dealerPosition).toBe(1);
     expect(persistedRoom.poker?.readyAccountIds).toEqual([]);
     new PlatformDomain(store.load()).validateInvariants();
+    store.close();
+  });
+
+  it("requires waiting-room readiness and confirmation, then keeps active joiners spectating", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const cara = domain.enterAccount("Cara");
+    const dave = domain.enterAccount("Dave");
+    const aliceConnection = domain.acquireLease(alice.id);
+    const bobConnection = domain.acquireLease(bob.id);
+    domain.acquireLease(cara.id);
+    const daveConnection = domain.acquireLease(dave.id);
+    const room = domain.createRoom(alice.id, "Ready", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.joinRoom(room.id, cara.id, 2_000);
+    store.save(state);
+
+    const ready = dispatch(store, {
+      commandId: "waiting-ready",
+      connectionId: bobConnection,
+      aggregateId: room.id,
+      expectedVersion: 0,
+      type: "poker.ready",
+      payload: {
+        accountId: bob.id,
+        roomId: room.id,
+        ready: true
+      }
+    });
+    expect(ready.status).toBe("accepted");
+    expect((ready.data as { readyAccountIds: string[] }).readyAccountIds).toEqual([
+      bob.id
+    ]);
+
+    const cancelReady = dispatch(store, {
+      commandId: "waiting-cancel-ready",
+      connectionId: bobConnection,
+      aggregateId: room.id,
+      expectedVersion: 1,
+      type: "poker.ready",
+      payload: {
+        accountId: bob.id,
+        roomId: room.id,
+        ready: false
+      }
+    });
+    expect(cancelReady.status).toBe("accepted");
+    const readyAgain = dispatch(store, {
+      commandId: "waiting-ready-again",
+      connectionId: bobConnection,
+      aggregateId: room.id,
+      expectedVersion: 2,
+      type: "poker.ready",
+      payload: {
+        accountId: bob.id,
+        roomId: room.id,
+        ready: true
+      }
+    });
+    expect(readyAgain.status).toBe("accepted");
+
+    const needsConfirmation = dispatch(store, {
+      commandId: "start-with-unready-member",
+      connectionId: aliceConnection,
+      aggregateId: room.id,
+      expectedVersion: 3,
+      type: "room.start",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id
+      }
+    });
+    expect(needsConfirmation.code).toBe(
+      "UNREADY_PLAYERS_REQUIRE_CONFIRMATION"
+    );
+    expect(store.load().rooms[room.id]?.status).toBe("waiting");
+
+    const started = dispatch(store, {
+      commandId: "confirm-start-with-unready-member",
+      connectionId: aliceConnection,
+      aggregateId: room.id,
+      expectedVersion: 3,
+      type: "room.start",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id,
+        confirmUnready: true
+      }
+    });
+    expect(started.status).toBe("accepted");
+    expect(
+      store.load().rooms[room.id]?.poker?.players.map((player) => player.accountId)
+    ).toEqual([alice.id, bob.id]);
+
+    const joined = dispatch(store, {
+      commandId: "active-room-join",
+      connectionId: daveConnection,
+      aggregateId: room.id,
+      expectedVersion: 4,
+      type: "room.join",
+      payload: {
+        accountId: dave.id,
+        roomId: room.id,
+        buyIn: 2_000
+      }
+    });
+    expect(joined.status).toBe("accepted");
+    expect(joined.data).toMatchObject({
+      viewerRole: "spectator"
+    });
+    expect((joined.data as { ownHoleCards?: Card[] }).ownHoleCards).toBeUndefined();
+    const persisted = store.load();
+    expect(
+      persisted.rooms[room.id]?.poker?.players.some(
+        (player) => player.accountId === dave.id
+      )
+    ).toBe(false);
+    expect(persisted.rooms[room.id]?.seats).toHaveLength(4);
+    new PlatformDomain(persisted).validateInvariants();
+    store.close();
+  });
+
+  it("atomically removes an active host and transfers ownership to the online member", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const aliceConnection = domain.acquireLease(alice.id);
+    domain.acquireLease(bob.id);
+    const room = domain.createRoom(alice.id, "Host exit", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    store.save(state);
+
+    const left = dispatch(store, {
+      commandId: "active-host-leaves",
+      connectionId: aliceConnection,
+      aggregateId: room.id,
+      expectedVersion: 0,
+      type: "room.leave",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id,
+        confirmed: true
+      }
+    });
+    expect(left.status).toBe("accepted");
+    expect(left.data).toMatchObject({
+      left: true,
+      hostAccountId: bob.id
+    });
+    const persisted = store.load();
+    expect(persisted.rooms[room.id]?.hostAccountId).toBe(bob.id);
+    expect(
+      persisted.rooms[room.id]?.seats.some((seat) => seat.accountId === alice.id)
+    ).toBe(false);
+    expect(persisted.rooms[room.id]?.poker?.phase).toBe("showdown");
+    expect(persisted.seasonAssets[alice.id]?.score).toBe(9_950);
+    new PlatformDomain(persisted).validateInvariants();
+    store.close();
+  });
+
+  it("closes and refunds the room when a leaving host has no online successor", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const aliceConnection = domain.acquireLease(alice.id);
+    domain.acquireLease(bob.id);
+    const room = domain.createRoom(alice.id, "Close on exit", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    domain.disconnect(room.id, bob.id);
+    store.save(state);
+
+    const left = dispatch(store, {
+      commandId: "host-leaves-without-successor",
+      connectionId: aliceConnection,
+      aggregateId: room.id,
+      expectedVersion: 0,
+      type: "room.leave",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id,
+        confirmed: true
+      }
+    });
+    expect(left.status).toBe("accepted");
+    expect(left.data).toMatchObject({ left: true, closed: true });
+    const persisted = store.load();
+    expect(persisted.rooms[room.id]).toBeUndefined();
+    expect(persisted.seasonAssets[alice.id]?.score).toBe(10_000);
+    expect(persisted.seasonAssets[bob.id]?.score).toBe(10_000);
+    new PlatformDomain(persisted).validateInvariants();
     store.close();
   });
 
@@ -445,7 +684,7 @@ describe("server", () => {
     store.close();
   });
 
-  it("lets the host remove a disconnected acting player without stalling the hand", () => {
+  it("lets the host remove an online acting player without stalling the hand", () => {
     const store = new PlatformStore(temporaryDatabase());
     const state = initialSnapshot(1_000);
     const domain = new PlatformDomain(state, () => 1_000);
@@ -472,11 +711,10 @@ describe("server", () => {
       bigBlind: room.config.bigBlind
     });
     expect(room.poker.actingAccountId).toBe(alice.id);
-    domain.disconnect(room.id, alice.id);
     store.save(state);
 
     const removed = dispatch(store, {
-      commandId: "remove-disconnected-actor",
+      commandId: "remove-online-actor",
       connectionId: bobConnection,
       aggregateId: room.id,
       expectedVersion: 0,

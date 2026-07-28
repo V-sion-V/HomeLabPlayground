@@ -13,7 +13,13 @@ import type {
   RoomProjection,
   SeasonAsset
 } from "@party/contracts";
-import { assertNoPrivateCards } from "@party/contracts";
+import {
+  assertNoPrivateCards,
+  DEFAULT_DENOMINATIONS,
+  fallbackAvatar,
+  isSelectableAvatar,
+  selectableAvatars
+} from "@party/contracts";
 
 export class DomainError extends Error {
   constructor(public readonly code: string, message = code) {
@@ -27,6 +33,19 @@ export function normalizeUsername(input: string): string {
     throw new DomainError("INVALID_USERNAME");
   }
   return normalized;
+}
+
+export function normalizeDenominations(input: readonly number[]): number[] {
+  if (
+    input.length < 1 ||
+    input.length > 16 ||
+    input.some((value) => !Number.isSafeInteger(value) || value <= 0) ||
+    new Set(input).size !== input.length ||
+    !input.includes(1)
+  ) {
+    throw new DomainError("INVALID_DENOMINATIONS");
+  }
+  return [...input].sort((left, right) => left - right);
 }
 
 export function initialSnapshot(now = Date.now()): PlatformSnapshot {
@@ -56,7 +75,8 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
         bigBlind: 100,
         minBuyIn: 2_000,
         maxBuyIn: 20_000,
-        suitColorPreset: "standard"
+        suitColorPreset: "standard",
+        denominations: [...DEFAULT_DENOMINATIONS]
       }
     }
   };
@@ -76,6 +96,29 @@ export class PlatformDomain {
     if (!legacyPokerSettings.suitColorPreset) {
       legacyPokerSettings.suitColorPreset = "standard";
       this.normalizedPersistedState = true;
+    }
+    if (!Array.isArray(legacyPokerSettings.denominations)) {
+      legacyPokerSettings.denominations = [...DEFAULT_DENOMINATIONS];
+      this.normalizedPersistedState = true;
+    } else {
+      const normalizedDenominations = normalizeDenominations(
+        legacyPokerSettings.denominations
+      );
+      if (
+        normalizedDenominations.some(
+          (value, index) => value !== legacyPokerSettings.denominations[index]
+        )
+      ) {
+        legacyPokerSettings.denominations = normalizedDenominations;
+        this.normalizedPersistedState = true;
+      }
+    }
+    for (const account of Object.values(state.accounts)) {
+      if (!isSelectableAvatar(account.avatar) && account.avatar !== fallbackAvatar) {
+        account.avatar = fallbackAvatar;
+        account.updatedAt = this.now();
+        this.normalizedPersistedState = true;
+      }
     }
     if (!Array.isArray(state.handResults)) {
       state.handResults = [];
@@ -121,6 +164,13 @@ export class PlatformDomain {
           this.normalizedPersistedState = true;
         }
       }
+      const legacyRoom = room as typeof room & {
+        waitingReadyAccountIds?: string[];
+      };
+      if (!Array.isArray(legacyRoom.waitingReadyAccountIds)) {
+        legacyRoom.waitingReadyAccountIds = [];
+        this.normalizedPersistedState = true;
+      }
       if (room.poker && !Array.isArray(room.poker.raiseLockedAccountIds)) {
         room.poker.raiseLockedAccountIds = [];
         this.normalizedPersistedState = true;
@@ -128,6 +178,22 @@ export class PlatformDomain {
       if (room.poker && !Array.isArray(room.poker.readyAccountIds)) {
         room.poker.readyAccountIds = [];
         this.normalizedPersistedState = true;
+      }
+      if (room.poker && !Array.isArray(room.poker.denominations)) {
+        room.poker.denominations = [...DEFAULT_DENOMINATIONS];
+        this.normalizedPersistedState = true;
+      } else if (room.poker) {
+        const normalizedDenominations = normalizeDenominations(
+          room.poker.denominations
+        );
+        if (
+          normalizedDenominations.some(
+            (value, index) => value !== room.poker?.denominations[index]
+          )
+        ) {
+          room.poker.denominations = normalizedDenominations;
+          this.normalizedPersistedState = true;
+        }
       }
       if (room.poker?.phase === "complete" && room.poker.advanceDeadline !== undefined) {
         delete room.poker.advanceDeadline;
@@ -143,12 +209,13 @@ export class PlatformDomain {
     return season;
   }
 
-  enterAccount(username: string, avatar = "🙂"): Account {
+  enterAccount(username: string, avatar = selectableAvatars[0]!): Account {
     const normalizedUsername = normalizeUsername(username);
     const existing = Object.values(this.state.accounts).find(
       (account) => account.normalizedUsername === normalizedUsername
     );
     if (existing) return existing;
+    if (!isSelectableAvatar(avatar)) throw new DomainError("INVALID_AVATAR");
     const account: Account = {
       id: this.id(),
       username: username.normalize("NFKC").trim(),
@@ -175,6 +242,7 @@ export class PlatformDomain {
         candidate.id !== accountId && candidate.normalizedUsername === normalizedUsername
     );
     if (duplicate) throw new DomainError("USERNAME_TAKEN");
+    if (!isSelectableAvatar(avatar)) throw new DomainError("INVALID_AVATAR");
     account.username = username.normalize("NFKC").trim();
     account.normalizedUsername = normalizedUsername;
     account.avatar = avatar;
@@ -216,7 +284,13 @@ export class PlatformDomain {
       hostTransferTimeoutSeconds: settings.defaultHostTransferTimeoutSeconds,
       ...settings.poker
     });
-    this.state.settings = structuredClone(settings);
+    this.state.settings = structuredClone({
+      ...settings,
+      poker: {
+        ...settings.poker,
+        denominations: normalizeDenominations(settings.poker.denominations)
+      }
+    });
     return this.state.settings;
   }
 
@@ -263,6 +337,7 @@ export class PlatformDomain {
       hostAccountId: accountId,
       config: structuredClone(config),
       seats: [],
+      waitingReadyAccountIds: [],
       version: 0,
       createdAt: this.now()
     };
@@ -272,7 +347,9 @@ export class PlatformDomain {
 
   joinRoom(roomId: string, accountId: string, buyIn: number): Room {
     const room = this.requireRoom(roomId);
-    if (room.status !== "waiting") throw new DomainError("ROOM_ALREADY_STARTED");
+    if (!["waiting", "in_progress", "paused"].includes(room.status)) {
+      throw new DomainError("ROOM_NOT_JOINABLE");
+    }
     if (room.seats.length >= 10) throw new DomainError("ROOM_FULL");
     if (this.roomForAccount(accountId)) throw new DomainError("ALREADY_IN_ROOM");
     if (!Number.isInteger(buyIn) || buyIn < room.config.minBuyIn || buyIn > room.config.maxBuyIn) {
@@ -311,6 +388,71 @@ export class PlatformDomain {
     room.status = "in_progress";
     room.version += 1;
     return room;
+  }
+
+  setReady(
+    roomId: string,
+    accountId: string,
+    ready: boolean,
+    expectedPokerVersion?: number
+  ): Room {
+    const room = this.requireRoom(roomId);
+    const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+    if (!seat) throw new DomainError("PLAYER_NOT_IN_ROOM");
+    if (room.hostAccountId === accountId) {
+      throw new DomainError("HOST_READY_IMPLICIT");
+    }
+    const waiting = room.status === "waiting";
+    const complete = room.poker?.phase === "complete";
+    if (!waiting && !complete) throw new DomainError("HAND_IN_PROGRESS");
+    if (complete && room.poker?.version !== expectedPokerVersion) {
+      throw new DomainError("STALE_VERSION");
+    }
+    if (!seat.connected) throw new DomainError("PLAYER_OFFLINE");
+    if (ready && this.roomMemberStack(room, accountId) <= 0) {
+      throw new DomainError("PLAYER_NEEDS_TOP_UP");
+    }
+    const current = waiting
+      ? room.waitingReadyAccountIds
+      : (room.poker?.readyAccountIds ?? []);
+    const contains = current.includes(accountId);
+    if (contains === ready) return room;
+    const next = ready
+      ? [...current, accountId]
+      : current.filter((candidate) => candidate !== accountId);
+    if (waiting) {
+      room.waitingReadyAccountIds = next;
+    } else if (room.poker) {
+      room.poker.readyAccountIds = next;
+      room.poker.version += 1;
+    }
+    room.version += 1;
+    return room;
+  }
+
+  readyAccountIdsForRoom(room: Room): string[] {
+    if (room.status === "waiting") return [...room.waitingReadyAccountIds];
+    if (room.poker?.phase === "complete") return [...room.poker.readyAccountIds];
+    return [];
+  }
+
+  roomMemberStack(room: Room, accountId: string): number {
+    return (
+      room.poker?.players.find((player) => player.accountId === accountId)?.stack ??
+      room.seats.find((seat) => seat.accountId === accountId)?.tableChips ??
+      0
+    );
+  }
+
+  effectiveDenominations(room: Room): number[] {
+    const handActive = Boolean(
+      room.poker && !["waiting", "complete", "void"].includes(room.poker.phase)
+    );
+    return [
+      ...(handActive && room.poker
+        ? room.poker.denominations
+        : this.state.settings.poker.denominations)
+    ];
   }
 
   pauseRoom(roomId: string, hostAccountId: string): Room {
@@ -378,17 +520,30 @@ export class PlatformDomain {
     return room;
   }
 
-  leaveRoom(roomId: string, accountId: string, forced = false): Room | undefined {
+  leaveRoom(
+    roomId: string,
+    accountId: string,
+    forced = false,
+    nextHostAccountId?: string
+  ): Room | undefined {
     const room = this.requireRoom(roomId);
     const seatIndex = room.seats.findIndex((candidate) => candidate.accountId === accountId);
     if (seatIndex < 0) throw new DomainError("PLAYER_NOT_IN_ROOM");
-    if (room.hostAccountId === accountId && room.seats.length > 1 && !forced) {
+    const leavingHost = room.hostAccountId === accountId;
+    if (leavingHost && room.seats.length > 1 && !forced) {
       throw new DomainError("TRANSFER_HOST_FIRST");
+    }
+    if (leavingHost && nextHostAccountId) {
+      const nextHost = room.seats.find(
+        (seat) => seat.accountId === nextHostAccountId && seat.accountId !== accountId
+      );
+      if (!nextHost) throw new DomainError("PLAYER_NOT_IN_ROOM");
+      if (!nextHost.connected) throw new DomainError("TARGET_OFFLINE");
     }
     const pokerPlayer = room.poker?.players.find((player) => player.accountId === accountId);
     const handActive =
       room.poker && !["complete", "waiting", "void"].includes(room.poker.phase);
-    if (handActive && !forced) throw new DomainError("HAND_IN_PROGRESS");
+    if (handActive && pokerPlayer && !forced) throw new DomainError("HAND_IN_PROGRESS");
     if (pokerPlayer && handActive) pokerPlayer.folded = true;
     const refundable = pokerPlayer?.stack ?? room.seats[seatIndex]!.tableChips;
     if (refundable > 0) this.transfer(room.id, accountId, refundable, forced ? "player-removed" : "leave-room");
@@ -396,12 +551,25 @@ export class PlatformDomain {
     const asset = this.requireAsset(accountId);
     asset.inGame = false;
     asset.frozenScore = null;
+    room.waitingReadyAccountIds = room.waitingReadyAccountIds.filter(
+      (candidate) => candidate !== accountId
+    );
+    if (room.poker) {
+      room.poker.readyAccountIds = room.poker.readyAccountIds.filter(
+        (candidate) => candidate !== accountId
+      );
+    }
     room.seats.splice(seatIndex, 1);
     if (room.seats.length === 0) {
       delete this.state.rooms[roomId];
       return undefined;
     }
-    if (room.hostAccountId === accountId) room.hostAccountId = room.seats[0]!.accountId;
+    if (leavingHost) {
+      const nextHost =
+        room.seats.find((seat) => seat.accountId === nextHostAccountId) ??
+        room.seats[0]!;
+      room.hostAccountId = nextHost.accountId;
+    }
     room.version += 1;
     return room;
   }
@@ -416,6 +584,11 @@ export class PlatformDomain {
         (candidate) => candidate !== accountId
       );
       room.poker.version += 1;
+    }
+    if (room.waitingReadyAccountIds.includes(accountId)) {
+      room.waitingReadyAccountIds = room.waitingReadyAccountIds.filter(
+        (candidate) => candidate !== accountId
+      );
     }
     if (room.hostAccountId === accountId) {
       room.hostDisconnectDeadline =
@@ -458,6 +631,10 @@ export class PlatformDomain {
     let changed = this.normalizedPersistedState;
     for (const room of Object.values(this.state.rooms)) {
       let roomChanged = false;
+      if (room.waitingReadyAccountIds.length > 0) {
+        room.waitingReadyAccountIds = [];
+        roomChanged = true;
+      }
       if (room.poker && room.poker.readyAccountIds.length > 0) {
         room.poker.readyAccountIds = [];
         room.poker.version += 1;
@@ -583,6 +760,22 @@ export class PlatformDomain {
     const pokerPlayers = new Map(
       room.poker?.players.map((player) => [player.accountId, player]) ?? []
     );
+    const handActive = Boolean(
+      room.poker && !["waiting", "complete", "void"].includes(room.poker.phase)
+    );
+    const viewerSeat = viewer?.accountId
+      ? room.seats.find((seat) => seat.accountId === viewer.accountId)
+      : undefined;
+    if (!viewer?.display && viewer?.accountId && !viewerSeat) {
+      throw new DomainError("PLAYER_NOT_IN_ROOM");
+    }
+    const viewerRole = viewer?.display
+      ? "display"
+      : handActive && viewer?.accountId
+        ? pokerPlayers.has(viewer.accountId)
+          ? "participant"
+          : "spectator"
+        : "member";
     const projection: RoomProjection = {
       platformVersion: this.state.version,
       id: room.id,
@@ -608,9 +801,16 @@ export class PlatformDomain {
           tableChips: pokerPlayer?.stack ?? seat.tableChips,
           currentBet: pokerPlayer?.roundBet ?? seat.currentBet,
           folded: pokerPlayer?.folded ?? seat.folded,
-          allIn: pokerPlayer?.allIn ?? seat.allIn
+          allIn: pokerPlayer?.allIn ?? seat.allIn,
+          role: room.poker
+            ? pokerPlayer
+              ? "participant"
+              : "spectator"
+            : "member"
         };
         }),
+      viewerRole,
+      effectiveDenominations: this.effectiveDenominations(room),
       potTotal: room.poker?.pots.reduce((sum, pot) => sum + pot.amount, 0) ?? 0,
       phase: room.poker?.phase,
       actingAccountId: room.poker?.actingAccountId,
@@ -635,7 +835,7 @@ export class PlatformDomain {
         amount: pot.amount,
         eligibleAccountIds: [...pot.eligibleAccountIds]
       })),
-      readyAccountIds: room.poker ? [...room.poker.readyAccountIds] : undefined,
+      readyAccountIds: this.readyAccountIdsForRoom(room),
       advanceDeadline: room.poker?.advanceDeadline
     };
     const lastResult = [...this.state.handResults]
@@ -666,7 +866,12 @@ export class PlatformDomain {
         ...cards,
         ...Array.from({ length: Math.max(0, 5 - cards.length) }, () => ({ hidden: true }) as const)
       ];
-      if (!viewer?.display && viewer?.accountId) {
+      if (
+        !viewer?.display &&
+        viewer?.accountId &&
+        handActive &&
+        pokerPlayers.has(viewer.accountId)
+      ) {
         projection.ownHoleCards = room.poker?.holeCards[viewer.accountId] ?? [];
       }
     }
@@ -675,10 +880,14 @@ export class PlatformDomain {
   }
 
   validateInvariants(): void {
+    normalizeDenominations(this.state.settings.poker.denominations);
     const normalized = new Set<string>();
     for (const account of Object.values(this.state.accounts)) {
       if (normalized.has(account.normalizedUsername)) throw new DomainError("DUPLICATE_USERNAME");
       normalized.add(account.normalizedUsername);
+      if (!isSelectableAvatar(account.avatar) && account.avatar !== fallbackAvatar) {
+        throw new DomainError("INVALID_AVATAR");
+      }
     }
     for (const asset of Object.values(this.state.seasonAssets)) {
       if (!Number.isInteger(asset.score) || asset.score < 0) {
@@ -687,6 +896,21 @@ export class PlatformDomain {
     }
     const occupancy = new Set<string>();
     for (const room of Object.values(this.state.rooms)) {
+      if (!room.seats.some((seat) => seat.accountId === room.hostAccountId)) {
+        throw new DomainError("HOST_NOT_IN_ROOM");
+      }
+      const memberIds = new Set(room.seats.map((seat) => seat.accountId));
+      if (
+        room.waitingReadyAccountIds.some(
+          (accountId) => !memberIds.has(accountId)
+        ) ||
+        room.poker?.readyAccountIds.some(
+          (accountId) => !memberIds.has(accountId)
+        )
+      ) {
+        throw new DomainError("READY_PLAYER_NOT_IN_ROOM");
+      }
+      if (room.poker) normalizeDenominations(room.poker.denominations);
       for (const seat of room.seats) {
         if (occupancy.has(seat.accountId)) throw new DomainError("MULTIPLE_ROOM_OCCUPANCY");
         occupancy.add(seat.accountId);

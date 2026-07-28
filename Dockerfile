@@ -1,3 +1,4 @@
+ARG BUILDPLATFORM=linux/amd64
 FROM --platform=$BUILDPLATFORM node:24.18.0-bookworm-slim AS build
 
 ENV npm_config_nodedir=/usr/local

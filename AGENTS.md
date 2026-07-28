@@ -42,11 +42,11 @@
 - change-2 已通过，当前产品行为的权威快照是 `docs/requirements/home-party-game-platform/effective-requirements.md`；它包括结算时显示筹码增减和总筹码，以及结算层上方可用的补码 modal。
 - `deployment-automation` 已完成 initial、P-001/P-002/P-003 和 `change-0.md`，当前权威快照为 `docs/requirements/deployment-automation/effective-requirements.md`。
 - 部署自动化包含 PowerShell 5.1 本地入口、POSIX 远端状态机、Git HEAD 归档、SHA 镜像、冷备份、单目录/单备份、幂等 no-op、自动/人工恢复和文档；状态化假 SSH/Docker 部署矩阵最终为 19/19。
-- 真实 iStoreOS 已通过新目录首次接管、受管更新、零上传 no-op 和确定健康失败自动回滚。最终服务器运行受管 Git `b9490b7f8137af2982bf494b1bc1c0005089f656` 对应服务，`home-table` running/healthy、非 root、外部 `/healthz` 200，固定卷与唯一备份安全且无部署临时状态。
+- 真实 iStoreOS 已通过新目录首次接管、受管更新、零上传 no-op 和确定健康失败自动回滚。`deployment-automation` initial 收口时服务器运行受管 Git `b9490b7f8137af2982bf494b1bc1c0005089f656` 对应服务，`home-table` running/healthy、非 root、外部 `/healthz` 200，固定卷与唯一备份安全且无部署临时状态；后续正式发布状态以最近一次自动化部署和只读检查为准。
 
 ### 尚未完成或待执行
 
-- `poker-room-experience-upgrade` 已完成需求澄清并获批准，但还没有 `implementation-plan.md`、执行状态或实现代码。下一步是独立规划，不应直接开始编码。该需求涉及房主踢人/退出、活动牌局观战与准备、动态筹码面值、设置 UI、亮暗主题和可配置头像。
+- `poker-room-experience-upgrade` initial 已完成并冻结：P-001 的 T1/T2、typecheck、lint、platform、poker、realtime、Chromium/WebKit 核心 E2E、capacity、生产 build/静态资源、远端 iStoreOS 隔离 Docker smoke 和 `git diff --check` 全部通过；`phase-001-result.md`、`change-0.md` 与 `effective-requirements.md` 已生成。隔离 smoke 当时未切换正式服务，随机容器/卷/镜像已清理，b949 容器和固定数据卷保持不变；后续正式发布状态以受支持部署入口的实际结果为准。
 - 当前没有待恢复的 `deployment-automation` initial 任务。其三个 phase plan/result、完成状态、`change-0.md` 与有效需求已经冻结；未来部署自动化需求必须新建连续的 `change-N` 运行。
 
 ### 工作流文档规则

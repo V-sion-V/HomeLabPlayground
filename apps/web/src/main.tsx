@@ -19,11 +19,22 @@ import type {
   RoomMode,
   RoomProjection
 } from "@party/contracts";
+import {
+  fallbackAvatar,
+  productConfig,
+  selectableAvatars
+} from "@party/contracts";
 import { t } from "./locales";
+import {
+  CollapsibleCard,
+  ConfirmDialog,
+  SelectField,
+  ThemeToggle,
+  type ThemeScope
+} from "./ui";
 import "./styles.css";
 
-const avatars = ["🦊", "🐼", "🐯", "🐸", "🐙", "🦁", "🐧", "🦄"];
-const denominations = [1, 5, 25, 100, 500, 1_000, 5_000, 10_000];
+const avatars = selectableAvatars;
 
 interface Session {
   account: Account;
@@ -353,7 +364,11 @@ function Login({
         <div className="trust-pill">● LAN · {t(language, "passwordFree")}</div>
       </section>
       <form className="login-card" onSubmit={submit}>
-        <LanguageToggle language={language} setLanguage={setLanguage} />
+        <DeviceControls
+          language={language}
+          setLanguage={setLanguage}
+          themeScope="main"
+        />
         <label>
           <span>{t(language, "enterName")}</span>
           <input
@@ -439,7 +454,11 @@ function Lobby({
           <h1>{t(language, "lobby")}</h1>
         </div>
         <div className="top-actions">
-          <LanguageToggle language={language} setLanguage={setLanguage} />
+          <DeviceControls
+            language={language}
+            setLanguage={setLanguage}
+            themeScope="main"
+          />
           <button className="account-chip" onClick={() => setProfileOpen(true)}>
             <span>{session.account.avatar}</span>
             {session.account.username}
@@ -508,7 +527,10 @@ function Lobby({
                     ) : (
                       <button
                         className="primary"
-                        disabled={entry.status !== "waiting"}
+                        disabled={
+                          entry.seatCount >= entry.maxSeats ||
+                          !["waiting", "in_progress", "paused"].includes(entry.status)
+                        }
                         onClick={() => setJoinRoom(entry)}
                       >
                         {t(language, "join")}
@@ -737,12 +759,15 @@ function CreateRoomModal({
         <label>{t(language, "roomNameLabel")}
           <input value={name} onChange={(event) => setName(event.target.value)} />
         </label>
-        <label>{t(language, "mode")}
-          <select value={mode} onChange={(event) => setMode(event.target.value as RoomMode)}>
-            <option value="chips-and-cards">{t(language, "chipsCards")}</option>
-            <option value="chips-only">{t(language, "chipsOnly")}</option>
-          </select>
-        </label>
+        <SelectField
+          label={t(language, "mode")}
+          value={mode}
+          options={[
+            { value: "chips-and-cards", label: t(language, "chipsCards") },
+            { value: "chips-only", label: t(language, "chipsOnly") }
+          ]}
+          onChange={(next) => setMode(next as RoomMode)}
+        />
         <div className="setting-grid">
           <NumberField label={t(language, "smallBlind")} value={smallBlind} onChange={setSmallBlind} />
           <NumberField label={t(language, "bigBlind")} value={bigBlind} onChange={setBigBlind} />
@@ -818,59 +843,178 @@ function SettingsModal({
   onSeason: () => void;
 }) {
   const [value, setValue] = useState(structuredClone(settings));
+  const [pokerExpanded, setPokerExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const denominationError = validateDenominations(value.poker.denominations)
+    ? ""
+    : t(language, "invalidDenominations");
+
+  const save = async () => {
+    const denominations = normalizedDenominations(value.poker.denominations);
+    if (!denominations) return;
+    setBusy(true);
+    try {
+      await onSave({
+        ...value,
+        poker: {
+          ...value.poker,
+          denominations
+        }
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <Modal language={language} title={t(language, "settings")} onClose={onClose}>
-      <div className="setting-row">
-        <span>{t(language, "defaultLanguage")}</span>
-        <LanguageToggle
-          language={value.defaultLanguage}
-          setLanguage={(next) => {
-            setValue((current) => ({ ...current, defaultLanguage: next }));
-            setLanguage(next);
-          }}
-        />
-      </div>
-      <label className="setting-row">
-        <span>{t(language, "hostTimeout")}</span>
-        <select
-          value={value.defaultHostTransferTimeoutSeconds}
-          onChange={(event) => setValue((current) => ({
-            ...current,
-            defaultHostTransferTimeoutSeconds: Number(event.target.value)
-          }))}
-        >
-          <option value="30">30s</option><option value="60">60s</option><option value="120">120s</option>
-        </select>
-      </label>
-      <details open>
-        <summary><span className="suit-spades">♠</span> {t(language, "poker")}</summary>
-        <label className="setting-row">
-          <span>{t(language, "suitColors")}</span>
-          <select
-            aria-label={t(language, "suitColors")}
-            value={value.poker.suitColorPreset}
-            onChange={(event) => setValue((current) => ({
-              ...current,
-              poker: {
-                ...current.poker,
-                suitColorPreset: event.target.value as GlobalSettings["poker"]["suitColorPreset"]
-              }
-            }))}
-          >
-            <option value="standard">{t(language, "standardSuitColors")}</option>
-            <option value="high-contrast">{t(language, "highContrastSuitColors")}</option>
-          </select>
-        </label>
-        <div className="setting-grid">
-          <NumberField label={t(language, "smallBlind")} value={value.poker.smallBlind} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, smallBlind: next } }))} />
-          <NumberField label={t(language, "bigBlind")} value={value.poker.bigBlind} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, bigBlind: next } }))} />
-          <NumberField label={t(language, "minBuyIn")} value={value.poker.minBuyIn} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, minBuyIn: next } }))} />
-          <NumberField label={t(language, "maxBuyIn")} value={value.poker.maxBuyIn} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, maxBuyIn: next } }))} />
+    <Modal
+      language={language}
+      title={t(language, "settings")}
+      onClose={onClose}
+      className="settings-modal"
+    >
+      <div className="settings-scroll">
+        <div className="setting-row">
+          <span>{t(language, "defaultLanguage")}</span>
+          <LanguageToggle
+            language={value.defaultLanguage}
+            setLanguage={(next) => {
+              setValue((current) => ({ ...current, defaultLanguage: next }));
+              setLanguage(next);
+            }}
+          />
         </div>
-      </details>
-      <div className="modal-actions">
-        <button className="danger-link" onClick={onSeason}>{t(language, "newSeason")}</button>
-        <button className="primary" onClick={() => void onSave(value)}>{t(language, "save")}</button>
+        <SelectField
+          label={t(language, "hostTimeout")}
+          value={String(value.defaultHostTransferTimeoutSeconds)}
+          options={[
+            { value: "30", label: "30s" },
+            { value: "60", label: "60s" },
+            { value: "120", label: "120s" }
+          ]}
+          onChange={(next) =>
+            setValue((current) => ({
+              ...current,
+              defaultHostTransferTimeoutSeconds: Number(next)
+            }))
+          }
+        />
+        <CollapsibleCard
+          title={t(language, "poker")}
+          summary={t(language, "pokerSettingsSummary")}
+          expanded={pokerExpanded}
+          onToggle={() => setPokerExpanded((current) => !current)}
+        >
+          <SelectField
+            label={t(language, "suitColors")}
+            value={value.poker.suitColorPreset}
+            options={[
+              {
+                value: "standard",
+                label: t(language, "standardSuitColors")
+              },
+              {
+                value: "high-contrast",
+                label: t(language, "highContrastSuitColors")
+              }
+            ]}
+            onChange={(next) =>
+              setValue((current) => ({
+                ...current,
+                poker: {
+                  ...current.poker,
+                  suitColorPreset:
+                    next as GlobalSettings["poker"]["suitColorPreset"]
+                }
+              }))
+            }
+          />
+          <div className="setting-grid">
+            <NumberField label={t(language, "smallBlind")} value={value.poker.smallBlind} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, smallBlind: next } }))} />
+            <NumberField label={t(language, "bigBlind")} value={value.poker.bigBlind} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, bigBlind: next } }))} />
+            <NumberField label={t(language, "minBuyIn")} value={value.poker.minBuyIn} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, minBuyIn: next } }))} />
+            <NumberField label={t(language, "maxBuyIn")} value={value.poker.maxBuyIn} onChange={(next) => setValue((current) => ({ ...current, poker: { ...current.poker, maxBuyIn: next } }))} />
+          </div>
+          <fieldset className="denomination-editor">
+            <legend>{t(language, "chipDenominations")}</legend>
+            <div className="denomination-list">
+              {value.poker.denominations.map((denomination, index) => (
+                <div key={index} className="denomination-row">
+                  <NumberField
+                    label={`${t(language, "chipDenomination")} ${index + 1}`}
+                    value={denomination}
+                    onChange={(next) =>
+                      setValue((current) => {
+                        const denominations = [...current.poker.denominations];
+                        denominations[index] = next;
+                        return {
+                          ...current,
+                          poker: { ...current.poker, denominations }
+                        };
+                      })
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="icon-button danger-text"
+                    aria-label={`${t(language, "removeDenomination")} ${denomination}`}
+                    disabled={value.poker.denominations.length <= 1}
+                    onClick={() =>
+                      setValue((current) => ({
+                        ...current,
+                        poker: {
+                          ...current.poker,
+                          denominations: current.poker.denominations.filter(
+                            (_, item) => item !== index
+                          )
+                        }
+                      }))
+                    }
+                  >
+                    −
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="secondary compact-button"
+              disabled={value.poker.denominations.length >= 16}
+              onClick={() =>
+                setValue((current) => {
+                  const maximum = Math.max(...current.poker.denominations, 0);
+                  return {
+                    ...current,
+                    poker: {
+                      ...current.poker,
+                      denominations: [
+                        ...current.poker.denominations,
+                        maximum === 0 ? 1 : maximum + 1
+                      ]
+                    }
+                  };
+                })
+              }
+            >
+              ＋ {t(language, "addDenomination")}
+            </button>
+            {denominationError && (
+              <p className="error" role="alert">{denominationError}</p>
+            )}
+          </fieldset>
+        </CollapsibleCard>
+      </div>
+      <div className="modal-actions settings-actions">
+        <button className="danger-link compact-button" onClick={onSeason}>
+          {t(language, "newSeason")}
+        </button>
+        <button
+          className="primary settings-save"
+          disabled={busy || Boolean(denominationError)}
+          onClick={() => void save()}
+        >
+          {busy ? t(language, "loading") : t(language, "save")}
+        </button>
       </div>
     </Modal>
   );
@@ -924,6 +1068,7 @@ function ProfileModal({
 }) {
   const [username, setUsername] = useState(account.username);
   const [avatar, setAvatar] = useState(account.avatar);
+  const avatarSelectable = avatars.includes(avatar);
   return (
     <Modal language={language} title={t(language, "profile")} onClose={onClose}>
       <div className="form-stack">
@@ -941,9 +1086,18 @@ function ProfileModal({
             </button>
           ))}
         </div>
+        {!avatarSelectable && (
+          <p className="warning" role="status">
+            {fallbackAvatar} {t(language, "chooseReplacementAvatar")}
+          </p>
+        )}
         <div className="modal-actions">
           <button className="secondary" onClick={onSwitch}>{t(language, "switchAccount")}</button>
-          <button className="primary" onClick={() => void onSave(username, avatar)}>
+          <button
+            className="primary"
+            disabled={!avatarSelectable}
+            onClick={() => void onSave(username, avatar)}
+          >
             {t(language, "updateProfile")}
           </button>
         </div>
@@ -996,6 +1150,20 @@ function RoomView({
       />
     );
   }
+  if (room.viewerRole === "spectator") {
+    return (
+      <SpectatorTable
+        language={language}
+        setLanguage={setLanguage}
+        session={session}
+        room={room}
+        notice={notice}
+        host={host}
+        run={run}
+        onLobby={onLobby}
+      />
+    );
+  }
   return (
     <PlayerTable
       language={language}
@@ -1030,15 +1198,76 @@ function WaitingRoom({
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
 }) {
+  const [selectedMember, setSelectedMember] = useState<
+    RoomProjection["seats"][number] | null
+  >(null);
+  const [confirmation, setConfirmation] = useState<
+    | { kind: "kick"; member: RoomProjection["seats"][number] }
+    | { kind: "leave" | "close" | "start" }
+    | null
+  >(null);
+  const ready = new Set(room.readyAccountIds ?? []);
+  const currentReady = ready.has(session.account.id);
+  const eligibleReady = room.seats.filter(
+    (seat) =>
+      seat.accountId !== room.hostAccountId &&
+      ready.has(seat.accountId) &&
+      seat.connected &&
+      seat.tableChips > 0
+  );
+  const unreadyMembers = room.seats.filter(
+    (seat) =>
+      seat.accountId !== room.hostAccountId &&
+      !eligibleReady.some((candidate) => candidate.accountId === seat.accountId)
+  );
+  const hostSeat = room.seats.find(
+    (seat) => seat.accountId === room.hostAccountId
+  );
+  const canStart = Boolean(
+    host &&
+    hostSeat?.connected &&
+    (hostSeat.tableChips ?? 0) > 0 &&
+    eligibleReady.length > 0
+  );
+
+  const start = () => {
+    if (!canStart) return;
+    if (unreadyMembers.length > 0) {
+      setConfirmation({ kind: "start" });
+      return;
+    }
+    void run("room.start");
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
-        <button className="secondary" onClick={onLobby}>← {t(language, "backLobby")}</button>
+        <div className="room-top-actions">
+          <button className="secondary" onClick={onLobby}>← {t(language, "backLobby")}</button>
+          <button
+            className="secondary"
+            onClick={() => setConfirmation({ kind: "leave" })}
+          >
+            {t(language, "leaveRoom")}
+          </button>
+          {host && (
+            <button
+              className="danger"
+              onClick={() => setConfirmation({ kind: "close" })}
+            >
+              {t(language, "endGame")}
+            </button>
+          )}
+        </div>
         <div className="room-heading">
           <p className="eyebrow">{t(language, "waiting")}</p>
           <h1>{room.name}</h1>
         </div>
-        <LanguageToggle language={language} setLanguage={setLanguage} />
+        <DeviceControls
+          language={language}
+          setLanguage={setLanguage}
+          themeScope="main"
+        />
       </header>
       {notice && <p className="notice" role="status">{notice}</p>}
       <section className="waiting-panel">
@@ -1052,18 +1281,51 @@ function WaitingRoom({
         <div className="waiting-seats">
           {room.seats.map((seat) => (
             <article key={seat.accountId}>
-              <span>{seat.avatar}</span>
+              <button
+                type="button"
+                className="member-avatar"
+                aria-label={`${seat.username} ${t(language, "memberActions")}`}
+                aria-expanded={selectedMember?.accountId === seat.accountId}
+                disabled={!host || seat.accountId === session.account.id}
+                onClick={() =>
+                  setSelectedMember((current) =>
+                    current?.accountId === seat.accountId ? null : seat
+                  )
+                }
+              >
+                {seat.avatar}
+              </button>
               <div><strong>{seat.username}</strong><small>{seat.tableChips.toLocaleString()} {t(language, "score")}</small></div>
               {seat.accountId === room.hostAccountId && <em>{t(language, "host")}</em>}
+              {ready.has(seat.accountId) && seat.accountId !== room.hostAccountId && (
+                <em>✓ {t(language, "readyDone")}</em>
+              )}
               <small className={seat.connected ? "online" : "offline"}>
                 {seat.connected ? t(language, "online") : t(language, "offline")}
               </small>
-              {host && seat.accountId !== session.account.id && (
-                <div className="inline-actions">
-                  <button className="text-button" onClick={() => void run("room.transfer-host", { targetAccountId: seat.accountId })}>
+              {selectedMember?.accountId === seat.accountId && (
+                <div className="member-menu" role="menu">
+                  <button
+                    role="menuitem"
+                    className="text-button"
+                    disabled={!seat.connected}
+                    onClick={() => {
+                      setSelectedMember(null);
+                      void run("room.transfer-host", {
+                        targetAccountId: seat.accountId
+                      });
+                    }}
+                  >
                     {t(language, "transferHost")}
                   </button>
-                  <button className="text-button danger-text" onClick={() => void run("room.remove", { targetAccountId: seat.accountId })}>
+                  <button
+                    role="menuitem"
+                    className="text-button danger-text"
+                    onClick={() => {
+                      setSelectedMember(null);
+                      setConfirmation({ kind: "kick", member: seat });
+                    }}
+                  >
                     {t(language, "removePlayer")}
                   </button>
                 </div>
@@ -1073,17 +1335,270 @@ function WaitingRoom({
         </div>
         <div className="room-footer-actions">
           {host && (
-            <button className="primary" disabled={room.seats.length < 2} onClick={() => void run("room.start")}>
+            <button className="primary" disabled={!canStart} onClick={start}>
               {t(language, "startGame")}
             </button>
           )}
-          {host ? (
-            <button className="danger" onClick={() => void run("room.close")}>{t(language, "endGame")}</button>
-          ) : (
-            <button className="secondary" onClick={() => void run("room.leave")}>{t(language, "leaveRoom")}</button>
+          {!host && (
+            <button
+              className={currentReady ? "secondary" : "primary"}
+              disabled={
+                !room.seats.find(
+                  (seat) => seat.accountId === session.account.id
+                )?.connected
+              }
+              onClick={() =>
+                void run("poker.ready", { ready: !currentReady })
+              }
+            >
+              {currentReady
+                ? t(language, "cancelReady")
+                : t(language, "ready")}
+            </button>
           )}
         </div>
       </section>
+      {confirmation?.kind === "kick" && (
+        <ConfirmDialog
+          title={t(language, "confirmRemoveTitle")}
+          description={t(language, "confirmRemoveDescription").replace(
+            "{name}",
+            confirmation.member.username
+          )}
+          confirmLabel={t(language, "removePlayer")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            const member = confirmation.member;
+            setConfirmation(null);
+            void run("room.remove", {
+              targetAccountId: member.accountId,
+              confirmed: true
+            });
+          }}
+        />
+      )}
+      {confirmation?.kind === "leave" && (
+        <ConfirmDialog
+          title={t(language, "confirmLeaveTitle")}
+          description={
+            host
+              ? t(language, "confirmHostLeaveDescription")
+              : t(language, "confirmLeaveDescription")
+          }
+          confirmLabel={t(language, "leaveRoom")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.leave", { confirmed: true });
+          }}
+        />
+      )}
+      {confirmation?.kind === "close" && (
+        <ConfirmDialog
+          title={t(language, "confirmCloseTitle")}
+          description={t(language, "confirmCloseDescription")}
+          confirmLabel={t(language, "endGame")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.close");
+          }}
+        />
+      )}
+      {confirmation?.kind === "start" && (
+        <ConfirmDialog
+          title={t(language, "confirmStartTitle")}
+          description={t(language, "confirmStartDescription").replace(
+            "{count}",
+            String(unreadyMembers.length)
+          )}
+          confirmLabel={t(language, "startGame")}
+          cancelLabel={t(language, "cancel")}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.start", { confirmUnready: true });
+          }}
+        />
+      )}
+    </main>
+  );
+}
+
+function SpectatorTable({
+  language,
+  setLanguage,
+  session,
+  room,
+  notice,
+  host,
+  run,
+  onLobby
+}: {
+  language: Language;
+  setLanguage: (language: Language) => void;
+  session: Session;
+  room: RoomProjection;
+  notice: string;
+  host: boolean;
+  run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
+  onLobby: () => void;
+}) {
+  const [selectedMember, setSelectedMember] = useState<
+    RoomProjection["seats"][number] | null
+  >(null);
+  const [confirmation, setConfirmation] = useState<
+    | { kind: "kick"; member: RoomProjection["seats"][number] }
+    | { kind: "leave" | "close" }
+    | null
+  >(null);
+
+  return (
+    <main className={`display-shell suit-theme-${room.suitColorPreset}`}>
+      <header className="display-header spectator-header">
+        <div className="room-top-actions">
+          <button className="secondary" onClick={onLobby}>
+            ← {t(language, "backLobby")}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => setConfirmation({ kind: "leave" })}
+          >
+            {t(language, "leaveRoom")}
+          </button>
+          {host && (
+            <button
+              className="danger"
+              onClick={() => setConfirmation({ kind: "close" })}
+            >
+              {t(language, "endGame")}
+            </button>
+          )}
+        </div>
+        <div className="spectator-identity">
+          <p className="eyebrow">{t(language, "spectating")}</p>
+          <h1>{room.name}</h1>
+          <span>
+            {session.account.avatar} {session.account.username} ·{" "}
+            {t(language, "spectator")}
+          </span>
+        </div>
+        <DeviceControls
+          language={language}
+          setLanguage={setLanguage}
+          themeScope="poker"
+        />
+      </header>
+      {notice && <p className="notice" role="status">{notice}</p>}
+      <PublicTableSurface
+        language={language}
+        room={room}
+        onMemberClick={
+          host
+            ? (member) => {
+                if (member.accountId !== session.account.id) {
+                  setSelectedMember(member);
+                }
+              }
+            : undefined
+        }
+      />
+      {selectedMember && (
+        <div className="member-action-popover" role="menu">
+          <strong>{selectedMember.avatar} {selectedMember.username}</strong>
+          <button
+            role="menuitem"
+            className="text-button"
+            disabled={!selectedMember.connected}
+            onClick={() => {
+              const member = selectedMember;
+              setSelectedMember(null);
+              void run("room.transfer-host", {
+                targetAccountId: member.accountId
+              });
+            }}
+          >
+            {t(language, "transferHost")}
+          </button>
+          <button
+            role="menuitem"
+            className="text-button danger-text"
+            onClick={() => {
+              const member = selectedMember;
+              setSelectedMember(null);
+              setConfirmation({ kind: "kick", member });
+            }}
+          >
+            {t(language, "removePlayer")}
+          </button>
+          <button
+            role="menuitem"
+            className="text-button"
+            onClick={() => setSelectedMember(null)}
+          >
+            {t(language, "cancel")}
+          </button>
+        </div>
+      )}
+      {confirmation?.kind === "kick" && (
+        <ConfirmDialog
+          title={t(language, "confirmRemoveTitle")}
+          description={t(language, "confirmRemoveDescription").replace(
+            "{name}",
+            confirmation.member.username
+          )}
+          confirmLabel={t(language, "removePlayer")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            const member = confirmation.member;
+            setConfirmation(null);
+            void run("room.remove", {
+              targetAccountId: member.accountId,
+              confirmed: true
+            });
+          }}
+        />
+      )}
+      {confirmation?.kind === "leave" && (
+        <ConfirmDialog
+          title={t(language, "confirmLeaveTitle")}
+          description={
+            host
+              ? t(language, "confirmHostLeaveDescription")
+              : t(language, "confirmLeaveDescription")
+          }
+          confirmLabel={t(language, "leaveRoom")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.leave", { confirmed: true });
+          }}
+        />
+      )}
+      {confirmation?.kind === "close" && (
+        <ConfirmDialog
+          title={t(language, "confirmCloseTitle")}
+          description={t(language, "confirmCloseDescription")}
+          confirmLabel={t(language, "endGame")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.close");
+          }}
+        />
+      )}
     </main>
   );
 }
@@ -1109,15 +1624,22 @@ function PlayerTable({
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
 }) {
-  const [cache, setCache] = useState<number[]>([]);
+  const [cache, setCache] = useState<Record<string, number>>({});
   const [topUpOpen, setTopUpOpen] = useState(false);
+  const [selectedMember, setSelectedMember] = useState<
+    RoomProjection["seats"][number] | null
+  >(null);
+  const [confirmation, setConfirmation] = useState<
+    | { kind: "kick"; member: RoomProjection["seats"][number] }
+    | { kind: "leave" | "close" | "start" }
+    | null
+  >(null);
   const [muted, setMuted] = useStored("party-muted", false);
   const betCacheRef = useRef<HTMLDivElement>(null);
   const chipRackRef = useRef<HTMLDivElement>(null);
   const pointerGesture = useRef<{
     source: "rack" | "cache";
     value: number;
-    index?: number;
     x: number;
     y: number;
   } | null>(null);
@@ -1126,6 +1648,7 @@ function PlayerTable({
     expiresAt: number;
   } | null>(null);
   const seat = room.seats.find((candidate) => candidate.accountId === session.account.id);
+  const denominations = room.effectiveDenominations;
   const authorityKey = JSON.stringify([
     room.status,
     room.actingAccountId,
@@ -1134,7 +1657,14 @@ function PlayerTable({
     seat?.tableChips
   ]);
   const previousAuthority = useRef(authorityKey);
-  const total = cache.reduce((sum, value) => sum + value, 0);
+  const total = Object.entries(cache).reduce(
+    (sum, [value, count]) => sum + Number(value) * count,
+    0
+  );
+  const cacheSize = Object.values(cache).reduce(
+    (sum, count) => sum + count,
+    0
+  );
   const canAct = room.status === "in_progress" && room.actingAccountId === session.account.id;
   const raiseLocked = room.raiseLockedAccountIds?.includes(session.account.id) ?? false;
   const callAmount = Math.max(
@@ -1159,6 +1689,32 @@ function PlayerTable({
         target >= (room.currentBet ?? 0) + (room.minimumRaise ?? 0)
       )
     );
+  const readyAccountIds = new Set(room.readyAccountIds ?? []);
+  const eligibleReady = room.seats.filter(
+    (entry) =>
+      entry.accountId !== room.hostAccountId &&
+      readyAccountIds.has(entry.accountId) &&
+      entry.connected &&
+      entry.tableChips > 0
+  );
+  const unreadyMembers = room.seats.filter(
+    (entry) =>
+      entry.accountId !== room.hostAccountId &&
+      !eligibleReady.some(
+        (candidate) => candidate.accountId === entry.accountId
+      )
+  );
+  const hostSeat = room.seats.find(
+    (entry) => entry.accountId === room.hostAccountId
+  );
+  const canStartNext = Boolean(
+    host &&
+    room.phase === "complete" &&
+    room.status === "in_progress" &&
+    hostSeat?.connected &&
+    (hostSeat.tableChips ?? 0) > 0 &&
+    eligibleReady.length > 0
+  );
   const confirmLabel = isCall
     ? t(language, "confirmCall")
     : (room.currentBet ?? 0) === 0
@@ -1166,14 +1722,14 @@ function PlayerTable({
       : t(language, "confirmRaise");
   useEffect(() => {
     if (
-      cache.length > 0 &&
+      cacheSize > 0 &&
       authorityKey !== previousAuthority.current
     ) {
-      setCache([]);
+      setCache({});
       setNotice(t(language, "cacheCleared"));
     }
     previousAuthority.current = authorityKey;
-  }, [authorityKey, cache.length, language, setNotice]);
+  }, [authorityKey, cacheSize, language, setNotice]);
 
   useEffect(() => {
     if (muted || !room.phase) return;
@@ -1185,7 +1741,7 @@ function PlayerTable({
       pokerVersion: room.pokerVersion,
       action: amount === undefined ? { kind } : { kind, amount }
     });
-    setCache([]);
+    setCache({});
   };
 
   const confirm = async () => {
@@ -1194,6 +1750,15 @@ function PlayerTable({
     else if (isCall) await submitAction("call");
     else if ((room.currentBet ?? 0) === 0) await submitAction("bet", target);
     else await submitAction("raise", target);
+  };
+
+  const startNextHand = () => {
+    if (!canStartNext) return;
+    if (unreadyMembers.length > 0) {
+      setConfirmation({ kind: "start" });
+      return;
+    }
+    void run("room.start", { pokerVersion: room.pokerVersion });
   };
 
   const completePointerDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -1225,26 +1790,47 @@ function PlayerTable({
       gesture.source === "rack" &&
       total + gesture.value <= (seat?.tableChips ?? 0)
     ) {
-      setCache((current) => [...current, gesture.value]);
-    } else if (gesture.source === "cache" && gesture.index !== undefined) {
-      setCache((current) => current.filter((_, index) => index !== gesture.index));
+      setCache((current) => addChip(current, gesture.value));
+    } else if (gesture.source === "cache") {
+      setCache((current) => removeChip(current, gesture.value));
     }
   };
 
   return (
     <main className={`table-shell suit-theme-${room.suitColorPreset}`}>
       <header className="table-topbar">
-        <button className="secondary back-button" onClick={onLobby}>
-          <span aria-hidden="true">←</span>
-          <span className="back-label">{t(language, "backLobby")}</span>
-        </button>
+        <div className="table-top-left">
+          <button className="secondary back-button" onClick={onLobby}>
+            <span aria-hidden="true">←</span>
+            <span className="back-label">{t(language, "backLobby")}</span>
+          </button>
+          <button
+            className="secondary leave-top-button"
+            disabled={!host && room.phase !== "complete"}
+            onClick={() => setConfirmation({ kind: "leave" })}
+          >
+            {t(language, "leaveRoom")}
+          </button>
+          {host && (
+            <button
+              className="danger close-top-button"
+              onClick={() => setConfirmation({ kind: "close" })}
+            >
+              {t(language, "endGame")}
+            </button>
+          )}
+        </div>
         <div className="table-title">
           <strong>{room.name}</strong>
           <span>{t(language, "currentPlayer")} · {session.account.username}</span>
           <small>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")} · {room.config.smallBlind} / {room.config.bigBlind}</small>
         </div>
         <div className="table-controls">
-          <LanguageToggle language={language} setLanguage={setLanguage} />
+          <DeviceControls
+            language={language}
+            setLanguage={setLanguage}
+            themeScope="poker"
+          />
           <button
             className="secondary mute-button"
             aria-label={muted ? t(language, "unmute") : t(language, "mute")}
@@ -1257,12 +1843,25 @@ function PlayerTable({
       </header>
       <section className="poker-felt" aria-label={t(language, "poker")}>
         <div className="table-seats">
-          {room.seats.map((entry) => (
+          {room.seats.filter((entry) => entry.role === "participant").map((entry) => (
             <article
               key={entry.accountId}
               className={`player-seat ${entry.accountId === room.actingAccountId ? "active" : ""}`}
             >
-              <span>{entry.avatar}</span>
+              <button
+                type="button"
+                className="member-avatar"
+                aria-label={`${entry.username} ${t(language, "memberActions")}`}
+                aria-expanded={selectedMember?.accountId === entry.accountId}
+                disabled={!host || entry.accountId === session.account.id}
+                onClick={() =>
+                  setSelectedMember((current) =>
+                    current?.accountId === entry.accountId ? null : entry
+                  )
+                }
+              >
+                {entry.avatar}
+              </button>
               <b>{entry.username}{entry.accountId === room.hostAccountId ? " ★" : ""}</b>
               <small>{entry.tableChips.toLocaleString()} · {entry.currentBet.toLocaleString()}</small>
               <small className={entry.connected ? "online" : "offline"}>
@@ -1272,33 +1871,91 @@ function PlayerTable({
                 <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
               )}
               {entry.folded && <em>{t(language, "fold")}</em>}
-              {host && entry.accountId !== session.account.id && (
-                <div className="inline-actions seat-actions">
+              {selectedMember?.accountId === entry.accountId && (
+                <div className="member-menu seat-actions" role="menu">
                   {entry.connected && (
                     <button
+                      role="menuitem"
                       className="text-button"
-                      onClick={() => void run("room.transfer-host", {
-                        targetAccountId: entry.accountId
-                      })}
+                      onClick={() => {
+                        setSelectedMember(null);
+                        void run("room.transfer-host", {
+                          targetAccountId: entry.accountId
+                        });
+                      }}
                     >
                       {t(language, "transferHost")}
                     </button>
                   )}
-                  {(!entry.connected || room.phase === "complete") && (
-                    <button
-                      className="text-button danger-text"
-                      onClick={() => void run("room.remove", {
-                        targetAccountId: entry.accountId
-                      })}
-                    >
-                      {t(language, "removePlayer")}
-                    </button>
-                  )}
+                  <button
+                    role="menuitem"
+                    className="text-button danger-text"
+                    onClick={() => {
+                      setSelectedMember(null);
+                      setConfirmation({ kind: "kick", member: entry });
+                    }}
+                  >
+                    {t(language, "removePlayer")}
+                  </button>
                 </div>
               )}
             </article>
           ))}
         </div>
+        {room.seats.some((entry) => entry.role === "spectator") && (
+          <div className="spectator-strip" aria-label={t(language, "spectators")}>
+            <strong>{t(language, "spectators")}</strong>
+            {room.seats
+              .filter((entry) => entry.role === "spectator")
+              .map((entry) => (
+                <div key={entry.accountId} className="spectator-chip">
+                  <button
+                    type="button"
+                    className="member-avatar compact-avatar"
+                    aria-label={`${entry.username} ${t(language, "memberActions")}`}
+                    aria-expanded={selectedMember?.accountId === entry.accountId}
+                    disabled={!host}
+                    onClick={() =>
+                      setSelectedMember((current) =>
+                        current?.accountId === entry.accountId ? null : entry
+                      )
+                    }
+                  >
+                    {entry.avatar}
+                  </button>
+                  <span>{entry.username}</span>
+                  {selectedMember?.accountId === entry.accountId && (
+                    <div className="member-menu" role="menu">
+                      {entry.connected && (
+                        <button
+                          role="menuitem"
+                          className="text-button"
+                          onClick={() => {
+                            setSelectedMember(null);
+                            void run("room.transfer-host", {
+                              targetAccountId: entry.accountId
+                            });
+                          }}
+                        >
+                          {t(language, "transferHost")}
+                        </button>
+                      )}
+                      <button
+                        role="menuitem"
+                        className="text-button danger-text"
+                        onClick={() => {
+                          setSelectedMember(null);
+                          setConfirmation({ kind: "kick", member: entry });
+                        }}
+                      >
+                        {t(language, "removePlayer")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
+        )}
         {room.lastAction && room.lastAction.amount > 0 && (
           <div
             key={room.lastAction.version}
@@ -1346,9 +2003,18 @@ function PlayerTable({
           language={language}
           room={room}
           currentAccountId={session.account.id}
-          onReady={() => void run("poker.ready", {
-            pokerVersion: room.pokerVersion
-          })}
+          currentIsHost={host}
+          onReady={
+            host
+              ? undefined
+              : (nextReady) =>
+                  void run("poker.ready", {
+                    pokerVersion: room.pokerVersion,
+                    ready: nextReady
+                  })
+          }
+          onStart={host ? startNextHand : undefined}
+          canStart={canStartNext}
           onTopUp={
             seat && seat.tableChips < room.config.maxBuyIn
               ? () => setTopUpOpen(true)
@@ -1403,53 +2069,60 @@ function PlayerTable({
               denominations.includes(value) &&
               total + value <= (seat?.tableChips ?? 0)
             ) {
-              setCache((current) => [...current, value]);
+              setCache((current) => addChip(current, value));
             }
           }}
         >
           <span>{t(language, "betCache")}</span>
           <div className="cache-chips">
-            {cache.map((chip, index) => (
-              <button
-                key={`${chip}-${index}`}
-                className={`poker-chip chip-${chip}`}
-                aria-label={t(language, "removeChip").replace(
-                  "{amount}",
-                  chip.toLocaleString()
-                )}
-                draggable={canAct}
-                disabled={!canAct}
-                onDragStart={(event) => event.dataTransfer.setData("cache-index", String(index))}
-                onPointerDown={(event) => {
-                  if (event.pointerType !== "mouse") {
-                    pointerGesture.current = {
-                      source: "cache",
-                      value: chip,
-                      index,
-                      x: event.clientX,
-                      y: event.clientY
-                    };
+            {denominations.map((chip) => {
+              const count = cache[String(chip)] ?? 0;
+              if (count <= 0) return null;
+              return (
+                <button
+                  key={chip}
+                  className="poker-chip"
+                  style={chipStyle(chip, denominations)}
+                  aria-label={`${t(language, "removeChip").replace(
+                    "{amount}",
+                    chip.toLocaleString()
+                  )} × ${count}`}
+                  draggable={canAct}
+                  disabled={!canAct}
+                  onDragStart={(event) =>
+                    event.dataTransfer.setData("cache-chip", String(chip))
                   }
-                }}
-                onPointerUp={completePointerDrag}
-                onClick={() => {
-                  if (
-                    suppressClick.current?.source === "cache" &&
-                    suppressClick.current.expiresAt >= performance.now()
-                  ) {
+                  onPointerDown={(event) => {
+                    if (event.pointerType !== "mouse") {
+                      pointerGesture.current = {
+                        source: "cache",
+                        value: chip,
+                        x: event.clientX,
+                        y: event.clientY
+                      };
+                    }
+                  }}
+                  onPointerUp={completePointerDrag}
+                  onClick={() => {
+                    if (
+                      suppressClick.current?.source === "cache" &&
+                      suppressClick.current.expiresAt >= performance.now()
+                    ) {
+                      suppressClick.current = null;
+                      return;
+                    }
                     suppressClick.current = null;
-                    return;
-                  }
-                  suppressClick.current = null;
-                  setCache((current) => current.filter((_, item) => item !== index));
-                }}
-              >
-                {chip.toLocaleString()}
-              </button>
-            ))}
+                    setCache((current) => removeChip(current, chip));
+                  }}
+                >
+                  <span>{chip.toLocaleString()}</span>
+                  {count > 1 && <small>×{count}</small>}
+                </button>
+              );
+            })}
           </div>
           <strong>{total.toLocaleString()}</strong>
-          <button className="text-button" disabled={!canAct} onClick={() => setCache([])}>{t(language, "clear")}</button>
+          <button className="text-button" disabled={!canAct} onClick={() => setCache({})}>{t(language, "clear")}</button>
         </div>
         <div
           className="chip-rack"
@@ -1460,9 +2133,9 @@ function PlayerTable({
           }}
           onDrop={(event) => {
             event.preventDefault();
-            const index = Number(event.dataTransfer.getData("cache-index"));
-            if (canAct && Number.isInteger(index)) {
-              setCache((current) => current.filter((_, item) => item !== index));
+            const value = Number(event.dataTransfer.getData("cache-chip"));
+            if (canAct && denominations.includes(value)) {
+              setCache((current) => removeChip(current, value));
             }
           }}
         >
@@ -1470,7 +2143,8 @@ function PlayerTable({
             <button
               key={value}
               draggable
-              className={`poker-chip chip-${value}`}
+              className="poker-chip"
+              style={chipStyle(value, denominations)}
               disabled={!canAct || total + value > (seat?.tableChips ?? 0)}
               onDragStart={(event) => event.dataTransfer.setData("chip", String(value))}
               onPointerDown={(event) => {
@@ -1493,13 +2167,7 @@ function PlayerTable({
                   return;
                 }
                 suppressClick.current = null;
-                setCache((current) => [...current, value]);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setCache((current) => [...current, value]);
-                }
+                setCache((current) => addChip(current, value));
               }}
             >
               {value.toLocaleString()}
@@ -1518,7 +2186,7 @@ function PlayerTable({
             }
             onClick={() => {
               if (callAmount === 0) void submitAction("check");
-              else setCache(amountToChips(callAmount));
+              else setCache(amountToChipCounts(callAmount, denominations));
             }}
           >
             {callAmount === 0 ? t(language, "check") : t(language, "call")}
@@ -1526,7 +2194,11 @@ function PlayerTable({
           <button
             className="secondary"
             disabled={!canAct}
-            onClick={() => setCache(amountToChips(seat?.tableChips ?? 0))}
+            onClick={() =>
+              setCache(
+                amountToChipCounts(seat?.tableChips ?? 0, denominations)
+              )
+            }
           >
             {t(language, "allIn")}
           </button>
@@ -1540,16 +2212,6 @@ function PlayerTable({
               {t(language, "topUp")}
             </button>
           )}
-          {host && <button className="danger" onClick={() => void run("room.close")}>{t(language, "endGame")}</button>}
-          {!host && (
-            <button
-              className="secondary"
-              disabled={room.phase !== "complete"}
-              onClick={() => void run("room.leave")}
-            >
-              {t(language, "leaveRoom")}
-            </button>
-          )}
         </div>
       </section>
       {topUpOpen && seat && (
@@ -1559,6 +2221,78 @@ function PlayerTable({
           onClose={() => setTopUpOpen(false)}
           onConfirm={async (amount) => {
             if (await run("room.top-up", { amount })) setTopUpOpen(false);
+          }}
+        />
+      )}
+      {confirmation?.kind === "kick" && (
+        <ConfirmDialog
+          title={t(language, "confirmRemoveTitle")}
+          description={t(language, "confirmRemoveDescription").replace(
+            "{name}",
+            confirmation.member.username
+          )}
+          confirmLabel={t(language, "removePlayer")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            const member = confirmation.member;
+            setConfirmation(null);
+            void run("room.remove", {
+              targetAccountId: member.accountId,
+              confirmed: true
+            });
+          }}
+        />
+      )}
+      {confirmation?.kind === "leave" && (
+        <ConfirmDialog
+          title={t(language, "confirmLeaveTitle")}
+          description={
+            host
+              ? t(language, "confirmHostLeaveDescription")
+              : t(language, "confirmLeaveDescription")
+          }
+          confirmLabel={t(language, "leaveRoom")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.leave", { confirmed: true });
+          }}
+        />
+      )}
+      {confirmation?.kind === "close" && (
+        <ConfirmDialog
+          title={t(language, "confirmCloseTitle")}
+          description={t(language, "confirmCloseDescription")}
+          confirmLabel={t(language, "endGame")}
+          cancelLabel={t(language, "cancel")}
+          danger
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.close");
+          }}
+        />
+      )}
+      {confirmation?.kind === "start" && (
+        <ConfirmDialog
+          title={t(language, "confirmStartTitle")}
+          description={t(language, "confirmStartDescription").replace(
+            "{count}",
+            String(unreadyMembers.length)
+          )}
+          confirmLabel={t(language, "startNextHand")}
+          cancelLabel={t(language, "cancel")}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            setConfirmation(null);
+            void run("room.start", {
+              pokerVersion: room.pokerVersion,
+              confirmUnready: true
+            });
           }}
         />
       )}
@@ -1618,6 +2352,81 @@ function WinnerPicker({
   );
 }
 
+function PublicTableSurface({
+  language,
+  room,
+  onMemberClick
+}: {
+  language: Language;
+  room: RoomProjection;
+  onMemberClick?: (member: RoomProjection["seats"][number]) => void;
+}) {
+  const participants = room.phase
+    ? room.seats.filter((seat) => seat.role === "participant")
+    : room.seats;
+  return (
+    <section className="display-felt">
+      <div className="display-seats">
+        {participants.map((seat) => (
+          <article
+            key={seat.accountId}
+            className={seat.accountId === room.actingAccountId ? "active" : ""}
+          >
+            <button
+              type="button"
+              className="member-avatar"
+              aria-label={`${seat.username} ${t(language, "memberActions")}`}
+              disabled={!onMemberClick}
+              onClick={() => onMemberClick?.(seat)}
+            >
+              {seat.avatar}
+            </button>
+            <b>{seat.username}</b>
+            <strong>{seat.tableChips.toLocaleString()}</strong>
+            <small>{seat.currentBet.toLocaleString()}</small>
+            {seat.position === room.dealerPosition && (
+              <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
+            )}
+          </article>
+        ))}
+      </div>
+      <div className="display-board">
+        {room.mode === "chips-and-cards" && (
+          <div className="cards" data-testid="community-cards">
+            {(room.communityCards ?? []).map((card, index) => (
+              <PlayingCard key={index} card={card} />
+            ))}
+          </div>
+        )}
+        <p>{phaseLabel(language, room.phase)}</p>
+        <div className="pot"><small>{t(language, "pot")}</small><strong>{room.potTotal.toLocaleString()}</strong></div>
+        {room.phase !== "complete" && (
+          <HandResultBanner language={language} room={room} />
+        )}
+      </div>
+      {room.lastAction && room.lastAction.amount > 0 && (
+        <div
+          key={room.lastAction.version}
+          className="chip-flight display-flight"
+          style={{
+            "--seat-angle": `${
+              (room.seats.find(
+                (entry) => entry.accountId === room.lastAction?.accountId
+              )?.position ?? 0) * 36
+            }deg`
+          } as React.CSSProperties}
+          aria-label={t(language, "betUpdated")}
+        >
+          +{room.lastAction.amount.toLocaleString()}
+        </div>
+      )}
+      {room.phase === "complete" && room.lastResult && (
+        <SettlementPanel language={language} room={room} display />
+      )}
+    </section>
+  );
+}
+
 function PublicDisplay({
   language,
   setLanguage,
@@ -1672,54 +2481,13 @@ function PublicDisplay({
           <h1>{room.name}</h1>
           <span>{t(language, "displayReadonly")}</span>
         </div>
-        <LanguageToggle language={language} setLanguage={setLanguage} />
+        <DeviceControls
+          language={language}
+          setLanguage={setLanguage}
+          themeScope="poker"
+        />
       </header>
-      <section className="display-felt">
-        <div className="display-seats">
-          {room.seats.map((seat) => (
-            <article key={seat.accountId} className={seat.accountId === room.actingAccountId ? "active" : ""}>
-              <span>{seat.avatar}</span>
-              <b>{seat.username}</b>
-              <strong>{seat.tableChips.toLocaleString()}</strong>
-              <small>{seat.currentBet.toLocaleString()}</small>
-              {seat.position === room.dealerPosition && (
-                <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
-              )}
-            </article>
-          ))}
-        </div>
-        <div className="display-board">
-          {room.mode === "chips-and-cards" && (
-            <div className="cards" data-testid="community-cards">
-              {(room.communityCards ?? []).map((card, index) => (
-                <PlayingCard key={index} card={card} />
-              ))}
-            </div>
-          )}
-          <p>{phaseLabel(language, room.phase)}</p>
-          <div className="pot"><small>{t(language, "pot")}</small><strong>{room.potTotal.toLocaleString()}</strong></div>
-          {room.phase !== "complete" && <HandResultBanner language={language} room={room} />}
-        </div>
-        {room.lastAction && room.lastAction.amount > 0 && (
-          <div
-            key={room.lastAction.version}
-            className="chip-flight display-flight"
-            style={{
-              "--seat-angle": `${
-                (room.seats.find(
-                  (entry) => entry.accountId === room.lastAction?.accountId
-                )?.position ?? 0) * 36
-              }deg`
-            } as React.CSSProperties}
-            aria-label={t(language, "betUpdated")}
-          >
-            +{room.lastAction.amount.toLocaleString()}
-          </div>
-        )}
-        {room.phase === "complete" && room.lastResult && (
-          <SettlementPanel language={language} room={room} display />
-        )}
-      </section>
+      <PublicTableSurface language={language} room={room} />
     </main>
   );
 }
@@ -1729,18 +2497,29 @@ function Modal({
   title,
   onClose,
   narrow,
+  className = "",
   children
 }: {
   language: Language;
   title: string;
   onClose: () => void;
   narrow?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
-        className={`modal ${narrow ? "narrow" : ""}`}
+        className={`modal ${narrow ? "narrow" : ""} ${className}`.trim()}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -1748,7 +2527,7 @@ function Modal({
       >
         <div className="modal-title">
           <div><p className="eyebrow">HOME TABLE</p><h2>{title}</h2></div>
-          <button className="icon-button" aria-label={t(language, "close")} onClick={onClose}>×</button>
+          <button ref={closeRef} className="icon-button" aria-label={t(language, "close")} onClick={onClose}>×</button>
         </div>
         {children}
       </section>
@@ -1769,6 +2548,7 @@ function NumberField({
     <label>{label}
       <input
         type="number"
+        inputMode="numeric"
         min="1"
         step="1"
         value={value}
@@ -1817,7 +2597,10 @@ function SettlementPanel({
   language,
   room,
   currentAccountId,
+  currentIsHost = false,
   onReady,
+  onStart,
+  canStart = false,
   onTopUp,
   onUndo,
   display = false
@@ -1825,7 +2608,10 @@ function SettlementPanel({
   language: Language;
   room: RoomProjection;
   currentAccountId?: string;
-  onReady?: () => void;
+  currentIsHost?: boolean;
+  onReady?: (ready: boolean) => void;
+  onStart?: () => void;
+  canStart?: boolean;
   onTopUp?: () => void;
   onUndo?: () => void;
   display?: boolean;
@@ -1850,12 +2636,16 @@ function SettlementPanel({
     (seat) => seat.accountId === currentAccountId
   );
   const currentReady = Boolean(currentAccountId && ready.has(currentAccountId));
-  const canReady = Boolean(
+  const canToggleReady = Boolean(
     currentSeat &&
     currentSeat.connected &&
     currentSeat.tableChips > 0 &&
     room.status === "in_progress" &&
-    !currentReady
+    !currentIsHost
+  );
+  const resultAccountIds = new Set(players.map((player) => player.accountId));
+  const waitingMembers = room.seats.filter(
+    (seat) => !resultAccountIds.has(seat.accountId)
   );
   return (
     <div className={`settlement-layer${display ? " display-settlement" : ""}`}>
@@ -1884,7 +2674,9 @@ function SettlementPanel({
                   <strong>{player.username}</strong>
                   {seat && (
                     <small className={ready.has(player.accountId) ? "ready" : ""}>
-                      {ready.has(player.accountId)
+                      {player.accountId === room.hostAccountId
+                        ? t(language, "hostReadyImplicit")
+                        : ready.has(player.accountId)
                         ? `✓ ${t(language, "readyDone")}`
                         : t(language, "waitingForReady")}
                     </small>
@@ -1903,6 +2695,25 @@ function SettlementPanel({
               </article>
             );
           })}
+          {waitingMembers.map((member) => (
+            <article key={member.accountId} className="waiting-member">
+              <span className="result-avatar">{member.avatar}</span>
+              <div>
+                <strong>{member.username}</strong>
+                <small className={ready.has(member.accountId) ? "ready" : ""}>
+                  {member.accountId === room.hostAccountId
+                    ? t(language, "hostReadyImplicit")
+                    : ready.has(member.accountId)
+                      ? `✓ ${t(language, "readyDone")}`
+                      : t(language, "waitingForReady")}
+                </small>
+              </div>
+              <div className="settlement-chip-summary">
+                <small>{t(language, "spectator")}</small>
+                <b>{member.tableChips.toLocaleString()}</b>
+              </div>
+            </article>
+          ))}
         </div>
         {result.showdown && (
           <section className="showdown-summary">
@@ -1956,13 +2767,26 @@ function SettlementPanel({
                   {t(language, "topUp")}
                 </button>
               )}
-              <button
-                className="primary"
-                disabled={!canReady}
-                onClick={onReady}
-              >
-                {currentReady ? `✓ ${t(language, "readyDone")}` : t(language, "ready")}
-              </button>
+              {onReady && (
+                <button
+                  className={currentReady ? "secondary" : "primary"}
+                  disabled={!canToggleReady}
+                  onClick={() => onReady(!currentReady)}
+                >
+                  {currentReady
+                    ? t(language, "cancelReady")
+                    : t(language, "ready")}
+                </button>
+              )}
+              {onStart && (
+                <button
+                  className="primary"
+                  disabled={!canStart}
+                  onClick={onStart}
+                >
+                  {t(language, "startNextHand")}
+                </button>
+              )}
             </div>
           </footer>
         )}
@@ -2078,6 +2902,28 @@ function LanguageToggle({
   );
 }
 
+function DeviceControls({
+  language,
+  setLanguage,
+  themeScope
+}: {
+  language: Language;
+  setLanguage: (language: Language) => void;
+  themeScope: ThemeScope;
+}) {
+  return (
+    <div className="device-controls">
+      <LanguageToggle language={language} setLanguage={setLanguage} />
+      <ThemeToggle
+        scope={themeScope}
+        groupLabel={t(language, "themeSelection")}
+        lightLabel={t(language, "lightTheme")}
+        darkLabel={t(language, "darkTheme")}
+      />
+    </div>
+  );
+}
+
 function useStored<T>(key: string, initial: T): [T, (value: T) => void] {
   const [value, setValue] = useState<T>(() => {
     const stored = localStorage.getItem(key);
@@ -2151,16 +2997,76 @@ function isRoomProjection(value: unknown): value is RoomProjection {
   );
 }
 
-function amountToChips(amount: number): number[] {
-  const result: number[] = [];
+function amountToChipCounts(
+  amount: number,
+  denominations: readonly number[]
+): Record<string, number> {
+  const result: Record<string, number> = {};
   let remaining = amount;
   for (const denomination of [...denominations].reverse()) {
-    while (remaining >= denomination) {
-      result.push(denomination);
-      remaining -= denomination;
+    const count = Math.floor(remaining / denomination);
+    if (count > 0) {
+      result[String(denomination)] = count;
+      remaining -= denomination * count;
     }
   }
   return result;
+}
+
+function addChip(
+  current: Record<string, number>,
+  denomination: number
+): Record<string, number> {
+  const key = String(denomination);
+  return { ...current, [key]: (current[key] ?? 0) + 1 };
+}
+
+function removeChip(
+  current: Record<string, number>,
+  denomination: number
+): Record<string, number> {
+  const key = String(denomination);
+  const count = current[key] ?? 0;
+  if (count <= 1) {
+    const next = { ...current };
+    delete next[key];
+    return next;
+  }
+  return { ...current, [key]: count - 1 };
+}
+
+function chipStyle(
+  denomination: number,
+  denominations: readonly number[]
+): React.CSSProperties {
+  const index = Math.max(0, denominations.indexOf(denomination));
+  const background =
+    productConfig.chips.colors[index % productConfig.chips.colors.length]!;
+  return {
+    "--chip-color": background,
+    "--chip-edge": productConfig.chips.edge,
+    "--chip-text":
+      index === 0
+        ? productConfig.chips.textDark
+        : productConfig.chips.textLight
+  } as React.CSSProperties;
+}
+
+function validateDenominations(values: readonly number[]): boolean {
+  return Boolean(normalizedDenominations(values));
+}
+
+function normalizedDenominations(values: readonly number[]): number[] | null {
+  if (
+    values.length < 1 ||
+    values.length > 16 ||
+    values.some((value) => !Number.isSafeInteger(value) || value <= 0) ||
+    new Set(values).size !== values.length ||
+    !values.includes(1)
+  ) {
+    return null;
+  }
+  return [...values].sort((left, right) => left - right);
 }
 
 function roomStatus(language: Language, status: RoomProjection["status"]): string {
@@ -2230,11 +3136,13 @@ function errorMessage(language: Language, reason: unknown): string {
   const code = reason instanceof Error ? reason.message : String(reason);
   const messages: Record<string, [string, string]> = {
     INVALID_USERNAME: ["用户名不能为空或超过 32 个字符", "Username is required and must be at most 32 characters"],
+    INVALID_AVATAR: ["请选择当前可用的头像", "Choose an avatar from the current list"],
     USERNAME_TAKEN: ["该用户名已被使用", "That username is already in use"],
     STALE_CONNECTION: ["此账户已由新设备接管，请重新进入", "A newer device controls this account; enter again"],
     STALE_VERSION: ["状态已更新，请重试", "State changed; please try again"],
     ALREADY_IN_ROOM: ["该账户已经在另一房间", "This account is already in another room"],
     ROOM_ALREADY_STARTED: ["牌局已开始，不能加入新玩家", "The game already started; new players cannot join"],
+    ROOM_NOT_JOINABLE: ["当前房间不能加入", "This room is not joinable"],
     ROOM_FULL: ["房间已满", "The room is full"],
     INVALID_BUY_IN: ["买入金额超出房间范围", "Buy-in is outside the room limits"],
     INSUFFICIENT_SCORE: ["账户分数不足", "Not enough account score"],
@@ -2242,13 +3150,17 @@ function errorMessage(language: Language, reason: unknown): string {
     INVALID_AMOUNT: ["金额必须是正整数", "The amount must be a positive whole number"],
     INVALID_BASE_SCORE: ["基础分必须是非负整数", "Base score must be a non-negative whole number"],
     INVALID_ROOM_CONFIG: ["房间配置无效，请检查盲注和买入范围", "Room settings are invalid; check blinds and buy-in limits"],
+    INVALID_DENOMINATIONS: ["筹码面值必须是 1–16 个不重复正整数并包含 1", "Chip values must be 1–16 unique positive whole numbers and include 1"],
     INVALID_LANGUAGE: ["不支持该界面语言", "That interface language is not supported"],
     NOT_ENOUGH_PLAYERS: ["至少需要两名玩家", "At least two players are required"],
+    NOT_ENOUGH_READY_PLAYERS: ["房主之外至少需要一名已准备玩家", "At least one player besides the host must be ready"],
+    UNREADY_PLAYERS_REQUIRE_CONFIRMATION: ["请确认未准备成员进入观众席", "Confirm that unready members will spectate"],
+    HOST_NEEDS_TOP_UP: ["房主需要先补充筹码", "The host must top up first"],
+    HOST_READY_IMPLICIT: ["房主会自动参赛，无需准备", "The host joins automatically and does not ready up"],
     HOST_ONLY: ["只有房主可以执行此操作", "Only the host can do that"],
     TRANSFER_HOST_FIRST: ["请先转让房主", "Transfer the host role first"],
     TARGET_OFFLINE: ["只能把房主转让给在线玩家", "The new host must be online"],
     CANNOT_REMOVE_HOST: ["房主不能移除自己，请先转让或关闭房间", "The host cannot remove themselves; transfer or close the room"],
-    PLAYER_STILL_CONNECTED: ["对局中只能移除已断线玩家", "Only disconnected players can be removed during a hand"],
     PLAYER_NEEDS_TOP_UP: ["至少两名玩家需要先补充筹码", "At least two players must top up first"],
     HAND_IN_PROGRESS: ["请在两手牌之间操作", "This action is available between hands"],
     ROOM_NOT_IN_PROGRESS: ["牌局尚未开始或已经暂停", "The room is not in progress"],

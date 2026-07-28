@@ -8,6 +8,7 @@ describe("role projections and realtime concurrency", () => {
     const domain = new PlatformDomain(initialSnapshot());
     const alice = domain.enterAccount("Alice");
     const bob = domain.enterAccount("Bob");
+    const cara = domain.enterAccount("Cara");
     const room = domain.createRoom(alice.id, "Cards", defaultRoomConfig);
     domain.joinRoom(room.id, alice.id, 2_000);
     domain.joinRoom(room.id, bob.id, 2_000);
@@ -23,14 +24,20 @@ describe("role projections and realtime concurrency", () => {
       bigBlind: 100,
       deck: deterministicDeck()
     });
+    domain.joinRoom(room.id, cara.id, 2_000);
 
     const aliceProjection = domain.projectRoom(room.id, { accountId: alice.id });
     const bobProjection = domain.projectRoom(room.id, { accountId: bob.id });
+    const caraProjection = domain.projectRoom(room.id, { accountId: cara.id });
     const displayProjection = domain.projectRoom(room.id, { display: true });
+    expect(aliceProjection.viewerRole).toBe("participant");
+    expect(caraProjection.viewerRole).toBe("spectator");
     expect(aliceProjection.ownHoleCards).toHaveLength(2);
     expect(bobProjection.ownHoleCards).toHaveLength(2);
     expect(aliceProjection.ownHoleCards).not.toEqual(bobProjection.ownHoleCards);
     expect(displayProjection.ownHoleCards).toBeUndefined();
+    expect(caraProjection.ownHoleCards).toBeUndefined();
+    expect(JSON.stringify(caraProjection)).not.toContain("holeCards");
     expect(JSON.stringify(displayProjection)).not.toContain("holeCards");
     expect(displayProjection.communityCards).toHaveLength(5);
   });

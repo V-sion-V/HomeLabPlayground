@@ -131,6 +131,37 @@ describe("target household capacity", () => {
         version = joined.version;
       }
 
+      for (let index = 1; index < 7; index += 1) {
+        const ready = await postJson<RoomProjection>(`${baseUrl}/api/command`, {
+          commandId: randomUUID(),
+          connectionId: entered[index]!.data.connectionId,
+          aggregateId: roomA.data.id,
+          expectedVersion: version,
+          type: "poker.ready",
+          payload: {
+            accountId: entered[index]!.data.account.id,
+            roomId: roomA.data.id,
+            ready: true
+          }
+        });
+        version = ready.version;
+      }
+      for (let index = 8; index < 14; index += 1) {
+        const ready = await postJson<RoomProjection>(`${baseUrl}/api/command`, {
+          commandId: randomUUID(),
+          connectionId: entered[index]!.data.connectionId,
+          aggregateId: roomB.data.id,
+          expectedVersion: version,
+          type: "poker.ready",
+          payload: {
+            accountId: entered[index]!.data.account.id,
+            roomId: roomB.data.id,
+            ready: true
+          }
+        });
+        version = ready.version;
+      }
+
       const startedA = await postJson<RoomProjection>(`${baseUrl}/api/command`, {
         commandId: randomUUID(),
         connectionId: entered[0]!.data.connectionId,
@@ -234,6 +265,7 @@ describe("target household capacity", () => {
         expect(projection.id).toBe(roomA.data.id);
         expect(projection.potTotal).toBe(250);
         expect(projection.ownHoleCards).toHaveLength(2);
+        expect(projection.effectiveDenominations.length).toBeLessThanOrEqual(16);
       }
       for (const page of accountPages.slice(7, 14)) {
         const messages = await capacityMessages(page);

@@ -8,6 +8,7 @@ const offlineContainer = `party-offline-${suffix}`;
 const firstContainer = `party-first-${suffix}`;
 const secondContainer = `party-second-${suffix}`;
 const containers = [offlineContainer, firstContainer, secondContainer];
+const smokeHost = process.env.DOCKER_SMOKE_HOST?.trim() || "127.0.0.1";
 
 const dockerCheck = run(["version", "--format", "{{.Server.Version}}"], false);
 if (dockerCheck.status !== 0) {
@@ -94,11 +95,23 @@ try {
       buyIn: 2_000
     }
   });
+  const ready = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: bob.data.connectionId,
+    aggregateId: roomId,
+    expectedVersion: join.version,
+    type: "poker.ready",
+    payload: {
+      accountId: bob.data.account.id,
+      roomId,
+      ready: true
+    }
+  });
   const start = await post(`${firstBase}/api/command`, {
     commandId: randomUUID(),
     connectionId: alice.data.connectionId,
     aggregateId: roomId,
-    expectedVersion: join.version,
+    expectedVersion: ready.version,
     type: "room.start",
     payload: { accountId: alice.data.account.id, roomId }
   });
@@ -190,7 +203,10 @@ function baseUrl(container) {
   const value = result.stdout.trim().split("\n")[0]?.trim();
   const port = value?.match(/:(\d+)$/)?.[1];
   if (!port) throw new Error(`Unexpected docker port output: ${value}`);
-  return `http://127.0.0.1:${port}`;
+  const host = smokeHost.includes(":") && !smokeHost.startsWith("[")
+    ? `[${smokeHost}]`
+    : smokeHost;
+  return `http://${host}:${port}`;
 }
 
 async function get(url) {
