@@ -59,6 +59,8 @@ export interface LeaderboardSnapshot {
   avatar: string;
   score: number;
   rank: number;
+  anonymized?: boolean;
+  anonymousNumber?: number;
 }
 
 export interface HistoricalSeason {
@@ -127,6 +129,7 @@ export interface PokerState {
   settlementSnapshot?: string;
   advanceDeadline?: number;
   pausedAdvanceRemainingMs?: number;
+  departedAccountIds?: string[];
 }
 
 export interface RoomConfig {
@@ -183,6 +186,8 @@ export interface HandResultSummary {
     avatar: string;
     chipDelta: number;
     endingChips?: number;
+    anonymized?: boolean;
+    anonymousNumber?: number;
   }>;
   showdown?: {
     communityCards: Card[];
@@ -191,10 +196,41 @@ export interface HandResultSummary {
       cards: Card[];
       handCategory: HandCategory;
       winner: boolean;
+      anonymized?: boolean;
+      anonymousNumber?: number;
     }>;
   };
   completedAt: number;
   reversedAt?: number;
+}
+
+export interface RetiredIdentity {
+  publicId: string;
+  anonymousNumber: number;
+  retiredAt: number;
+}
+
+export interface PlatformParticipationFact {
+  resultId: string;
+  gameType: string;
+  seasonId: string;
+  participantAccountIds: string[];
+  valid: boolean;
+  reversed: boolean;
+}
+
+export interface AccountManagementSummary {
+  id: string;
+  username: string;
+  avatar: string;
+}
+
+export interface PlatformDataDeletionResult {
+  kind: "account" | "accounts" | "season" | "seasons";
+  deletedIds: string[];
+  protectedIds: string[];
+  selfDeleted: boolean;
+  noOp: boolean;
 }
 
 export interface GlobalSettings {
@@ -216,6 +252,7 @@ export interface PlatformSnapshot {
   leases: Record<string, { connectionId: string; acquiredAt: number }>;
   ledger: AssetLine[];
   handResults: HandResultSummary[];
+  retiredIdentities: Record<string, RetiredIdentity>;
   settings: GlobalSettings;
 }
 
@@ -280,6 +317,7 @@ export interface LobbyProjection {
   leaderboard: LeaderboardSnapshot[];
   historicalSeasons: HistoricalSeason[];
   currentSeason: Season;
+  accounts: AccountManagementSummary[];
   settings: GlobalSettings;
   accountRoomId?: string;
 }
@@ -326,6 +364,8 @@ export interface RoomProjection {
       avatar: string;
       chipDelta: number;
       endingChips?: number;
+      anonymized?: boolean;
+      anonymousNumber?: number;
     }>;
     showdown?: {
       communityCards: Card[];
@@ -334,6 +374,8 @@ export interface RoomProjection {
         cards: Card[];
         handCategory: HandCategory;
         winner: boolean;
+        anonymized?: boolean;
+        anonymousNumber?: number;
       }>;
     };
   };

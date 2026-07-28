@@ -736,6 +736,161 @@ describe("server", () => {
     store.close();
   });
 
+  it("uses the new seat buy-in after a completed-hand player leaves and rejoins", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const aliceConnection = domain.acquireLease(alice.id);
+    const bobConnection = domain.acquireLease(bob.id);
+    const room = domain.createRoom(alice.id, "Rejoin", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    room.poker.phase = "complete";
+    room.poker.players[0]!.stack = 1_800;
+    room.poker.players[0]!.roundBet = 0;
+    room.poker.players[0]!.totalBet = 0;
+    room.poker.players[1]!.stack = 2_200;
+    room.poker.players[1]!.roundBet = 0;
+    room.poker.players[1]!.totalBet = 0;
+    room.poker.pots = [];
+    room.seats.find((seat) => seat.accountId === alice.id)!.tableChips = 1_800;
+    room.seats.find((seat) => seat.accountId === bob.id)!.tableChips = 2_200;
+    store.save(state);
+
+    const left = dispatch(store, {
+      commandId: "completed-leave",
+      connectionId: bobConnection,
+      aggregateId: room.id,
+      expectedVersion: 0,
+      type: "room.leave",
+      payload: { accountId: bob.id, roomId: room.id }
+    });
+    expect(left.status).toBe("accepted");
+
+    const joined = dispatch(store, {
+      commandId: "completed-rejoin",
+      connectionId: bobConnection,
+      aggregateId: room.id,
+      expectedVersion: 1,
+      type: "room.join",
+      payload: { accountId: bob.id, roomId: room.id, buyIn: 3_000 }
+    });
+    expect(joined.status).toBe("accepted");
+    expect(
+      (joined.data as { seats: Array<{ accountId: string; tableChips: number; role: string }> })
+        .seats.find((seat) => seat.accountId === bob.id)
+    ).toMatchObject({ tableChips: 3_000, role: "member" });
+
+    const ready = dispatch(store, {
+      commandId: "completed-rejoin-ready",
+      connectionId: bobConnection,
+      aggregateId: room.id,
+      expectedVersion: 2,
+      type: "poker.ready",
+      payload: {
+        accountId: bob.id,
+        roomId: room.id,
+        pokerVersion: 0,
+        ready: true
+      }
+    });
+    expect(ready.status).toBe("accepted");
+    const started = dispatch(store, {
+      commandId: "completed-rejoin-start",
+      connectionId: aliceConnection,
+      aggregateId: room.id,
+      expectedVersion: 3,
+      type: "room.start",
+      payload: {
+        accountId: alice.id,
+        roomId: room.id,
+        pokerVersion: 1
+      }
+    });
+    expect(started.status).toBe("accepted");
+    const persisted = store.load();
+    const bobPlayer = persisted.rooms[room.id]?.poker?.players.find(
+      (player) => player.accountId === bob.id
+    );
+    expect((bobPlayer?.stack ?? 0) + (bobPlayer?.totalBet ?? 0)).toBe(3_000);
+    new PlatformDomain(persisted).validateInvariants();
+    store.close();
+  });
+
+  it("validates and replays account deletion while invalidating the deleted lease", async () => {
+    const databasePath = temporaryDatabase();
+    const app = await buildApp({ databasePath });
+    const aliceEnter = await app.inject({
+      method: "POST",
+      url: "/api/enter",
+      payload: { username: "Alice", avatar: "🦊" }
+    });
+    const alice = aliceEnter.json().data;
+    const bobEnter = await app.inject({
+      method: "POST",
+      url: "/api/enter",
+      payload: { username: "Bob", avatar: "🐼" }
+    });
+    const bob = bobEnter.json().data;
+    const version = bobEnter.json().version as number;
+    const payload = {
+      commandId: "delete-account-alice",
+      connectionId: bob.connectionId,
+      aggregateId: "platform",
+      expectedVersion: version,
+      type: "account.delete",
+      payload: {
+        accountId: bob.account.id,
+        targetAccountId: alice.account.id
+      }
+    };
+
+    const deleted = await sendCommand(app, payload);
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json().data).toMatchObject({
+      deletedIds: [alice.account.id],
+      selfDeleted: false
+    });
+    const replayed = await sendCommand(app, payload);
+    expect(replayed.json().status).toBe("replayed");
+    const stale = await sendCommand(app, {
+      ...payload,
+      commandId: "delete-account-alice-again"
+    });
+    expect(stale.json().code).toBe("STALE_VERSION");
+    const deletedState = await app.inject({
+      method: "GET",
+      url:
+        `/api/state?accountId=${alice.account.id}` +
+        `&connectionId=${encodeURIComponent(alice.connectionId)}`
+    });
+    expect(deletedState.statusCode).toBe(403);
+    const lobby = await app.inject({
+      method: "GET",
+      url:
+        `/api/state?accountId=${bob.account.id}` +
+        `&connectionId=${encodeURIComponent(bob.connectionId)}`
+    });
+    expect(lobby.json().accounts.map((account: { id: string }) => account.id)).toEqual([
+      bob.account.id
+    ]);
+    expect(JSON.stringify(lobby.json())).not.toContain("retiredIdentities");
+    await app.close();
+  });
+
   it("reverses a chips-only settlement with version checks and linked ledger lines", () => {
     const store = new PlatformStore(temporaryDatabase());
     const state = initialSnapshot(1_000);

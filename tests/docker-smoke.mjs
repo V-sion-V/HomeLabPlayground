@@ -7,7 +7,13 @@ const volume = `home-party-game-platform-smoke-${suffix}`;
 const offlineContainer = `party-offline-${suffix}`;
 const firstContainer = `party-first-${suffix}`;
 const secondContainer = `party-second-${suffix}`;
-const containers = [offlineContainer, firstContainer, secondContainer];
+const thirdContainer = `party-third-${suffix}`;
+const containers = [
+  offlineContainer,
+  firstContainer,
+  secondContainer,
+  thirdContainer
+];
 const smokeHost = process.env.DOCKER_SMOKE_HOST?.trim() || "127.0.0.1";
 
 const dockerCheck = run(["version", "--format", "{{.Server.Version}}"], false);
@@ -44,9 +50,31 @@ try {
     "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
   ]);
   must(["rm", "-f", offlineContainer]);
+  must([
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "-v",
+    `${volume}:/data`,
+    "--entrypoint",
+    "node",
+    image,
+    "--input-type=module",
+    "-e",
+    "import Database from 'better-sqlite3';const db=new Database('/data/platform.sqlite');const row=db.prepare('SELECT state_json FROM platform_state WHERE id=1').get();const state=JSON.parse(row.state_json);delete state.retiredIdentities;db.prepare('UPDATE platform_state SET state_json=? WHERE id=1').run(JSON.stringify(state));db.close();"
+  ]);
 
   must(["run", "-d", "--name", firstContainer, "-P", "-v", `${volume}:/data`, image]);
   await waitForHealth(firstContainer);
+  must([
+    "exec",
+    firstContainer,
+    "node",
+    "--input-type=module",
+    "-e",
+    "import Database from 'better-sqlite3';const db=new Database('/data/platform.sqlite',{readonly:true});const row=db.prepare('SELECT state_json FROM platform_state WHERE id=1').get();const state=JSON.parse(row.state_json);db.close();if(!state.retiredIdentities)process.exit(1);"
+  ]);
   const firstBase = baseUrl(firstContainer);
   const alice = await post(`${firstBase}/api/enter`, {
     username: `smoke-alice-${suffix}`,
@@ -159,8 +187,69 @@ try {
   if (!afterRoom.seats.every((seat) => seat.connected === false)) {
     throw new Error("Persisted connections were not rebuilt as disconnected");
   }
+  const close = await post(`${secondBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: alice.data.connectionId,
+    aggregateId: roomId,
+    expectedVersion: afterLobby.version,
+    type: "room.close",
+    payload: { accountId: alice.data.account.id, roomId }
+  });
+  const deletion = await post(`${secondBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: alice.data.connectionId,
+    aggregateId: "platform",
+    expectedVersion: close.version,
+    type: "account.delete",
+    payload: {
+      accountId: alice.data.account.id,
+      targetAccountId: bob.data.account.id
+    }
+  });
+  if (
+    deletion.status !== "accepted" ||
+    deletion.data?.deletedIds?.[0] !== bob.data.account.id
+  ) {
+    throw new Error("Account deletion was not accepted");
+  }
+  const deletedLobby = await get(
+    `${secondBase}/api/state?accountId=${alice.data.account.id}` +
+      `&connectionId=${encodeURIComponent(alice.data.connectionId)}`
+  );
+  if (
+    deletedLobby.accounts.some((account) => account.id === bob.data.account.id) ||
+    JSON.stringify(deletedLobby).includes("retiredIdentities") ||
+    JSON.stringify(deletedLobby).includes(`smoke-bob-${suffix}`)
+  ) {
+    throw new Error("Deleted account or internal retirement data remained public");
+  }
+  const replacement = await post(`${secondBase}/api/enter`, {
+    username: `smoke-bob-${suffix}`,
+    avatar: "🐼"
+  });
+  if (
+    replacement.status !== "accepted" ||
+    replacement.data.account.id === bob.data.account.id
+  ) {
+    throw new Error("Deleted username was not recreated as an independent account");
+  }
+  must(["rm", "-f", secondContainer]);
+
+  must(["run", "-d", "--name", thirdContainer, "-P", "-v", `${volume}:/data`, image]);
+  await waitForHealth(thirdContainer);
+  const thirdBase = baseUrl(thirdContainer);
+  const restartedLobby = await get(`${thirdBase}/api/state`);
+  if (
+    restartedLobby.accounts.some((account) => account.id === bob.data.account.id) ||
+    !restartedLobby.accounts.some(
+      (account) => account.id === replacement.data.account.id
+    ) ||
+    JSON.stringify(restartedLobby).includes(`"${bob.data.account.id}"`)
+  ) {
+    throw new Error("Deleted identity reappeared or replacement identity changed after restart");
+  }
   console.log(
-    "Docker offline startup, non-root runtime, health, named-volume poker persistence and restart fingerprint passed."
+    "Docker offline startup, non-root runtime, health, named-volume poker persistence, account anonymization, username reuse and restart fingerprint passed."
   );
 } finally {
   for (const container of containers) run(["rm", "-f", container], false);

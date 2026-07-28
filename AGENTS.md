@@ -33,7 +33,7 @@
 
 ## 2. 当前开发阶段
 
-阶段快照日期：`2026-07-28`。当前分支为 `main`；本快照已包含 `deployment-automation` initial 收口工作区，精确提交身份应以 `git rev-parse HEAD` 和最新 Git 事实为准。
+阶段快照日期：`2026-07-29`。当前分支为 `main`；本快照已包含 `platform-usability-and-data-management` initial 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
 
 ### 已完成
 
@@ -43,10 +43,12 @@
 - `deployment-automation` 已完成 initial、P-001/P-002/P-003 和 `change-0.md`，当前权威快照为 `docs/requirements/deployment-automation/effective-requirements.md`。
 - 部署自动化包含 PowerShell 5.1 本地入口、POSIX 远端状态机、Git HEAD 归档、SHA 镜像、冷备份、单目录/单备份、幂等 no-op、自动/人工恢复和文档；状态化假 SSH/Docker 部署矩阵最终为 19/19。
 - 真实 iStoreOS 已通过新目录首次接管、受管更新、零上传 no-op 和确定健康失败自动回滚。`deployment-automation` initial 收口时服务器运行受管 Git `b9490b7f8137af2982bf494b1bc1c0005089f656` 对应服务，`home-table` running/healthy、非 root、外部 `/healthz` 200，固定卷与唯一备份安全且无部署临时状态；后续正式发布状态以最近一次自动化部署和只读检查为准。
+- `poker-room-experience-upgrade` initial 已完成并冻结：房间成员/准备、面值、头像、主题、设置和移动牌桌体验已交付，全部本地、生产浏览器、容量和远端隔离 Docker 门禁通过。
+- `platform-usability-and-data-management` initial 已完成并冻结：当前/未来赛季排行榜按真实参赛结果筛选，平台提供账户与历史赛季逐个/批量管理、资产退役和历史匿名化；扑克 complete 退出重进、移动下注、顶部控件、声音和友好错误体验已修复。P-001 的 T1/T2、lint、typecheck、platform 25/25、poker 15/15、realtime 4/4、Chromium/WebKit 6/6、capacity 4/4、生产 build/静态资源、iStoreOS 隔离 Docker smoke 和差异门禁全部通过；当前权威快照为 `docs/requirements/platform-usability-and-data-management/effective-requirements.md`。
 
 ### 尚未完成或待执行
 
-- `poker-room-experience-upgrade` initial 已完成并冻结：P-001 的 T1/T2、typecheck、lint、platform、poker、realtime、Chromium/WebKit 核心 E2E、capacity、生产 build/静态资源、远端 iStoreOS 隔离 Docker smoke 和 `git diff --check` 全部通过；`phase-001-result.md`、`change-0.md` 与 `effective-requirements.md` 已生成。隔离 smoke 当时未切换正式服务，随机容器/卷/镜像已清理，b949 容器和固定数据卷保持不变；后续正式发布状态以受支持部署入口的实际结果为准。
+- 当前没有待恢复的 `platform-usability-and-data-management` initial 任务。隔离 smoke 未切换正式服务，随机容器/卷/镜像已清理；测试前后正式服务仍为受管 Git `d55c2568abcb2b67871c58b53559d7b05a32232c`、running/healthy，固定卷、正式发布标记与唯一备份指纹未改变。后续正式发布状态以受支持部署入口的实际结果为准。
 - 当前没有待恢复的 `deployment-automation` initial 任务。其三个 phase plan/result、完成状态、`change-0.md` 与有效需求已经冻结；未来部署自动化需求必须新建连续的 `change-N` 运行。
 
 ### 工作流文档规则

@@ -7,6 +7,8 @@ import type {
   HandCategory,
   HistoricalSeason,
   LobbyProjection,
+  PlatformDataDeletionResult,
+  PlatformParticipationFact,
   PlatformSnapshot,
   Room,
   RoomConfig,
@@ -67,6 +69,7 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
     leases: {},
     ledger: [],
     handResults: [],
+    retiredIdentities: {},
     settings: {
       defaultLanguage: "zh-CN",
       defaultHostTransferTimeoutSeconds: 60,
@@ -122,6 +125,10 @@ export class PlatformDomain {
     }
     if (!Array.isArray(state.handResults)) {
       state.handResults = [];
+      this.normalizedPersistedState = true;
+    }
+    if (!state.retiredIdentities || typeof state.retiredIdentities !== "object") {
+      state.retiredIdentities = {};
       this.normalizedPersistedState = true;
     }
     for (const result of state.handResults) {
@@ -194,6 +201,10 @@ export class PlatformDomain {
           room.poker.denominations = normalizedDenominations;
           this.normalizedPersistedState = true;
         }
+      }
+      if (room.poker && !Array.isArray(room.poker.departedAccountIds)) {
+        room.poker.departedAccountIds = [];
+        this.normalizedPersistedState = true;
       }
       if (room.poker?.phase === "complete" && room.poker.advanceDeadline !== undefined) {
         delete room.poker.advanceDeadline;
@@ -320,6 +331,9 @@ export class PlatformDomain {
       leaderboard: this.currentLeaderboard(),
       historicalSeasons: structuredClone(this.state.historicalSeasons),
       currentSeason: structuredClone(this.currentSeason),
+      accounts: Object.values(this.state.accounts)
+        .map(({ id, username, avatar }) => ({ id, username, avatar }))
+        .sort((left, right) => left.username.localeCompare(right.username)),
       settings: structuredClone(this.state.settings),
       accountRoomId: accountId ? this.roomForAccount(accountId)?.id : undefined
     };
@@ -437,11 +451,19 @@ export class PlatformDomain {
   }
 
   roomMemberStack(room: Room, accountId: string): number {
-    return (
-      room.poker?.players.find((player) => player.accountId === accountId)?.stack ??
-      room.seats.find((seat) => seat.accountId === accountId)?.tableChips ??
-      0
-    );
+    const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+    if (!seat) return 0;
+    if (
+      room.poker &&
+      !["waiting", "complete", "void"].includes(room.poker.phase) &&
+      !room.poker.departedAccountIds?.includes(accountId)
+    ) {
+      return (
+        room.poker.players.find((player) => player.accountId === accountId)?.stack ??
+        seat.tableChips
+      );
+    }
+    return seat.tableChips;
   }
 
   effectiveDenominations(room: Room): number[] {
@@ -506,15 +528,16 @@ export class PlatformDomain {
       throw new DomainError("HAND_IN_PROGRESS");
     }
     if (!Number.isInteger(amount) || amount <= 0) throw new DomainError("INVALID_AMOUNT");
-    const currentStack =
-      room.poker?.players.find((player) => player.accountId === accountId)?.stack ??
-      seat.tableChips;
+    const currentStack = this.roomMemberStack(room, accountId);
     if (currentStack + amount > room.config.maxBuyIn) throw new DomainError("BUY_IN_LIMIT");
     if (this.requireAsset(accountId).score < amount) throw new DomainError("INSUFFICIENT_SCORE");
     this.transfer(accountId, room.id, amount, "top-up");
     seat.buyIn += amount;
     seat.tableChips = currentStack + amount;
-    const pokerPlayer = room.poker?.players.find((player) => player.accountId === accountId);
+    const pokerPlayer =
+      room.poker && !room.poker.departedAccountIds?.includes(accountId)
+        ? room.poker.players.find((player) => player.accountId === accountId)
+        : undefined;
     if (pokerPlayer) pokerPlayer.stack += amount;
     room.version += 1;
     return room;
@@ -545,9 +568,14 @@ export class PlatformDomain {
       room.poker && !["complete", "waiting", "void"].includes(room.poker.phase);
     if (handActive && pokerPlayer && !forced) throw new DomainError("HAND_IN_PROGRESS");
     if (pokerPlayer && handActive) pokerPlayer.folded = true;
-    const refundable = pokerPlayer?.stack ?? room.seats[seatIndex]!.tableChips;
+    const pokerPlayerIsCurrent = Boolean(
+      pokerPlayer && !room.poker?.departedAccountIds?.includes(accountId)
+    );
+    const refundable = pokerPlayerIsCurrent
+      ? pokerPlayer!.stack
+      : room.seats[seatIndex]!.tableChips;
     if (refundable > 0) this.transfer(room.id, accountId, refundable, forced ? "player-removed" : "leave-room");
-    if (pokerPlayer) pokerPlayer.stack = 0;
+    if (pokerPlayerIsCurrent && pokerPlayer) pokerPlayer.stack = 0;
     const asset = this.requireAsset(accountId);
     asset.inGame = false;
     asset.frozenScore = null;
@@ -558,6 +586,11 @@ export class PlatformDomain {
       room.poker.readyAccountIds = room.poker.readyAccountIds.filter(
         (candidate) => candidate !== accountId
       );
+      if (room.poker.phase === "complete" && pokerPlayer) {
+        room.poker.departedAccountIds = [
+          ...new Set([...(room.poker.departedAccountIds ?? []), accountId])
+        ];
+      }
     }
     room.seats.splice(seatIndex, 1);
     if (room.seats.length === 0) {
@@ -664,8 +697,11 @@ export class PlatformDomain {
 
   closeRoom(roomId: string): void {
     const room = this.requireRoom(roomId);
+    const departedAccountIds = new Set(room.poker?.departedAccountIds ?? []);
     const pokerPlayers = new Map(
-      room.poker?.players.map((player) => [player.accountId, player]) ?? []
+      room.poker?.players
+        .filter((player) => !departedAccountIds.has(player.accountId))
+        .map((player) => [player.accountId, player]) ?? []
     );
     const accountIds = new Set([
       ...room.seats.map((seat) => seat.accountId),
@@ -740,7 +776,18 @@ export class PlatformDomain {
   }
 
   currentLeaderboard() {
+    const eligibleAccountIds = new Set(
+      this.participationFacts()
+        .filter(
+          (fact) =>
+            fact.seasonId === this.currentSeason.id &&
+            fact.valid &&
+            !fact.reversed
+        )
+        .flatMap((fact) => fact.participantAccountIds)
+    );
     return Object.values(this.state.accounts)
+      .filter((account) => eligibleAccountIds.has(account.id))
       .map((account) => {
         const asset = this.requireAsset(account.id);
         return {
@@ -753,6 +800,91 @@ export class PlatformDomain {
       })
       .sort((left, right) => right.score - left.score || left.username.localeCompare(right.username))
       .map((entry, index) => ({ ...entry, rank: index + 1 }));
+  }
+
+  participationFacts(): PlatformParticipationFact[] {
+    return this.state.handResults.map((result) => ({
+      resultId: result.id,
+      gameType: "texas-holdem",
+      seasonId: result.seasonId,
+      participantAccountIds: [...result.participantAccountIds],
+      valid: result.outcome !== "void",
+      reversed: result.reversedAt !== undefined
+    }));
+  }
+
+  deleteAccount(
+    targetAccountId: string,
+    actorAccountId: string
+  ): PlatformDataDeletionResult {
+    this.assertNoOpenRooms();
+    this.requireAccount(actorAccountId);
+    this.requireAccount(targetAccountId);
+    this.deleteAccountInternal(targetAccountId);
+    return {
+      kind: "account",
+      deletedIds: [targetAccountId],
+      protectedIds: [],
+      selfDeleted: targetAccountId === actorAccountId,
+      noOp: false
+    };
+  }
+
+  deleteOtherAccounts(actorAccountId: string): PlatformDataDeletionResult {
+    this.assertNoOpenRooms();
+    this.requireAccount(actorAccountId);
+    const targets = Object.keys(this.state.accounts)
+      .filter((accountId) => accountId !== actorAccountId)
+      .sort();
+    for (const targetAccountId of targets) {
+      this.deleteAccountInternal(targetAccountId);
+    }
+    return {
+      kind: "accounts",
+      deletedIds: targets,
+      protectedIds: [actorAccountId],
+      selfDeleted: false,
+      noOp: targets.length === 0
+    };
+  }
+
+  deleteHistoricalSeason(
+    seasonId: string,
+    actorAccountId: string
+  ): PlatformDataDeletionResult {
+    this.assertNoOpenRooms();
+    this.requireAccount(actorAccountId);
+    if (seasonId === this.currentSeason.id) {
+      throw new DomainError("CURRENT_SEASON_PROTECTED");
+    }
+    if (!this.state.seasons.some((season) => season.id === seasonId)) {
+      throw new DomainError("SEASON_NOT_FOUND");
+    }
+    this.deleteHistoricalSeasonsInternal(new Set([seasonId]));
+    return {
+      kind: "season",
+      deletedIds: [seasonId],
+      protectedIds: [this.currentSeason.id],
+      selfDeleted: false,
+      noOp: false
+    };
+  }
+
+  deleteAllHistoricalSeasons(actorAccountId: string): PlatformDataDeletionResult {
+    this.assertNoOpenRooms();
+    this.requireAccount(actorAccountId);
+    const targets = this.state.seasons
+      .filter((season) => season.status === "historical")
+      .map((season) => season.id)
+      .sort();
+    this.deleteHistoricalSeasonsInternal(new Set(targets));
+    return {
+      kind: "seasons",
+      deletedIds: targets,
+      protectedIds: [this.currentSeason.id],
+      selfDeleted: false,
+      noOp: targets.length === 0
+    };
   }
 
   projectRoom(roomId: string, viewer?: { accountId?: string; display?: boolean }): RoomProjection {
@@ -791,7 +923,9 @@ export class PlatformDomain {
         .sort((left, right) => left.position - right.position)
         .map((seat) => {
         const account = this.requireAccount(seat.accountId);
-        const pokerPlayer = pokerPlayers.get(seat.accountId);
+        const pokerPlayer = room.poker?.departedAccountIds?.includes(seat.accountId)
+          ? undefined
+          : pokerPlayers.get(seat.accountId);
         return {
           accountId: seat.accountId,
           username: account.username,
@@ -805,7 +939,9 @@ export class PlatformDomain {
           role: room.poker
             ? pokerPlayer
               ? "participant"
-              : "spectator"
+              : handActive
+                ? "spectator"
+                : "member"
             : "member"
         };
         }),
@@ -893,6 +1029,9 @@ export class PlatformDomain {
       if (!Number.isInteger(asset.score) || asset.score < 0) {
         throw new DomainError("NEGATIVE_ASSET");
       }
+      if (!this.state.accounts[asset.accountId]) {
+        throw new DomainError("ORPHANED_ASSET");
+      }
     }
     const occupancy = new Set<string>();
     for (const room of Object.values(this.state.rooms)) {
@@ -923,6 +1062,13 @@ export class PlatformDomain {
           line.seasonId === this.currentSeason.id && line.source === "season-issuance"
       )
       .reduce((sum, line) => sum + line.amount, 0);
+    const retired = this.state.ledger
+      .filter(
+        (line) =>
+          line.seasonId === this.currentSeason.id &&
+          line.destination === "asset-retirement"
+      )
+      .reduce((sum, line) => sum + line.amount, 0);
     const accountTotal = Object.values(this.state.seasonAssets).reduce(
       (sum, asset) => sum + asset.score,
       0
@@ -932,7 +1078,12 @@ export class PlatformDomain {
         return sum + room.seats.reduce((roomSum, seat) => roomSum + seat.tableChips, 0);
       }
       const participatingAccountIds = new Set(
-        room.poker.players.map((player) => player.accountId)
+        room.poker.players
+          .filter(
+            (player) =>
+              !room.poker?.departedAccountIds?.includes(player.accountId)
+          )
+          .map((player) => player.accountId)
       );
       return (
         sum +
@@ -948,7 +1099,7 @@ export class PlatformDomain {
         )
       );
     }, 0);
-    if (accountTotal + tableTotal !== issued) {
+    if (accountTotal + tableTotal !== issued - retired) {
       throw new DomainError("ASSET_CONSERVATION_FAILED");
     }
   }
@@ -1152,6 +1303,140 @@ export class PlatformDomain {
         reversalOf: destinationReversalOf
       }
     );
+  }
+
+  private assertNoOpenRooms(): void {
+    if (Object.keys(this.state.rooms).length > 0) {
+      throw new DomainError("ROOMS_MUST_CLOSE");
+    }
+  }
+
+  private deleteAccountInternal(accountId: string): void {
+    this.requireAccount(accountId);
+    const asset = this.requireAsset(accountId);
+    const anonymousNumber =
+      Math.max(
+        0,
+        ...Object.values(this.state.retiredIdentities).map(
+          (identity) => identity.anonymousNumber
+        )
+      ) + 1;
+    const identity = {
+      publicId: `retired:${this.id()}`,
+      anonymousNumber,
+      retiredAt: this.now()
+    };
+    this.state.retiredIdentities[accountId] = identity;
+    if (asset.score > 0) {
+      const lineId = this.id();
+      this.state.ledger.push({
+        id: lineId,
+        groupId: lineId,
+        seasonId: this.currentSeason.id,
+        accountId,
+        source: `account:${accountId}`,
+        destination: "asset-retirement",
+        amount: asset.score,
+        reason: "account-retired",
+        createdAt: this.now()
+      });
+    }
+    for (const historical of this.state.historicalSeasons) {
+      for (const entry of historical.entries) {
+        if (entry.accountId !== accountId) continue;
+        entry.accountId = identity.publicId;
+        entry.username = `Deleted player ${anonymousNumber}`;
+        entry.avatar = fallbackAvatar;
+        entry.anonymized = true;
+        entry.anonymousNumber = anonymousNumber;
+      }
+    }
+    for (const result of this.state.handResults) {
+      result.participantAccountIds = result.participantAccountIds.map((candidate) =>
+        candidate === accountId ? identity.publicId : candidate
+      );
+      result.payouts = result.payouts.map((payout) =>
+        payout.accountId === accountId
+          ? { ...payout, accountId: identity.publicId }
+          : payout
+      );
+      result.playerResults = result.playerResults?.map((player) =>
+        player.accountId === accountId
+          ? {
+              ...player,
+              accountId: identity.publicId,
+              username: `Deleted player ${anonymousNumber}`,
+              avatar: fallbackAvatar,
+              anonymized: true,
+              anonymousNumber
+            }
+          : player
+      );
+      result.showdown = result.showdown
+        ? {
+            ...result.showdown,
+            players: result.showdown.players.map((player) =>
+              player.accountId === accountId
+                ? {
+                    ...player,
+                    accountId: identity.publicId,
+                    anonymized: true,
+                    anonymousNumber
+                  }
+                : player
+            )
+          }
+        : undefined;
+    }
+    delete this.state.leases[accountId];
+    delete this.state.seasonAssets[accountId];
+    delete this.state.accounts[accountId];
+  }
+
+  private deleteHistoricalSeasonsInternal(seasonIds: Set<string>): void {
+    if (seasonIds.size === 0) return;
+    this.state.seasons = this.state.seasons.filter(
+      (season) => !seasonIds.has(season.id)
+    );
+    this.state.historicalSeasons = this.state.historicalSeasons.filter(
+      (historical) => !seasonIds.has(historical.season.id)
+    );
+    this.state.handResults = this.state.handResults.filter(
+      (result) => !seasonIds.has(result.seasonId)
+    );
+    this.state.ledger = this.state.ledger.filter(
+      (line) => !seasonIds.has(line.seasonId)
+    );
+    const referencedPublicIds = new Set<string>();
+    for (const historical of this.state.historicalSeasons) {
+      for (const entry of historical.entries) {
+        referencedPublicIds.add(entry.accountId);
+      }
+    }
+    for (const result of this.state.handResults) {
+      result.participantAccountIds.forEach((accountId) =>
+        referencedPublicIds.add(accountId)
+      );
+      result.payouts.forEach((payout) =>
+        referencedPublicIds.add(payout.accountId)
+      );
+      result.playerResults?.forEach((player) =>
+        referencedPublicIds.add(player.accountId)
+      );
+      result.showdown?.players.forEach((player) =>
+        referencedPublicIds.add(player.accountId)
+      );
+    }
+    for (const [accountId, identity] of Object.entries(
+      this.state.retiredIdentities
+    )) {
+      const ledgerReferenced = this.state.ledger.some(
+        (line) => line.accountId === accountId
+      );
+      if (!ledgerReferenced && !referencedPublicIds.has(identity.publicId)) {
+        delete this.state.retiredIdentities[accountId];
+      }
+    }
   }
 
   private validateRoomConfig(config: RoomConfig): void {

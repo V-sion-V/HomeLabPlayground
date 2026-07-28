@@ -48,6 +48,42 @@ describe("target household capacity", () => {
     store.close();
   });
 
+  it("keeps growing season and management projections bounded at household scale", () => {
+    let now = 1_000;
+    const domain = new PlatformDomain(initialSnapshot(now), () => ++now);
+    const accounts = Array.from({ length: 15 }, (_, index) =>
+      domain.enterAccount(`history-player-${index + 1}`)
+    );
+    for (let season = 0; season < 20; season += 1) {
+      domain.recordHandResult(
+        `archived-room-${season}`,
+        1,
+        "chips-only",
+        [],
+        "settled",
+        accounts.map((account) => account.id)
+      );
+      domain.startSeason(`Season ${season + 2}`, 10_000);
+    }
+    const lobby = domain.lobbyProjection(accounts[0]!.id);
+    expect(lobby.accounts).toHaveLength(15);
+    expect(lobby.historicalSeasons).toHaveLength(20);
+    expect(
+      lobby.historicalSeasons.every(
+        (historical) => historical.entries.length === 15
+      )
+    ).toBe(true);
+    expect(lobby.leaderboard).toEqual([]);
+
+    const accountDeletion = domain.deleteOtherAccounts(accounts[0]!.id);
+    expect(accountDeletion.deletedIds).toHaveLength(14);
+    expect(domain.lobbyProjection(accounts[0]!.id).accounts).toHaveLength(1);
+    const seasonDeletion = domain.deleteAllHistoricalSeasons(accounts[0]!.id);
+    expect(seasonDeletion.deletedIds).toHaveLength(20);
+    expect(domain.state.historicalSeasons).toEqual([]);
+    domain.validateInvariants();
+  });
+
   it("synchronizes 15 live accounts, two rooms, and multiple displays without cross-room data", async () => {
     const app = await buildApp({ databasePath: temporaryDatabase() });
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;

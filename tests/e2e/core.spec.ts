@@ -48,10 +48,8 @@ test("uses real account, settings, profile, season, and language persistence flo
   await season.getByLabel("基础分").fill("12000");
   await season.getByLabel("最终确认").check();
   await season.getByRole("button", { name: "最终确认" }).click();
-  await expect(page.getByRole("button", { name: seasonName })).toBeVisible();
-  await expect(
-    page.getByRole("listitem").filter({ hasText: updatedUsername }).getByText("12,000")
-  ).toBeVisible();
+  await expect(page.getByLabel("选择赛季")).toContainText(seasonName);
+  await expect(page.getByText("本赛季还没有玩家完成有效牌局。")).toBeVisible();
 
   await page.getByRole("button", { name: "全局设置" }).click();
   const languageSettings = page.getByRole("dialog", { name: "全局设置" });
@@ -63,6 +61,32 @@ test("uses real account, settings, profile, season, and language persistence flo
   await expect(page.getByRole("heading", { name: "Party lobby" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Party lobby" })).toBeVisible();
+  await page.getByRole("button", { name: "Global settings" }).click();
+  await page
+    .getByRole("dialog", { name: "Global settings" })
+    .getByRole("button", { name: "Account management" })
+    .click();
+  const accountManagement = page.getByRole("dialog", {
+    name: "Account management"
+  });
+  await expect(
+    accountManagement.locator(".management-row").filter({
+      hasText: updatedUsername
+    })
+  ).toBeVisible();
+  await accountManagement
+    .locator(".management-row")
+    .filter({ hasText: updatedUsername })
+    .getByRole("button", { name: "Delete account" })
+    .click();
+  const selfDelete = page.getByRole("alertdialog", {
+    name: "Permanently delete account?"
+  });
+  await expect(selfDelete).toContainText("signed out immediately");
+  await selfDelete
+    .getByRole("button", { name: "Delete permanently" })
+    .click();
+  await expect(page.getByRole("heading", { name: "Home Table" })).toBeVisible();
 });
 
 test("runs a real two-player hand, isolates private cards, synchronizes display, and transfers control", async ({
@@ -109,6 +133,25 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await create.getByLabel("买入筹码").fill("2000");
     await create.getByRole("button", { name: "创建房间" }).click();
     await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
+    const waitingViewport = hostPage.viewportSize()!;
+    await hostPage.setViewportSize({ width: 300, height: 760 });
+    const waitingHeader = await hostPage.locator(".room-topbar").evaluate((header) => {
+      const buttons = Array.from(
+        header.querySelectorAll<HTMLButtonElement>(".room-top-actions button")
+      ).map((button) => {
+        const rect = button.getBoundingClientRect();
+        return { x: Math.round(rect.x), y: Math.round(rect.y) };
+      });
+      return {
+        buttons,
+        viewport: innerWidth,
+        documentWidth: document.documentElement.scrollWidth
+      };
+    });
+    expect(waitingHeader.buttons).toHaveLength(3);
+    expect(new Set(waitingHeader.buttons.map((button) => button.y)).size).toBe(1);
+    expect(waitingHeader.documentWidth).toBe(waitingHeader.viewport);
+    await hostPage.setViewportSize(waitingViewport);
     const displayHref = await hostPage
       .getByRole("link", { name: "打开公共大屏" })
       .getAttribute("href");
@@ -202,19 +245,23 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(latePage.getByRole("button", { name: /确认|弃牌|全押/ })).toHaveCount(0);
     await expect(hostPage.locator(".table-title strong")).toHaveText(roomName);
     await expect(hostPage.locator(".table-title")).toContainText(`当前玩家 · ${hostName}`);
-    await expect(hostPage.locator(".table-controls").getByLabel("语言选择")).toBeVisible();
-    await expect(hostPage.locator(".table-controls").getByRole("button", { name: "静音" })).toBeVisible();
+    await expect(hostPage.getByLabel("语言选择")).toHaveCount(0);
+    await expect(hostPage.getByRole("button", { name: "静音" })).toHaveCount(0);
     await hostPage.setViewportSize({ width: 300, height: 760 });
     expect(await hostPage.evaluate(() => ({
       viewport: innerWidth,
       documentWidth: document.documentElement.scrollWidth
     }))).toEqual({ viewport: 300, documentWidth: 300 });
+    await expect(hostPage.locator(".player-seat .seat-values").first()).toContainText(
+      "剩余筹码"
+    );
+    await expect(hostPage.locator(".player-seat .seat-values").first()).toContainText(
+      "本轮下注"
+    );
     const ownCard = hostPage.getByLabel("我的手牌").locator("[data-suit]").first();
     const suit = await ownCard.getAttribute("data-suit");
     const cardColor = await ownCard.evaluate((element) => getComputedStyle(element).color);
     expect(cardColor).toBe(highContrastSuitColor(suit));
-    await hostPage.getByRole("button", { name: "静音" }).click();
-    await expect(hostPage.getByRole("button", { name: "开启音效" })).toBeVisible();
 
     await displayPage.goto(displayHref!);
     await expect(displayPage.locator("main")).toHaveClass(/suit-theme-high-contrast/);
@@ -223,12 +270,11 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(displayPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(displayPage.getByText("我的手牌")).toHaveCount(0);
     await expect(displayPage.getByRole("button", { name: /确认|弃牌|全押/ })).toHaveCount(0);
-    await displayPage.getByRole("button", { name: "EN" }).click();
-    await expect(displayPage.getByText("Public display", { exact: true })).toBeVisible();
-    await displayPage.reload();
-    await expect(displayPage.getByText("Public display", { exact: true })).toBeVisible();
-    await displayPage.getByRole("button", { name: "中" }).click();
-    await expect(displayPage.getByText("公共大屏", { exact: true })).toBeVisible();
+    await expect(displayPage.getByLabel("语言选择")).toHaveCount(0);
+    await expect(displayPage.getByLabel("主题选择")).toHaveCount(0);
+    await expect(displayPage.locator(".display-seats .seat-values").first()).toContainText(
+      "本轮下注"
+    );
 
     const actorPage = await actingPage(hostPage, guestPage);
     const observerPage = actorPage === hostPage ? guestPage : hostPage;
@@ -325,7 +371,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
 
     await hostPage.reload();
     await expect(hostPage.getByText(roomName)).toBeVisible();
-    await expect(hostPage.getByRole("button", { name: "开启音效" })).toBeVisible();
+    await expect(hostPage.getByRole("button", { name: /静音|开启音效/ })).toHaveCount(0);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(hostPage.getByText("第 2 手")).toBeVisible();
 
@@ -366,6 +412,71 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       displayContext.close(),
       takeoverContext.close()
     ]);
+  }
+});
+
+test("manages accounts and historical seasons with protected items and explicit confirmation", async ({
+  browser,
+  page
+}, testInfo) => {
+  test.setTimeout(60_000);
+  const suffix = uniqueSuffix(testInfo.project.name);
+  const managerName = `管理者-${suffix}`;
+  const targetName = `待删除-${suffix}`;
+  const targetContext = await browser.newContext();
+  const targetPage = await targetContext.newPage();
+  try {
+    await Promise.all([emulateLanHttp(page), emulateLanHttp(targetPage)]);
+    await enter(page, managerName);
+    await enter(targetPage, targetName);
+
+    await page.getByRole("button", { name: "全局设置" }).click();
+    const settings = page.getByRole("dialog", { name: "全局设置" });
+    await settings.getByRole("button", { name: "账户管理" }).click();
+    const accounts = page.getByRole("dialog", { name: "账户管理" });
+    const targetRow = accounts.locator(".management-row").filter({
+      hasText: targetName
+    });
+    await expect(targetRow).toBeVisible();
+    await targetRow.getByRole("button", { name: "删除账户" }).click();
+    const accountConfirmation = page.getByRole("alertdialog", {
+      name: "永久删除账户？"
+    });
+    await expect(accountConfirmation).toContainText(targetName);
+    await accountConfirmation
+      .getByRole("button", { name: "永久删除" })
+      .click();
+    await expect(targetRow).toHaveCount(0);
+    await expect(targetPage.getByRole("heading", { name: "家庭牌桌" })).toBeVisible();
+
+    await accounts.getByLabel("关闭").click();
+    await settings.getByRole("button", { name: "赛季管理" }).click();
+    const seasons = page.getByRole("dialog", { name: "赛季管理" });
+    const protectedRow = seasons.locator(".management-row").first();
+    await expect(protectedRow).toContainText("当前赛季");
+    await expect(
+      protectedRow.getByRole("button", { name: "受保护" })
+    ).toBeDisabled();
+    const historicalRows = seasons.locator(".management-row").filter({
+      hasText: "历史赛季"
+    });
+    if ((await historicalRows.count()) > 0) {
+      const firstHistorical = historicalRows.first();
+      const seasonName = await firstHistorical.locator("strong").textContent();
+      await firstHistorical.getByRole("button", { name: "删除赛季" }).click();
+      const seasonConfirmation = page.getByRole("alertdialog", {
+        name: "永久删除历史赛季？"
+      });
+      await expect(seasonConfirmation).toContainText(seasonName ?? "");
+      await seasonConfirmation
+        .getByRole("button", { name: "永久删除" })
+        .click();
+      await expect(
+        seasons.locator(".management-row").filter({ hasText: seasonName ?? "" })
+      ).toHaveCount(0);
+    }
+  } finally {
+    await targetContext.close();
   }
 });
 

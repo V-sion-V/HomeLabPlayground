@@ -87,9 +87,19 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
         .extend({
           suitColorPreset: z.enum(["standard", "high-contrast"]),
           denominations: z.array(z.number())
-        })
+      })
     })
   }),
+  "account.delete": z.object({
+    ...accountPayload,
+    targetAccountId: z.string().min(1).max(128)
+  }),
+  "account.delete-others": z.object(accountPayload),
+  "season.delete": z.object({
+    ...accountPayload,
+    targetSeasonId: z.string().min(1).max(128)
+  }),
+  "season.delete-history": z.object(accountPayload),
   "room.create": z.object({
     ...accountPayload,
     name: z.string().max(80),
@@ -537,6 +547,21 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       case "settings.update":
         assertLease();
         return domain.updateSettings(payload.settings as GlobalSettings);
+      case "account.delete":
+        assertLease();
+        return domain.deleteAccount(String(payload.targetAccountId), accountId);
+      case "account.delete-others":
+        assertLease();
+        return domain.deleteOtherAccounts(accountId);
+      case "season.delete":
+        assertLease();
+        return domain.deleteHistoricalSeason(
+          String(payload.targetSeasonId),
+          accountId
+        );
+      case "season.delete-history":
+        assertLease();
+        return domain.deleteAllHistoricalSeasons(accountId);
       case "room.create":
         assertLease();
         {
@@ -756,6 +781,9 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         requireHost();
         const room = requireRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
+        if ((room.poker.departedAccountIds?.length ?? 0) > 0) {
+          throw new DomainError("SETTLEMENT_UNDO_UNAVAILABLE_AFTER_LEAVE");
+        }
         if (room.config.mode !== "chips-only") {
           throw new DomainError("SETTLEMENT_UNDO_NOT_AVAILABLE");
         }
@@ -849,12 +877,9 @@ function startSelectedHand(
     throw new DomainError("STALE_VERSION");
   }
   const previous = room.poker;
-  const previousPlayers = new Map(
-    previous?.players.map((player) => [player.accountId, player]) ?? []
-  );
   const seatStacks = room.seats.map((seat) => ({
     seat,
-    stack: previousPlayers.get(seat.accountId)?.stack ?? seat.tableChips
+    stack: seat.tableChips
   }));
   const hostEntry = seatStacks.find(
     ({ seat }) => seat.accountId === hostAccountId
@@ -978,6 +1003,13 @@ function recordSettlement(
   room: {
     id: string;
     config: { mode: "chips-only" | "chips-and-cards" };
+    seats: Array<{
+      accountId: string;
+      tableChips: number;
+      currentBet: number;
+      folded: boolean;
+      allIn: boolean;
+    }>;
     poker?: {
       handNumber: number;
       communityCards: NonNullable<Room["poker"]>["communityCards"];
@@ -1050,6 +1082,17 @@ function recordSettlement(
       showdown
     }
   );
+  const stacks = new Map(
+    room.poker.players.map((player) => [player.accountId, player.stack])
+  );
+  for (const seat of room.seats) {
+    const stack = stacks.get(seat.accountId);
+    if (stack === undefined) continue;
+    seat.tableChips = stack;
+    seat.currentBet = 0;
+    seat.folded = false;
+    seat.allIn = stack === 0;
+  }
 }
 
 function beginDistribution(room: Room): void {

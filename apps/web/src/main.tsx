@@ -15,6 +15,7 @@ import type {
   Language,
   LobbyProjection,
   LobbyRoomProjection,
+  PlatformDataDeletionResult,
   RoomConfig,
   RoomMode,
   RoomProjection
@@ -25,6 +26,11 @@ import {
   selectableAvatars
 } from "@party/contracts";
 import { t } from "./locales";
+import {
+  AccountManagementDialog,
+  PlatformLeaderboard,
+  SeasonManagementDialog
+} from "./platform-ui";
 import {
   CollapsibleCard,
   ConfirmDialog,
@@ -233,7 +239,14 @@ function App() {
         else await refreshLobby();
         throw new Error(result.code || "COMMAND_FAILED");
       }
-      if (isRoomProjection(result.data)) {
+      const deletion = result.data as PlatformDataDeletionResult | undefined;
+      if (deletion?.selfDeleted) {
+        localStorage.removeItem("party-recent-account");
+        setRoom(null);
+        setLobby(null);
+        setSession(null);
+        setNotice(t(language, "accountDeleted"));
+      } else if (isRoomProjection(result.data)) {
         setRoom({ ...result.data, platformVersion: result.version });
       } else if (
         (result.data as { closed?: boolean; left?: boolean } | undefined)?.closed ||
@@ -246,17 +259,11 @@ function App() {
       }
       return result;
     },
-    [lobby?.version, refreshLobby, refreshRoom, room, session]
+    [language, lobby?.version, refreshLobby, refreshRoom, room, session]
   );
 
   if (displayRoomId) {
-    return (
-      <PublicDisplay
-        language={language}
-        setLanguage={setLanguage}
-        roomId={displayRoomId}
-      />
-    );
+    return <PublicDisplay language={language} roomId={displayRoomId} />;
   }
 
   if (restoring) return <Loading language={language} />;
@@ -276,7 +283,6 @@ function App() {
     return (
       <RoomView
         language={language}
-        setLanguage={setLanguage}
         session={session}
         room={room}
         notice={notice}
@@ -434,6 +440,8 @@ function Lobby({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [seasonOpen, setSeasonOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [accountManagementOpen, setAccountManagementOpen] = useState(false);
+  const [seasonManagementOpen, setSeasonManagementOpen] = useState(false);
 
   async function returnToRoom(roomId: string) {
     const response = await fetch(
@@ -553,7 +561,7 @@ function Lobby({
             )}
           </div>
         </section>
-        <Leaderboard language={language} lobby={lobby} />
+        <PlatformLeaderboard language={language} lobby={lobby} />
       </div>
       {createOpen && (
         <CreateRoomModal
@@ -611,6 +619,8 @@ function Lobby({
             }
           }}
           onSeason={() => setSeasonOpen(true)}
+          onAccountManagement={() => setAccountManagementOpen(true)}
+          onSeasonManagement={() => setSeasonManagementOpen(true)}
         />
       )}
       {seasonOpen && (
@@ -654,60 +664,78 @@ function Lobby({
           }}
         />
       )}
+      {accountManagementOpen && (
+        <AccountManagementDialog
+          language={language}
+          accounts={lobby.accounts}
+          currentAccountId={session.account.id}
+          onClose={() => setAccountManagementOpen(false)}
+          onDelete={async (targetAccountId) => {
+            try {
+              await command<PlatformDataDeletionResult>(
+                "account.delete",
+                { targetAccountId },
+                "platform"
+              );
+              setNotice(t(language, "accountDeleted"));
+              return true;
+            } catch (reason) {
+              setNotice(errorMessage(language, reason));
+              return false;
+            }
+          }}
+          onDeleteOthers={async () => {
+            try {
+              await command<PlatformDataDeletionResult>(
+                "account.delete-others",
+                {},
+                "platform"
+              );
+              setNotice(t(language, "accountsDeleted"));
+              return true;
+            } catch (reason) {
+              setNotice(errorMessage(language, reason));
+              return false;
+            }
+          }}
+        />
+      )}
+      {seasonManagementOpen && (
+        <SeasonManagementDialog
+          language={language}
+          lobby={lobby}
+          onClose={() => setSeasonManagementOpen(false)}
+          onDelete={async (targetSeasonId) => {
+            try {
+              await command<PlatformDataDeletionResult>(
+                "season.delete",
+                { targetSeasonId },
+                "platform"
+              );
+              setNotice(t(language, "seasonDeleted"));
+              return true;
+            } catch (reason) {
+              setNotice(errorMessage(language, reason));
+              return false;
+            }
+          }}
+          onDeleteHistory={async () => {
+            try {
+              await command<PlatformDataDeletionResult>(
+                "season.delete-history",
+                {},
+                "platform"
+              );
+              setNotice(t(language, "seasonsDeleted"));
+              return true;
+            } catch (reason) {
+              setNotice(errorMessage(language, reason));
+              return false;
+            }
+          }}
+        />
+      )}
     </main>
-  );
-}
-
-function Leaderboard({
-  language,
-  lobby
-}: {
-  language: Language;
-  lobby: LobbyProjection;
-}) {
-  const [selectedSeasonId, setSelectedSeasonId] = useState(lobby.currentSeason.id);
-  useEffect(() => setSelectedSeasonId(lobby.currentSeason.id), [lobby.currentSeason.id]);
-  const historical = lobby.historicalSeasons.find(
-    (item) => item.season.id === selectedSeasonId
-  );
-  const entries = historical?.entries ?? lobby.leaderboard;
-  const seasonName = historical?.season.name ?? lobby.currentSeason.name;
-  return (
-    <aside className="leaderboard">
-      <p className="eyebrow">{seasonName}</p>
-      <h2>{t(language, "leaderboard")}</h2>
-      <div className="season-tabs">
-        <button
-          className={selectedSeasonId === lobby.currentSeason.id ? "active" : ""}
-          onClick={() => setSelectedSeasonId(lobby.currentSeason.id)}
-        >
-          {lobby.currentSeason.name}
-        </button>
-        {lobby.historicalSeasons.map((item) => (
-          <button
-            key={item.season.id}
-            className={selectedSeasonId === item.season.id ? "active" : ""}
-            onClick={() => setSelectedSeasonId(item.season.id)}
-          >
-            {item.season.name}
-          </button>
-        ))}
-      </div>
-      <ol>
-        {entries.map((entry) => (
-          <li key={entry.accountId}>
-            <span className="rank">{rankBadge(entry.rank)}</span>
-            <span className="leader-name">
-              {entry.avatar} {entry.username}
-              {!historical && lobby.rooms.some((room) =>
-                room.seats.some((seat) => seat.accountId === entry.accountId)
-              ) && <small>{t(language, "playing")}</small>}
-            </span>
-            <strong>{entry.score.toLocaleString()}</strong>
-          </li>
-        ))}
-      </ol>
-    </aside>
   );
 }
 
@@ -833,7 +861,9 @@ function SettingsModal({
   settings,
   onClose,
   onSave,
-  onSeason
+  onSeason,
+  onAccountManagement,
+  onSeasonManagement
 }: {
   language: Language;
   setLanguage: (language: Language) => void;
@@ -841,6 +871,8 @@ function SettingsModal({
   onClose: () => void;
   onSave: (settings: GlobalSettings) => Promise<void>;
   onSeason: () => void;
+  onAccountManagement: () => void;
+  onSeasonManagement: () => void;
 }) {
   const [value, setValue] = useState(structuredClone(settings));
   const [pokerExpanded, setPokerExpanded] = useState(false);
@@ -874,6 +906,22 @@ function SettingsModal({
       className="settings-modal"
     >
       <div className="settings-scroll">
+        <div className="settings-management-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={onAccountManagement}
+          >
+            {t(language, "accountManagement")}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onSeasonManagement}
+          >
+            {t(language, "seasonManagement")}
+          </button>
+        </div>
         <div className="setting-row">
           <span>{t(language, "defaultLanguage")}</span>
           <LanguageToggle
@@ -1108,7 +1156,6 @@ function ProfileModal({
 
 function RoomView({
   language,
-  setLanguage,
   session,
   room,
   notice,
@@ -1117,7 +1164,6 @@ function RoomView({
   onLobby
 }: {
   language: Language;
-  setLanguage: (language: Language) => void;
   session: Session;
   room: RoomProjection;
   notice: string;
@@ -1140,7 +1186,6 @@ function RoomView({
     return (
       <WaitingRoom
         language={language}
-        setLanguage={setLanguage}
         session={session}
         room={room}
         notice={notice}
@@ -1154,7 +1199,6 @@ function RoomView({
     return (
       <SpectatorTable
         language={language}
-        setLanguage={setLanguage}
         session={session}
         room={room}
         notice={notice}
@@ -1167,11 +1211,9 @@ function RoomView({
   return (
     <PlayerTable
       language={language}
-      setLanguage={setLanguage}
       session={session}
       room={room}
       notice={notice}
-      setNotice={setNotice}
       host={host}
       run={run}
       onLobby={onLobby}
@@ -1181,7 +1223,6 @@ function RoomView({
 
 function WaitingRoom({
   language,
-  setLanguage,
   session,
   room,
   notice,
@@ -1190,7 +1231,6 @@ function WaitingRoom({
   onLobby
 }: {
   language: Language;
-  setLanguage: (language: Language) => void;
   session: Session;
   room: RoomProjection;
   notice: string;
@@ -1241,7 +1281,7 @@ function WaitingRoom({
 
   return (
     <main className="app-shell">
-      <header className="topbar">
+      <header className="topbar room-topbar">
         <div className="room-top-actions">
           <button className="secondary" onClick={onLobby}>← {t(language, "backLobby")}</button>
           <button
@@ -1263,11 +1303,6 @@ function WaitingRoom({
           <p className="eyebrow">{t(language, "waiting")}</p>
           <h1>{room.name}</h1>
         </div>
-        <DeviceControls
-          language={language}
-          setLanguage={setLanguage}
-          themeScope="main"
-        />
       </header>
       {notice && <p className="notice" role="status">{notice}</p>}
       <section className="waiting-panel">
@@ -1433,7 +1468,6 @@ function WaitingRoom({
 
 function SpectatorTable({
   language,
-  setLanguage,
   session,
   room,
   notice,
@@ -1442,7 +1476,6 @@ function SpectatorTable({
   onLobby
 }: {
   language: Language;
-  setLanguage: (language: Language) => void;
   session: Session;
   room: RoomProjection;
   notice: string;
@@ -1489,11 +1522,6 @@ function SpectatorTable({
             {t(language, "spectator")}
           </span>
         </div>
-        <DeviceControls
-          language={language}
-          setLanguage={setLanguage}
-          themeScope="poker"
-        />
       </header>
       {notice && <p className="notice" role="status">{notice}</p>}
       <PublicTableSurface
@@ -1605,21 +1633,17 @@ function SpectatorTable({
 
 function PlayerTable({
   language,
-  setLanguage,
   session,
   room,
   notice,
-  setNotice,
   host,
   run,
   onLobby
 }: {
   language: Language;
-  setLanguage: (language: Language) => void;
   session: Session;
   room: RoomProjection;
   notice: string;
-  setNotice: (notice: string) => void;
   host: boolean;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
@@ -1634,7 +1658,6 @@ function PlayerTable({
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
-  const [muted, setMuted] = useStored("party-muted", false);
   const betCacheRef = useRef<HTMLDivElement>(null);
   const chipRackRef = useRef<HTMLDivElement>(null);
   const pointerGesture = useRef<{
@@ -1726,15 +1749,14 @@ function PlayerTable({
       authorityKey !== previousAuthority.current
     ) {
       setCache({});
-      setNotice(t(language, "cacheCleared"));
     }
     previousAuthority.current = authorityKey;
-  }, [authorityKey, cacheSize, language, setNotice]);
+  }, [authorityKey, cacheSize]);
 
   useEffect(() => {
-    if (muted || !room.phase) return;
+    if (!room.phase) return;
     playTone();
-  }, [muted, room.phase]);
+  }, [room.phase]);
 
   const submitAction = async (kind: string, amount?: number) => {
     await run("poker.action", {
@@ -1825,21 +1847,7 @@ function PlayerTable({
           <span>{t(language, "currentPlayer")} · {session.account.username}</span>
           <small>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")} · {room.config.smallBlind} / {room.config.bigBlind}</small>
         </div>
-        <div className="table-controls">
-          <DeviceControls
-            language={language}
-            setLanguage={setLanguage}
-            themeScope="poker"
-          />
-          <button
-            className="secondary mute-button"
-            aria-label={muted ? t(language, "unmute") : t(language, "mute")}
-            onClick={() => setMuted(!muted)}
-          >
-            <span aria-hidden="true">{muted ? "🔇" : "🔊"}</span>
-            <span className="mute-label">{muted ? t(language, "unmute") : t(language, "mute")}</span>
-          </button>
-        </div>
+        <div className="table-controls" aria-hidden="true" />
       </header>
       <section className="poker-felt" aria-label={t(language, "poker")}>
         <div className="table-seats">
@@ -1863,7 +1871,16 @@ function PlayerTable({
                 {entry.avatar}
               </button>
               <b>{entry.username}{entry.accountId === room.hostAccountId ? " ★" : ""}</b>
-              <small>{entry.tableChips.toLocaleString()} · {entry.currentBet.toLocaleString()}</small>
+              <span className="seat-values">
+                <small>
+                  <span>{t(language, "remainingChips")}</span>
+                  <strong>{entry.tableChips.toLocaleString()}</strong>
+                </small>
+                <small>
+                  <span>{t(language, "roundBet")}</span>
+                  <strong>{entry.currentBet.toLocaleString()}</strong>
+                </small>
+              </span>
               <small className={entry.connected ? "online" : "offline"}>
                 {entry.connected ? t(language, "online") : t(language, "offline")}
               </small>
@@ -2382,8 +2399,16 @@ function PublicTableSurface({
               {seat.avatar}
             </button>
             <b>{seat.username}</b>
-            <strong>{seat.tableChips.toLocaleString()}</strong>
-            <small>{seat.currentBet.toLocaleString()}</small>
+            <span className="seat-values">
+              <small>
+                <span>{t(language, "remainingChips")}</span>
+                <strong>{seat.tableChips.toLocaleString()}</strong>
+              </small>
+              <small>
+                <span>{t(language, "roundBet")}</span>
+                <strong>{seat.currentBet.toLocaleString()}</strong>
+              </small>
+            </span>
             {seat.position === room.dealerPosition && (
               <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
             )}
@@ -2429,11 +2454,9 @@ function PublicTableSurface({
 
 function PublicDisplay({
   language,
-  setLanguage,
   roomId
 }: {
   language: Language;
-  setLanguage: (language: Language) => void;
   roomId: string;
 }) {
   const [room, setRoom] = useState<RoomProjection | null>(null);
@@ -2481,11 +2504,6 @@ function PublicDisplay({
           <h1>{room.name}</h1>
           <span>{t(language, "displayReadonly")}</span>
         </div>
-        <DeviceControls
-          language={language}
-          setLanguage={setLanguage}
-          themeScope="poker"
-        />
       </header>
       <PublicTableSurface language={language} room={room} />
     </main>
@@ -3124,10 +3142,6 @@ function handCategoryLabel(language: Language, category: HandCategory): string {
   return t(language, keys[category]);
 }
 
-function rankBadge(rank: number): string {
-  return rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank);
-}
-
 function formatTemplate(template: string, value: number): string {
   return template.replace("{number}", String(value));
 }
@@ -3167,7 +3181,7 @@ function errorMessage(language: Language, reason: unknown): string {
     ROOM_NOT_PAUSED: ["牌局当前没有暂停", "The room is not paused"],
     ROOM_PAUSED: ["牌局已暂停", "The room is paused"],
     POKER_NOT_STARTED: ["牌局尚未开始", "Poker has not started"],
-    ROOMS_MUST_CLOSE: ["开始新赛季前必须关闭全部房间", "Close every room before starting a new season"],
+    ROOMS_MUST_CLOSE: ["请先关闭全部房间，再管理平台数据", "Close every room before managing platform data"],
     WRONG_ACTOR: ["当前不是你的行动", "It is not your turn"],
     CANNOT_CHECK: ["当前需要跟注，不能过牌", "You must call or fold; checking is unavailable"],
     INVALID_BET: ["下注金额不合法", "The bet amount is invalid"],
@@ -3175,6 +3189,7 @@ function errorMessage(language: Language, reason: unknown): string {
     RAISE_NOT_REOPENED: ["较小的全押未重新开放加注，你只能跟注或弃牌", "A short all-in did not reopen raising; call or fold"],
     INVALID_PHASE: ["当前牌局阶段不允许此操作", "This action is unavailable in the current phase"],
     SETTLEMENT_UNDO_NOT_AVAILABLE: ["当前结算不能撤销", "This settlement cannot be undone"],
+    SETTLEMENT_UNDO_UNAVAILABLE_AFTER_LEAVE: ["已有玩家离开，本次结算不能再撤销", "A player has left, so this settlement can no longer be undone"],
     UNDO_NOT_AVAILABLE: ["下一位玩家已行动，不能撤销", "Undo is no longer available"],
     WINNER_REQUIRED: ["请为每个底池选择获胜者", "Choose a winner for every pot"],
     INELIGIBLE_WINNER: ["所选玩家无权赢得该底池", "A selected player is not eligible for that pot"],
@@ -3192,22 +3207,27 @@ function errorMessage(language: Language, reason: unknown): string {
     UNSUPPORTED_COMMAND: ["当前版本不支持此操作", "This action is not supported by this version"],
     ROOM_NOT_FOUND: ["房间不存在或已经关闭", "The room does not exist or has closed"],
     ACCOUNT_NOT_FOUND: ["账户不存在", "The account does not exist"],
+    SEASON_NOT_FOUND: ["历史赛季不存在或已删除", "The historical season does not exist or was deleted"],
+    CURRENT_SEASON_PROTECTED: ["当前赛季受保护，不能删除", "The current season is protected and cannot be deleted"],
     ASSET_NOT_FOUND: ["账户资产状态不存在", "Account asset state is missing"],
     NO_CURRENT_SEASON: ["当前赛季状态不存在", "There is no current season"],
     DUPLICATE_USERNAME: ["用户名状态冲突", "Username state is inconsistent"],
     MULTIPLE_ROOM_OCCUPANCY: ["账户不能同时加入多个房间", "An account cannot occupy multiple rooms"],
     NEGATIVE_ASSET: ["资产状态异常，操作已回滚", "Asset state is invalid; the action was rolled back"],
+    ORPHANED_ASSET: ["账户资产引用异常，操作已回滚", "An account asset reference is invalid; the action was rolled back"],
     ASSET_CONSERVATION_FAILED: ["资产守恒检查失败，操作已回滚", "Asset conservation failed; the action was rolled back"],
     INVALID_HAND: ["手牌状态无效", "The hand state is invalid"],
     ADVANCE_NOT_DUE: ["自动推进时间尚未到达", "The auto-advance deadline has not arrived"],
     HOST_TIMEOUT_CHANGED: ["房主连接状态已经变化", "The host connection state changed"],
     INVALID_HOST_CANDIDATE: ["无法选择新的房主", "A new host could not be selected"],
     ENTER_FAILED: ["无法进入家庭服务器", "Cannot enter the home server"],
-    STATE_FAILED: ["无法读取权威状态", "Cannot load authoritative state"],
+    STATE_FAILED: ["暂时无法同步平台数据，请重新进入", "Platform data could not be synced; please enter again"],
     COMMAND_FAILED: ["操作未被服务器接受", "The server rejected the action"]
   };
-  return messages[code]?.[language === "zh-CN" ? 0 : 1] ??
-    (language === "zh-CN" ? `操作失败：${code}` : `Action failed: ${code}`);
+  const friendly =
+    messages[code]?.[language === "zh-CN" ? 0 : 1] ??
+    (language === "zh-CN" ? "操作失败，请重试" : "The action failed; please try again");
+  return `${friendly} · ${code}`;
 }
 
 function playTone(): void {

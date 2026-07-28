@@ -27,9 +27,19 @@ describe("platform domain", () => {
     domain.joinRoom(room.id, alice.id, 2_000);
     domain.joinRoom(room.id, bob.id, 2_000);
     expect(domain.state.seasonAssets[alice.id]?.score).toBe(8_000);
-    expect(domain.currentLeaderboard().find((entry) => entry.accountId === alice.id)?.score).toBe(
-      10_000
+    expect(domain.currentLeaderboard()).toEqual([]);
+    domain.recordHandResult(
+      room.id,
+      1,
+      room.config.mode,
+      [],
+      "settled",
+      [alice.id, bob.id]
     );
+    expect(
+      domain.currentLeaderboard().find((entry) => entry.accountId === alice.id)
+        ?.score
+    ).toBe(10_000);
     expect(() => domain.createRoom(alice.id, "Other", defaultRoomConfig)).toThrowError(
       "ALREADY_IN_ROOM"
     );
@@ -45,12 +55,152 @@ describe("platform domain", () => {
     const alice = domain.enterAccount("Alice", "🦊");
     const room = domain.createRoom(alice.id, "Blocked", defaultRoomConfig);
     expect(() => domain.startSeason("Summer", 20_000)).toThrowError("ROOMS_MUST_CLOSE");
+    domain.recordHandResult(
+      room.id,
+      1,
+      room.config.mode,
+      [],
+      "settled",
+      [alice.id]
+    );
     domain.closeRoom(room.id);
     domain.startSeason("Summer", 20_000);
     domain.updateProfile(alice.id, "Alice 2", "🐼");
     expect(domain.currentSeason.name).toBe("Summer");
     expect(domain.state.seasonAssets[alice.id]?.score).toBe(20_000);
     expect(domain.state.historicalSeasons[0]?.entries[0]?.username).toBe("Alice");
+  });
+
+  it("derives current and archived leaderboards only from valid participation facts", () => {
+    const domain = new PlatformDomain(initialSnapshot(), () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const cara = domain.enterAccount("Cara");
+    domain.recordHandResult("room-1", 1, "chips-only", [], "void", [
+      alice.id
+    ]);
+    expect(domain.currentLeaderboard()).toEqual([]);
+
+    domain.recordHandResult("room-1", 2, "chips-only", [], "settled", [
+      bob.id,
+      cara.id
+    ]);
+    const reversedId = domain.state.handResults.at(-1)!.id;
+    domain.reverseHandResult("room-1", 2);
+    expect(domain.state.handResults.at(-1)?.id).toBe(reversedId);
+    expect(domain.currentLeaderboard()).toEqual([]);
+
+    domain.recordHandResult("room-1", 3, "chips-only", [], "settled", [
+      alice.id,
+      cara.id
+    ]);
+    expect(
+      domain.currentLeaderboard().map((entry) => entry.accountId).sort()
+    ).toEqual([alice.id, cara.id].sort());
+    domain.startSeason("Next", 5_000);
+    expect(
+      domain.state.historicalSeasons[0]?.entries.map((entry) => entry.accountId).sort()
+    ).toEqual([alice.id, cara.id].sort());
+    expect(domain.currentLeaderboard()).toEqual([]);
+  });
+
+  it("atomically retires accounts, anonymizes retained history, and permits independent username reuse", () => {
+    const domain = new PlatformDomain(initialSnapshot(), () => 2_000);
+    const alice = domain.enterAccount("Alice", "🦊");
+    const bob = domain.enterAccount("Bob", "🐼");
+    domain.acquireLease(alice.id);
+    domain.recordHandResult("room-old", 1, "chips-only", [], "settled", [
+      alice.id,
+      bob.id
+    ], {
+      chipDeltas: [
+        { accountId: alice.id, amount: 0, endingChips: 10_000 },
+        { accountId: bob.id, amount: 0, endingChips: 10_000 }
+      ]
+    });
+    domain.startSeason("Current", 10_000);
+    domain.recordHandResult("room-current", 1, "chips-only", [], "settled", [
+      alice.id,
+      bob.id
+    ]);
+
+    const result = domain.deleteAccount(alice.id, bob.id);
+    expect(result).toMatchObject({
+      deletedIds: [alice.id],
+      selfDeleted: false,
+      noOp: false
+    });
+    expect(domain.state.accounts[alice.id]).toBeUndefined();
+    expect(domain.state.seasonAssets[alice.id]).toBeUndefined();
+    expect(domain.state.leases[alice.id]).toBeUndefined();
+    expect(domain.state.ledger.some((line) =>
+      line.accountId === alice.id && line.destination === "asset-retirement"
+    )).toBe(true);
+    const anonymous = domain.state.retiredIdentities[alice.id]!;
+    expect(anonymous.publicId).not.toBe(alice.id);
+    expect(
+      domain.state.historicalSeasons[0]?.entries.find(
+        (entry) => entry.accountId === anonymous.publicId
+      )
+    ).toMatchObject({
+      anonymized: true,
+      anonymousNumber: anonymous.anonymousNumber,
+      avatar: fallbackAvatar
+    });
+    expect(JSON.stringify(domain.state.handResults)).not.toContain(`"${alice.id}"`);
+    expect(JSON.stringify(domain.lobbyProjection(bob.id))).not.toContain("Alice");
+    expect(() => domain.assertLease(alice.id, "anything")).toThrowError(
+      "STALE_CONNECTION"
+    );
+    domain.validateInvariants();
+
+    const replacement = domain.enterAccount("Alice", "🐼");
+    expect(replacement.id).not.toBe(alice.id);
+    expect(domain.currentLeaderboard().some((entry) =>
+      entry.accountId === replacement.id
+    )).toBe(false);
+    expect(
+      domain.deleteOtherAccounts(bob.id)
+    ).toMatchObject({
+      protectedIds: [bob.id],
+      selfDeleted: false
+    });
+    expect(Object.keys(domain.state.accounts)).toEqual([bob.id]);
+    domain.validateInvariants();
+  });
+
+  it("protects the current season and deletes historical season data as one domain operation", () => {
+    const domain = new PlatformDomain(initialSnapshot(), () => 3_000);
+    const alice = domain.enterAccount("Alice");
+    domain.recordHandResult("room-1", 1, "chips-only", [], "settled", [alice.id]);
+    const firstSeasonId = domain.currentSeason.id;
+    domain.startSeason("Second", 8_000);
+    domain.recordHandResult("room-2", 1, "chips-only", [], "settled", [alice.id]);
+    const secondSeasonId = domain.currentSeason.id;
+    domain.startSeason("Third", 6_000);
+    const currentSeasonId = domain.currentSeason.id;
+
+    expect(() =>
+      domain.deleteHistoricalSeason(currentSeasonId, alice.id)
+    ).toThrowError("CURRENT_SEASON_PROTECTED");
+    domain.deleteHistoricalSeason(firstSeasonId, alice.id);
+    expect(domain.state.seasons.some((season) => season.id === firstSeasonId)).toBe(
+      false
+    );
+    expect(
+      domain.state.handResults.some((result) => result.seasonId === firstSeasonId)
+    ).toBe(false);
+    expect(
+      domain.state.ledger.some((line) => line.seasonId === firstSeasonId)
+    ).toBe(false);
+    expect(domain.currentSeason.id).toBe(currentSeasonId);
+
+    const deleted = domain.deleteAllHistoricalSeasons(alice.id);
+    expect(deleted.deletedIds).toEqual([secondSeasonId]);
+    expect(domain.state.seasons).toHaveLength(1);
+    expect(domain.state.historicalSeasons).toEqual([]);
+    expect(domain.deleteAllHistoricalSeasons(alice.id).noOp).toBe(true);
+    domain.validateInvariants();
   });
 
   it("transfers a disconnected host after the durable deadline and closes an empty-online room", () => {
@@ -371,6 +521,16 @@ describe("SQLite command boundary", () => {
       }
     ).denominations;
     delete (
+      room.poker as {
+        departedAccountIds?: string[];
+      }
+    ).departedAccountIds;
+    delete (
+      state as {
+        retiredIdentities?: Record<string, unknown>;
+      }
+    ).retiredIdentities;
+    delete (
       room as {
         waitingReadyAccountIds?: string[];
       }
@@ -408,6 +568,8 @@ describe("SQLite command boundary", () => {
     expect(recovered.rooms[room.id]?.poker?.denominations).toEqual(
       DEFAULT_DENOMINATIONS
     );
+    expect(recovered.rooms[room.id]?.poker?.departedAccountIds).toEqual([]);
+    expect(recovered.retiredIdentities).toEqual({});
     expect(recovered.rooms[room.id]?.waitingReadyAccountIds).toEqual([]);
     expect(recovered.rooms[room.id]?.poker?.readyAccountIds).toEqual([]);
     expect(recovered.rooms[room.id]?.poker?.advanceDeadline).toBeUndefined();

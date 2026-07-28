@@ -65,6 +65,49 @@ describe("role projections and realtime concurrency", () => {
     expect(JSON.stringify(projection)).not.toContain("hidden");
   });
 
+  it("projects deleted players only through anonymous public history", () => {
+    const domain = new PlatformDomain(initialSnapshot(), () => 1_000);
+    const alice = domain.enterAccount("Alice", "🦊");
+    const bob = domain.enterAccount("Bob", "🐼");
+    domain.recordHandResult(
+      "closed-room",
+      1,
+      "chips-and-cards",
+      [{ accountId: alice.id, amount: 100 }],
+      "settled",
+      [alice.id, bob.id],
+      {
+        chipDeltas: [
+          { accountId: alice.id, amount: 100, endingChips: 2_100 },
+          { accountId: bob.id, amount: -100, endingChips: 1_900 }
+        ],
+        showdown: {
+          communityCards: deterministicDeck().slice(0, 5),
+          players: [
+            {
+              accountId: alice.id,
+              cards: deterministicDeck().slice(5, 7),
+              handCategory: "one-pair",
+              winner: true
+            }
+          ]
+        }
+      }
+    );
+    domain.startSeason("Next", 10_000);
+    domain.deleteAccount(alice.id, bob.id);
+
+    const lobby = domain.lobbyProjection(bob.id);
+    const encoded = JSON.stringify(lobby);
+    expect(encoded).not.toContain(alice.id);
+    expect(encoded).not.toContain("Alice");
+    expect(encoded).not.toContain("retiredIdentities");
+    expect(lobby.historicalSeasons[0]?.entries[0]).toMatchObject({
+      anonymized: true,
+      anonymousNumber: 1
+    });
+  });
+
   it("accepts only the first command against one poker version", () => {
     const state = createPokerState({
       players: [
