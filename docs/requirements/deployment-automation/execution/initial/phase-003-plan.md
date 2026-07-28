@@ -2,13 +2,13 @@
 
 - 运行编号：`initial`
 - 阶段编号：`P-003`
-- 计划修订：`3`
-- 父路线图修订：`5`
+- 计划修订：`5`
+- 父路线图修订：`6`
 - 需求指纹：`sha256:b63b2a82a7fa098d45a4354c3844071c2e1d53c4925f7026984e4791ca1a6ec3`
-- 路线图指纹：`sha256:bce74ce1a27dc5ecb772a10214c955707f49f30b717a46a3afb28e5a8c7e5eed`
-- 继承基线：P-001/P-002 已分别冻结为 `completed / passed`；P-003 第一次实机演练失败证据和 Q-012 可用性恢复已持久化，当前安全受管版本为 Git `9405972dcfbb8bb5bdc4a6970317e60ed3fb1cef`
-- 当前 Git 基线：分支 `main` 的 `HEAD` 为第一次文档候选 `9405972dcfbb8bb5bdc4a6970317e60ed3fb1cef`；主工作区只含路线图修订 5、本执行状态、阶段计划修订 3 和用户未跟踪 `AGENTS.md`，真实配置与诊断文件被 Git 忽略，原候选 detached worktree仍保持 clean
-- 当前实机基线：原单次演练中候选先通过 health/cleanup并使部署入口返回 0，重复 SSH轮询 watcher随后才停止候选一次；Q-012 授权的一次 Compose start已恢复服务。当前 `.release-sha`、唯一受管非 root容器与保留镜像均为 `9405972...`，容器 running/healthy且外部 health返回 200；固定卷只有该服务一名写入者，数据库与本次唯一备份 SHA-256均为 `e805c4d2...`，备份 mtime为 `1785212293` 秒；无部署锁、临时目录、备份临时项、rollback标签或遗留 watcher/部署进程
+- 路线图指纹：`sha256:d6f5468e21d6a2eb4bb89817c15a6192aa6080c8252f786e52300da26fed58e2`
+- 继承基线：P-001/P-002 已分别冻结为 `completed / passed`；P-003 两次实机精确停止均因部署状态提交与外部停止之间的竞态而未形成自动回滚证据，失败与恢复证据均已持久化。当前候选 Git 基线为 `b9490b7f8137af2982bf494b1bc1c0005089f656`
+- 当前 Git 基线：分支 `main` 的 `HEAD` 为第二次文档候选 `b9490b7f8137af2982bf494b1bc1c0005089f656`；主工作区只含本执行状态差异和用户未跟踪 `AGENTS.md`，真实配置与诊断文件被 Git 忽略；候选 detached worktree仍保持 clean
+- 当前实机基线：第二次演练中 watcher 在两次确认候选锁为 `new_started`、Docker health 为 `starting` 后停止一次精确候选，但部署入口仍先完成 health/commit/cleanup并返回 0，因而没有自动回滚。当前 `.release-sha`、唯一受管非 root容器与保留镜像均为 `b9490b7...`，容器 stopped/unhealthy且外部 health不可用；固定卷写入者为 0，数据库与本次唯一备份 SHA-256均为 `e805c4d2...`，备份 mtime为 `1785220885` 秒；无部署锁、临时目录、备份临时项、rollback标签或遗留 watcher/部署进程
 - 创建日期：`2026-07-28`
 - 详细程度：`expanded`
 - 交付与验证策略：`relaxed`
@@ -35,6 +35,10 @@ P-003 使用只含非敏感工作流收口文件、且生产 Docker 构建输入
 修订 2 只处理失败演练后的服务可用性恢复。用户在 Q-012 明确授权一次受管候选服务启动与 Docker/外部 health验证；该操作不重新部署、不重复 stop、不修改数据库/备份、不清理诊断现场，也不把 G-P3-003/G-P3-004 的失败改写为通过。服务恢复后，本阶段仍须暂停并交由独立 `$plan-feature-implementation` 规划纠正阶段或路线图修订。
 
 修订 3 是该独立纠正规划：需求和 AC层级不变，不修改生产文件；路线图升为修订 5。原 T-002/G-P3-003/G-P3-004 失败保持历史，原未激活 T-003由新的纠正任务取代。新的候选、持久 watcher、一次纠正演练和 finalization分别使用 T-004–T-006及 G-P3-007–G-P3-012。
+
+修订 4 只处理第二次竞态失败后的可用性恢复和授权边界，不重写 T-005 的 core/hard-gate 失败，也不激活新的部署、停止或 finalization。用户明确授权服务器上仅与 `home-table` 相关的 Docker 和数据修改，即使数据可破坏，也同时明确禁止修改其他服务器内容或使软路由失稳。本次恢复仍采用最小动作：只允许从配置正式目录对当前 `b9490b7...` 执行一次 `docker compose start home-table` 并验证健康；不利用扩大授权删除或改写卷、数据库、备份、镜像、目录或 Compose 状态。任何其他容器、旧目录、宿主网络/防火墙/路由、系统服务、软件包、存储配置、内核和主机重启均在禁止范围。恢复后继续暂停，并由独立 `$plan-feature-implementation` 设计不依赖外部停止竞态的下一修订。
+
+修订 5 是第二次失败后的独立纠正规划。修订 4 的唯一 stdin 封装 start 因服务参数未被 Compose 识别而退出 1；只读证据确认候选 Compose 字节与提交一致、唯一服务仍为 `home-table`、容器仍 stopped/unhealthy，服务器零状态变化。修订 5 先在严格门禁后用无 stdin 服务参数的单条 SSH 直接命令执行一次现有候选 start并验证健康；然后禁止任何第三次 watcher或外部 stop，改从 `b9490b7...` 的独立 detached worktree创建不进入 `main` 的一次性单文件候选，只把 `home-table` healthcheck改为确定失败。受支持入口必须在自身 health gate内失败、以非 0 自动恢复 `b9490b7...`、部署前数据库和健康服务。该方案不修改最终产品代码或主分支，且不触碰任何非 `home-table` 服务器范围。
 
 ## 2. 任务、激活门禁与文件范围
 
@@ -65,20 +69,28 @@ P-003 计划修订 1 为 `ready`。实施开始前及每个外部副作用边界
 15. watcher明确输出远端 `WATCHER_WAITING=1` 后才可从新 clean worktree运行唯一一次部署入口；运行期间不得启动第二个 watcher、第二个部署或任何手工恢复。
 16. 注入后必须取得 `INJECTION_COUNT=1`、候选 SHA及本次固定备份 SHA/mtime；部署入口必须非 0并自行恢复 `9405972...` 和部署前数据库。独立后置门禁完成前不得 finalization。
 
+上述 10–16 是修订3的历史门禁，G-P3-010/G-P3-011已失败且不得重跑。修订5的激活门禁为：
+
+17. schema、需求指纹、路线图修订6/指纹、本计划修订5/指纹和P-001/P-002冻结结果哈希必须匹配；Q-015保持resolved。主工作区只允许本功能规划/状态差异与用户未跟踪`AGENTS.md`，真实配置和诊断继续被忽略。
+18. T-007前严格只读核对b949标记/镜像/唯一stopped非root容器、卷零写入者、数据库与唯一备份`e805c4d2...`/mtime`1785220885`和无锁/临时项；只允许一条不经stdin传递服务名的直接SSH start命令。
+19. T-008必须在新的独立detached worktree进行，基线精确为b949；只有`deploy/compose.yml` healthcheck test可变。不得移动main、改主工作区index、纳入工作流差异、AGENTS、配置、诊断或任何主机操作。
+20. T-009前必须重新确认b949 running/healthy/non-root、外部200、卷唯一写入者、数据库/备份和无临时状态；故障候选worktree clean且SHA/唯一diff匹配。只运行一次受支持入口，不启动watcher、不执行stop或手工数据动作。
+21. 部署必须由候选healthcheck确定失败并非0自动回滚；后置门禁必须恢复b949、部署前数据库、单卷/目录/备份和无候选/rollback/锁/临时项。任何普通失败、自动恢复失败或未知状态都暂停，不重试或手工恢复。
+
 ### 2.2 文件与外部状态所有权
 
 | 文件或状态 | 本阶段允许操作 | 禁止事项 |
 | --- | --- | --- |
-| `implementation-plan.md` | 提交本次纠正规划产生的修订 5 | P-003 实施时继续改写设计或历史修订 |
+| `implementation-plan.md` | 保留本次独立规划产生的路线图修订 6，最终收口提交 | P-003 实施时继续改写设计或历史修订 |
 | `execution/initial/execution-state.md` | 按任务开始/结束、外部边界、失败和 finalization 持续写 durable checkpoint | 删除既存问答、失败证据、finding 编号或 P-001/P-002 历史 |
 | `execution/initial/phase-002-result.md` | 以冻结哈希原样纳入候选提交 | 任何内容修改 |
-| `execution/initial/phase-003-plan.md` | 以修订 3 纳入新候选提交；结果存在后冻结 | 实施中静默扩权、降低门禁或改写授权 |
+| `execution/initial/phase-003-plan.md` | 保留修订 5并在结果存在后冻结 | 实施中静默扩权、降低门禁或改写授权 |
 | `execution/initial/phase-003-result.md` | 仅在全部 P-003 core/hard gate 通过后创建 | 在注入未发生、恢复失败或状态未知时创建 |
 | `change-0.md`、`effective-requirements.md` | 仅在 P-003 结果通过后生成并与 requirements/三个阶段一致 | 提前生成、掩盖失败或改变原始需求 |
 | `AGENTS.md` | P-003 完成后由用户目标要求的独立收尾步骤更新 | 进入候选提交、部署归档或阶段验收 |
-| Git 新候选提交与 detached worktree | 只含路线图、状态和本计划三份非敏感工作流文件；作为唯一纠正候选发布来源 | 暂存配置、私钥、诊断文件、AGENTS、产品源码或未知差异 |
-| 当前受管 `9405972...` 服务 | 部署状态机正常停止/备份并在回滚中恢复；watcher只读观察 | 由 watcher或手工命令停止、删除或改标签 |
-| 精确新候选容器 | 持久 watcher在锁阶段与 health门禁同时匹配后执行一次 `docker stop` | health已为 healthy、锁已提交/消失、匹配不唯一时停止；多次停止、`rm`、卷操作或手工恢复 |
+| Git 一次性候选提交与 detached worktree | 只含`deploy/compose.yml`确定失败healthcheck；detached提交不移动main、不进入最终产品提交 | 暂存主工作区规划/状态、配置、私钥、诊断、AGENTS、应用源码或其他Compose差异 |
+| 当前受管 `b9490b7...` 服务 | T-007直接start恢复；T-009由部署状态机正常停止/备份并在回滚中恢复 | watcher/外部stop、删除、改标签或第二次手工恢复 |
+| 一次性故障候选容器 | 只由受支持入口创建并由其health gate判败/回滚 | watcher、外部stop、手工启动/恢复、`rm`或卷操作 |
 | 固定卷与唯一备份 | 部署脚本按现有实现创建部署前备份并自动恢复；验证只读比较 | 手工写数据库、创建标记数据、删除卷/备份或覆盖第二份备份 |
 | 配置目录之外的旧 Docker/旧目录 | 无 | 探测、停止、启动、删除、移动或清理 |
 
@@ -91,9 +103,13 @@ P-003 计划修订 1 为 `ready`。实施开始前及每个外部副作用边界
 | P-003-T-003 | 原 finalization（未激活，已由修订 3取代） | 无生产或最终化文件变化 | 因 T-002失败从未激活；不得创建原计划结果 | `phase-003-result.md`、`change-0.md`、`effective-requirements.md` 均不存在 | superseded before activation |
 | P-003-T-004 | 形成新的纯文档候选和持久、pre-health、fail-closed watcher | 路线图/状态/本计划、Git index/commit、新 detached worktree、忽略诊断脚本与日志 | 激活任务并记录基线；暂存精确三文件，完成范围/敏感/diff检查后提交；创建 clean worktree；实现单个持久 SSH watcher，远端本地循环锁阶段和容器 health，静态证明唯一 stop、停止前二次复核、无数据/清理操作，再以 Probe证明当前 `9405972...`不能命中 | G-P3-007–G-P3-009；提交清单与生产 diff；worktree porcelain；PowerShell AST；远端 POSIX解析；单 SSH/单 stop/锁+health静态断言；`PROBE_MATCH_COUNT=0` | 新候选与 `9405972...`不同但生产输入相同；worktree clean；watcher不可能停止当前服务或晚到 healthy候选 |
 | P-003-T-005 | 由持久 watcher在 pre-health阶段停止一次新候选，并由受支持入口自动恢复 `9405972...` 与部署前数据库 | 新 clean worktree、真实 iStoreOS、持久 watcher、唯一一次部署入口、执行状态 | 重跑写入前门禁；启动单个 watcher并取得远端 waiting；运行一次候选部署；watcher在锁 `new_starting/new_started`与 health `starting`同时成立时二次复核并停止一次，记录候选 SHA/唯一注入/本次备份 SHA/mtime；等待部署入口非 0自动回滚并独立核对 | G-P3-010–G-P3-011；`INJECTION_COUNT=1`；部署非 0和 rollback/恢复日志；`9405972...` 标记/镜像/healthy与外部 200；数据库等于本次备份；单服务/卷写入者/目录/备份；无 candidate image、rollback标签、锁/临时项或遗留进程 | pre-health故障真实且只有一次；自动化而非手工恢复当前旧应用与部署前数据库；数据/空间/诊断全部通过 |
-| P-003-T-006 | 冻结 P-003 并完成 initial 工作流 | `phase-003-result.md`、`change-0.md`、`effective-requirements.md`、执行状态 | 合并 P-001确定性故障矩阵、P-002首次接管/纠正更新/no-op、P-003原失败与纠正实机回滚；按 relaxed分类 AC-014与 `FND-I-*`；创建阶段结果、change-0、自包含有效需求快照并把 initial置为 completed | G-P3-012；全部 FR/NFR/AC追踪；三个 phase result、change-0/effective/state一致；指纹、finding、敏感扫描、`git diff --check` | 全部 core/hard gate通过；原失败透明保留；AC-014通过或仅有合规 report-only finding；无未决问题/半完成远端状态；最终化文件一致 |
+| P-003-T-006 | 原纠正 finalization（未激活，已由修订5取代） | 无生产或最终化文件变化 | T-005 core失败后从未激活；不得创建原计划结果 | `phase-003-result.md`、`change-0.md`、`effective-requirements.md`均不存在 | superseded before activation |
+| P-003-T-007 | 以直接远端命令恢复当前`b9490b7...`可用性 | 真实iStoreOS、配置正式目录、执行状态 | 重跑严格只读门禁；SSH远端命令行直接执行一次`cd <release>/deploy && PARTY_IMAGE=... PARTY_PORT=... docker compose start home-table`，不经stdin传递服务名；有界验证同一候选健康 | G-P3-013；命令退出与独立Docker/外部health；数据库/唯一备份SHA与mtime不变；无锁/临时项/rollback标签 | 同一b949容器running/healthy/non-root、外部200、固定卷唯一写入者；无第二次start或其他写动作 |
+| P-003-T-008 | 创建不进入main的一次性确定健康失败候选 | 新独立detached worktree、仅该worktree的`deploy/compose.yml`、detached commit | 从精确b949创建新worktree；只把healthcheck test改为`node -e process.exit(1)`；暂存、diff、敏感和YAML结构静态复核后在detached HEAD提交；主分支/index保持不变 | G-P3-014；commit清单唯一；相对b949 diff唯一且不改变服务/镜像/端口/卷；worktree clean；main仍为b949 | 候选full SHA不同且clean，只能因healthcheck失败；不含工作流状态、AGENTS、配置或诊断，不成为main提交 |
+| P-003-T-009 | 运行一次确定健康失败候选并验收自动回滚 | 一次性clean worktree、受支持部署入口、真实iStoreOS、执行状态 | 写入前重验b949健康/数据/备份/无临时项；运行一次候选部署，不启动watcher或外部stop；等待入口自身health失败、rollback和非0退出；独立后置核对 | G-P3-015；候选SHA、部署非0、health/rollback日志；最终b949标记/镜像/healthy/外部200；数据库等于本次备份；单服务/卷/目录/备份；无候选镜像、rollback标签、锁/临时项 | 故障由候选healthcheck确定产生；自动化而非手工恢复应用与部署前数据库；最终状态安全完整 |
+| P-003-T-010 | 冻结 P-003 并完成 initial 工作流 | `phase-003-result.md`、`change-0.md`、`effective-requirements.md`、执行状态 | 合并 P-001确定性矩阵、P-002首次接管/更新/no-op、P-003两次竞态失败/恢复与最终确定性实机回滚；按relaxed分类AC-014与finding；创建收口文件并置completed | G-P3-016；全部FR/NFR/AC追踪；三个phase result、change-0/effective/state一致；指纹、敏感扫描、`git diff --check` | 全部core/hard gate通过；失败历史透明；AC-014通过或仅合规report-only finding；无未决问题/半完成远端状态；最终化一致 |
 
-历史顺序为 P-003-T-001 → P-003-T-002（core失败）→ Q-012恢复；P-003-T-003从未激活并由修订 3取代。当前可执行顺序固定为 P-003-T-004 → P-003-T-005 → P-003-T-006。任何当前任务未完成时不得激活下一任务。
+历史顺序为 P-003-T-001 → P-003-T-002（core失败）→ Q-012恢复 → P-003-T-004 → P-003-T-005（core失败）→ 修订4恢复封装失败；P-003-T-003与T-006均从未激活。当前可执行顺序固定为 P-003-T-007 → T-008 → T-009 → T-010；任何当前任务未完成时不得激活下一任务。
 
 ## 3. 验证与完成条件
 
@@ -157,6 +173,25 @@ G-P3-001–G-P3-006 是修订 1原演练的门禁。G-P3-003/G-P3-004已失败�
   - P-001/P-002与P-003纠正演练的全部 core/hard gate合并通过；原 P-003失败与Q-012恢复透明保留，无未决问题、未知用户文件或半完成远端状态。
   - `phase-003-result.md`、`change-0.md`、`effective-requirements.md`和状态对策略、结论、文件、追踪、finding及生产最终状态一致，冻结历史未修改；`git diff --check`与非敏感扫描通过。
 
+G-P3-007–G-P3-012 是修订3的历史纠正门禁，其中G-P3-010/G-P3-011已失败且不得改写；修订5使用以下新门禁：
+
+- **G-P3-013 — 直接命令可用性恢复（recovery hard gate）**
+  - Q-015保持resolved；当前b949标记/镜像/唯一容器stopped、卷零写入者、数据库/唯一备份`e805c4d2...`和无临时项重新匹配。
+  - 服务名直接位于经过路径/端口校验的SSH远端命令行，不再由stdin脚本末行封送；只执行一次start。完成后b949 running/healthy/non-root、外部200、卷唯一写入者且数据库/备份SHA和mtime不变。
+
+- **G-P3-014 — 一次性故障候选完整性（hard gate）**
+  - main保持`b9490b7...`；独立detached候选提交相对b949只修改`deploy/compose.yml`的healthcheck test为确定非0，`home-table`服务、image、build、port、environment和固定卷字节不变。
+  - 候选worktree clean，提交不含工作流未提交状态、AGENTS、配置、私钥或诊断；静态复核证明没有主机/路由/其他容器操作，且候选不会进入最终main。
+
+- **G-P3-015 — 确定健康失败与自动恢复（core/data hard gate；AC-014 supplemental）**
+  - 部署前b949服务healthy且数据库/唯一备份/无临时项匹配；只从一次性候选clean worktree运行一次受支持入口，不启动watcher、不调用外部stop。
+  - 部署日志证明新候选启动后由入口health gate判为失败，进入rollback并以非0退出；最终标记/镜像/唯一服务自动恢复b949 running/healthy/non-root和外部200。
+  - 最终数据库精确等于本次部署备份；固定卷只有恢复服务一名写入者，只有一个正式目录/固定备份，无候选镜像、rollback标签、锁、发布/备份临时项或遗留进程。
+
+- **G-P3-016 — 最终化一致性（final hard gate）**
+  - P-001/P-002冻结证据、两次watcher竞态失败、Q-012/Q-015恢复和最终确定性自动回滚完整连续；G-P3-013–G-P3-015全部通过。
+  - `phase-003-result.md`、`change-0.md`、`effective-requirements.md`与completed状态一致；故障候选未进入main或最终服务器，冻结历史未修改，敏感扫描和`git diff --check`通过。
+
 ### 3.2 失败、恢复与暂停
 
 1. 原 G-P3-003/G-P3-004失败与Q-012恢复保持冻结，不再运行原 watcher、原候选部署、原 stop或原 finalization任务。
@@ -167,15 +202,16 @@ G-P3-001–G-P3-006 是修订 1原演练的门禁。G-P3-003/G-P3-004已失败�
 6. `INJECTION_COUNT=1` 后部署返回 0、候选仍运行、`9405972...`未恢复、数据库/备份不相等或恢复日志不明确：立即只读检查并暂停；不执行第三次 stop、第二个纠正部署或手工恢复。
 7. 自动恢复失败：服从生产脚本保留现场语义，不删除卷、备份、锁、目录或镜像；记录脱敏诊断和文档中的人工恢复入口，等待新的恢复授权。
 8. 只有 G-P3-007–G-P3-012 全部通过才能创建阶段结果并完成 initial；任何 core/hard gate失败不能降级为 relaxed finding。原 G-P3-003/G-P3-004必须作为已纠正的计划偏差进入结果，而不是伪装成历史通过。
+9. 修订3的G-P3-010/G-P3-011失败后不得再运行watcher或stop。修订5只有G-P3-013–G-P3-016全部通过才能完成；一次性故障候选若出现范围漂移、普通构建失败、自动恢复失败或最终状态不确定，保留现场并暂停，不重试部署或手工恢复。
 
 ### 3.3 完成判定
 
 P-003 只有在以下事实同时成立时为 `completed`：
 
-1. 原轮询 watcher迟到失败与Q-012恢复透明保留；新的候选提交与 `9405972...`不同但生产构建输入相同，clean detached worktree和敏感/所有权门禁通过。
-2. 单个持久 SSH watcher只在候选锁为 `new_starting/new_started`且 health仍为 `starting`时停止一次精确新候选；部署入口明确失败并由自身自动恢复旧应用与部署前数据库。
-3. 最终服务器恢复 `9405972...` healthy服务，固定卷、唯一备份、唯一正式目录和无临时状态全部通过，数据库等于本次部署备份。
-4. G-P3-007–G-P3-012及P-001/P-002/P-003关联的全部 core/hard gate合并通过；AC-014通过或形成合规 report-only finding。
+1. 两次 watcher竞态失败、Q-012/Q-015恢复及修订4封装失败透明保留；不再尝试第三次watcher或stop。
+2. 一次性detached候选只改变Compose healthcheck为确定失败且不进入main；受支持入口自身明确检测健康失败、非0退出并自动恢复旧应用与部署前数据库。
+3. 最终服务器恢复 `b9490b7...` healthy服务，固定卷、唯一备份、唯一正式目录和无临时状态全部通过，数据库等于本次部署备份；故障候选镜像/目录/标签不存在。
+4. G-P3-013–G-P3-016及P-001/P-002/P-003关联的全部 core/hard gate合并通过；AC-014通过或形成合规 report-only finding。
 5. P-003结果、`change-0.md`、`effective-requirements.md`和 completed execution state已生成且一致。
 
 ## 4. 风险、恢复与修订记录
@@ -203,15 +239,22 @@ P-003 只有在以下事实同时成立时为 `completed`：
 14. watcher触发与部署退出：记录 `INJECTION_COUNT=1`、候选 SHA、备份 SHA/mtime、锁/health pre-health证据和部署非 0/rollback分类；不得再次注入。
 15. T-005后置门禁和T-006 finalization前后：记录恢复的 `9405972...`、数据库/备份、卷/目录/镜像/进程/临时状态及全部验收/finding合并，最后把 initial置为 completed。
 
+上述10–15是修订3/4的历史检查点。修订5新增：
+
+16. T-007直接start前后：记录b949 stopped安全基线、直接命令唯一执行和b949 healthy/数据不变后置门禁。
+17. T-008候选提交前后：记录独立worktree基线、唯一Compose healthcheck diff、detached提交SHA、clean状态和main未移动。
+18. T-009部署前、退出后与后置门禁：记录b949 healthy/数据库/备份基线、下一原子操作只为一次候选部署；记录非0/health失败/rollback日志及最终b949/数据库/备份/卷/目录/镜像/临时状态。
+19. T-010 finalization前后：记录G-P3-013–G-P3-016、全部AC/finding合并和最终文件一致性，最后把initial置为completed。
+
 ### 4.2 当前精确恢复入口
 
-当前修订 3已规划完成，下一次实现只执行 P-003-T-004：
+当前修订 5 已规划完成，下一次实现从 P-003-T-007恢复并继续同一阶段：
 
-1. 完整读取本计划修订 3、路线图修订 5、当前状态、requirements、P-001/P-002冻结结果和Q-013。
-2. 核对需求/路线图/计划/结果指纹，确认主工作区只有三份本功能规划/状态差异与用户 `AGENTS.md`，真实配置和诊断文件仍被忽略。
-3. 重新执行 G-P3-007的本地、非交互 SSH和严格只读服务器门禁；任何漂移在 Git提交或服务器写入前停止。
-4. 先执行 T-004：创建精确三文档候选提交和clean detached worktree，生成被忽略的持久 watcher并完成 AST/POSIX/唯一 stop/锁+health/Probe门禁；只有 G-P3-007–G-P3-009全部通过才可激活 T-005。
-5. 同一 `$implement-planned-feature` 调用按 T-004 → T-005 → T-006继续执行整个 P-003；每个副作用边界先写 durable checkpoint。只有 hard gate失败、状态不明或不可安全恢复时才暂停，不为任务边界额外停下或重新规划。
+1. 完整读取本计划修订5、路线图修订6、当前状态、requirements、P-001/P-002冻结结果和Q-015授权；核对全部指纹与主工作区范围。
+2. 重跑严格只读门禁。匹配后用单条SSH直接远端命令执行一次现有b949 Compose start，不经stdin传递服务名；独立验证b949 healthy及数据/备份/临时状态不变。
+3. 创建新的独立detached worktree，只修改Compose healthcheck为确定失败并在detached HEAD提交；完成唯一diff、敏感、结构、clean和main未移动门禁。
+4. 写入前再次复核b949 healthy和数据安全；从故障候选worktree运行一次受支持入口，不启动watcher或stop。要求入口非0、health失败与rollback日志完整，并独立证明b949与部署前数据库自动恢复。
+5. 只有G-P3-013–G-P3-015全部通过才执行T-010，创建阶段结果、change-0与有效需求快照并完成initial；任何core异常立即持久化现场并暂停。
 
 ### 4.3 修订记录
 
@@ -220,3 +263,5 @@ P-003 只有在以下事实同时成立时为 `completed`：
 | 1 | 2026-07-28 | P-002 已冻结通过；用户在 Q-011 明确选择 A，确认当前维护窗口并授权一次精确候选容器停止。严格只读门禁证明当前旧 SHA、服务、卷、唯一备份与无临时状态可作为安全基线；文档候选与三重匹配监视器是最小有界触发方式 | 创建 T-001 候选/监视器、T-002 实机回滚和 T-003 finalization 三个有序任务；保持 expanded 与 relaxed，新增 G-P3-001–G-P3-006，不改变 requirements 或 AC 层级 |
 | 2 | 2026-07-28 | 原 watcher在候选已通过 health/cleanup并使部署返回 0后才停止容器，自动回滚验收失败且服务停止；用户对 Q-012 明确回复“授权”，选择最小候选启动恢复 | 不改变需求、路线图、失败结论或验收层级；只授权一次 Compose start与健康验证，恢复后继续暂停并要求独立规划纠正阶段 |
 | 3 | 2026-07-28 | 独立审计确认失败根因是 watcher每 750 ms重新建立 SSH连接，握手延迟超过候选 pre-health窗口；当前 `9405972...`已恢复 healthy，数据库/唯一备份一致且无临时状态。用户在获知必须纠正规划后要求继续目标且不要因可解决问题停止，记为 Q-013 | 路线图升为修订 5；原 T-002失败和未激活 T-003保持历史，新增 T-004–T-006与G-P3-007–G-P3-012。纠正 watcher改为单个持久 SSH会话中的服务器本地循环，并把候选部署锁阶段和health=starting作为stop硬门禁；需求与AC层级不变 |
+| 4 | 2026-07-28 | 第二次纠正 stop 在双重锁/health 复核后仍与部署成功提交发生竞态，候选被迟到停止；用户明确授权仅限 `home-table` 的 Docker/数据修改并禁止影响软路由或其他服务器内容，解决 Q-015 | 只授权一次现有候选 Compose start和健康验证；不删除或改写数据，不触碰其他容器、旧目录、宿主网络/路由/系统服务，不改变 T-005 core失败。恢复后继续暂停并交给独立规划设计确定性失败触发 |
+| 5 | 2026-07-28 | 修订4唯一stdin封装start未识别服务且零状态变化；远端Compose哈希/大小/服务声明与候选完全一致。两次watcher失败证明外部stop与提交无法原子协调，requirements只要求真实新健康失败与自动回滚 | 路线图升为修订6；新增T-007–T-010与G-P3-013–G-P3-016。先用直接SSH命令恢复b949，再以不进入main的detached单文件health-failure候选确定触发生产状态机回滚；禁止第三次watcher/stop，需求与AC层级不变 |

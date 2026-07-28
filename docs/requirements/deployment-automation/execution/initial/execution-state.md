@@ -3,15 +3,15 @@
 - 运行编号：`initial`
 - 运行类型：`首次实现`
 - 目标记录：`../../change-0.md`
-- 运行状态：`in_progress`
+- 运行状态：`completed`
 - 交付与验证策略：`relaxed`
-- 验证结论：`pending`
-- 当前路线图修订：`5`
+- 验证结论：`passed`
+- 当前路线图修订：`6`
 - 需求指纹：`sha256:b63b2a82a7fa098d45a4354c3844071c2e1d53c4925f7026984e4791ca1a6ec3`
-- 路线图或变更计划指纹：`sha256:bce74ce1a27dc5ecb772a10214c955707f49f30b717a46a3afb28e5a8c7e5eed`
+- 路线图或变更计划指纹：`sha256:d6f5468e21d6a2eb4bb89817c15a6192aa6080c8252f786e52300da26fed58e2`
 - 当前阶段：`P-003`
-- 当前任务：`P-003-T-004`
-- 项目基线：本地 Git `9405972dcfbb8bb5bdc4a6970317e60ed3fb1cef`；原轮询 watcher迟于候选 healthy/cleanup的失败与Q-012可用性恢复已持久化。独立纠正规划的严格只读门禁确认正式标记/镜像/唯一受管非 root容器均为 `9405972...` 且 running/healthy、外部 health返回 200；固定卷只有该服务一名写入者，数据库与唯一备份均为 `e805c4d2...`、备份 mtime为 `1785212293` 秒，无锁、临时状态、rollback标签或遗留部署/watcher进程。路线图修订 5与P-003计划修订 3已把单次纠正限定为持久 SSH远端本地 watcher、候选部署锁 `new_starting/new_started`和health=`starting`共同门禁
+- 当前任务：`P-003-T-010`
+- 项目基线：本地 main Git `b9490b7f8137af2982bf494b1bc1c0005089f656`加已完成的initial收口文件；一次性候选`02066597ee5824eb161d0cb4f89cc0689ba94023`未进入main。iStoreOS最终为b949唯一服务running/healthy/non-root、外部200，数据库与本次唯一备份均为`e805c4d2...`、备份mtime`1785223256`秒，无候选镜像/容器、rollback标签、锁或临时项。P-001/P-002/P-003全部completed/passed，change-0与有效需求快照已生成
 - 最后更新时间：`2026-07-28`
 
 ## 1. 运行目标或待生效变更
@@ -30,9 +30,9 @@
 | --- | --- | --- | --- |
 | P-001 | completed | [phase-001-plan.md](phase-001-plan.md) | [phase-001-result.md](phase-001-result.md) |
 | P-002 | completed | [phase-002-plan.md](phase-002-plan.md) | [phase-002-result.md](phase-002-result.md) |
-| P-003 | in_progress | [phase-003-plan.md](phase-003-plan.md) | 尚未创建 |
+| P-003 | completed | [phase-003-plan.md](phase-003-plan.md) | [phase-003-result.md](phase-003-result.md) |
 
-P-001/P-002 已冻结为 `completed / passed`。P-003 第一次 Q-011 演练未通过且不得改写；Q-012已恢复服务。用户在被明确告知需纠正规划后要求继续目标且不要因可解决问题停下，记为Q-013。路线图修订 5与P-003计划修订 3已创建并通过当前只读门禁；下一次 `$implement-planned-feature` 只执行同一P-003的T-004→T-005→T-006：新的三文档候选、单个持久SSH pre-health watcher、一次纠正回滚和initial finalization。
+P-001/P-002/P-003均已冻结为`completed / passed`。P-003两次外部停止竞态失败、Q-012/Q-015恢复和修订4封装失败完整保留；最终detached健康失败候选由入口自身确定触发非0自动回滚并恢复b949与部署前数据库。initial已生成[change-0.md](../../change-0.md)与[effective-requirements.md](../../effective-requirements.md)，没有开放finding或未决问题。
 
 ## 3. 当前检查点
 
@@ -78,6 +78,26 @@ P-001/P-002 已冻结为 `completed / passed`。P-003 第一次 Q-011 演练未�
 - 用户在获知真实 iStoreOS 访问与短暂服务中断风险后，逐字明确授权“本轮按 P-003 计划访问真实 iStoreOS，执行只读检查，并在全部门禁通过后完成一次新的 pre-health 精确停止与自动回滚验收”。Q-014 已 resolved，P-003/T-004 恢复为 `in_progress`；授权仍不包含停止当前 `9405972...`、第三次注入、手工写数据库、删除卷/备份、清理未知现场或操作旧目录。下一原子操作重新执行非交互 SSH 严格只读 G-P3-007 门禁。
 - Q-014 恢复后的 G-P3-007 严格只读门禁通过：非交互私钥认证成功，正式标记/镜像/唯一受管非 root服务均为 `9405972...` 且 running/healthy，外部 `/healthz` 返回 200；固定卷只有该服务一名写入者，数据库与唯一固定备份 SHA-256 均为 `e805c4d2...`，备份 mtime为 `1785212293` 秒且目录条目数为 1；无部署锁、发布/备份临时项、rollback标签或遗留部署/watcher进程。检查未输出配置值、私钥路径、远端路径、容器身份或业务数据，且没有服务器写入。下一原子操作只允许暂存路线图、执行状态和 P-003计划三文件并执行候选范围/敏感/production diff门禁。
 - T-004 候选暂存门禁通过：index 精确包含路线图、执行状态和 P-003计划三文件；P-002冻结结果、路线图和阶段计划哈希保持，工作流目录外/production diff为 0，`AGENTS.md`、真实配置、私钥与诊断文件均未暂存，`git diff --cached --check`通过。真实 Host、私钥、正式目录和备份目录值严格零命中；`SshUser`字段只与三份基线文档已有通用术语发生字面碰撞，新增行没有连接 target/地址语法，因此不构成配置泄露。下一原子操作只允许重新暂存本检查点并创建三文档候选提交。
+- P-003-T-004 已完成并通过 G-P3-007–G-P3-009：创建纠正文档候选 `b9490b7f8137af2982bf494b1bc1c0005089f656`，提交精确包含路线图、执行状态和 P-003计划三文件，相对 `9405972...` 的工作流目录外/production diff为 0；新 detached worktree `C:\tmp\home-table-p3-b9490b7f` 的 HEAD精确匹配且 porcelain为空。
+- 新的被忽略持久 watcher 通过 PowerShell AST、远端 POSIX `sh -n`、单 SSH调用站点、单 `docker stop`站点、停止前两次完整身份/锁阶段/health复核，以及无远端文件写入、清理、卷或数据库命令的静态门禁。Windows PowerShell 5.1真实只读 Probe返回 `PROBE_MATCH_COUNT=0`，证明新候选容器和部署锁均不存在、当前 `9405972...`服务不能被命中；Probe没有执行 stop或服务器写入。P-003-T-005已激活，下一原子操作仅为重跑写入前严格只读安全基线并持久化结果。
+- P-003-T-005 写入前门禁通过：候选 `b9490b7...` detached worktree仍 clean且HEAD匹配，主工作区只有本状态差异和用户 `AGENTS.md`，本地 watcher/deploy/SSH相关进程为0。远端正式标记/镜像/唯一服务仍为 `9405972...` running/healthy/non-root，外部health为200，固定卷写入者1，数据库/唯一备份仍为 `e805c4d2...`且备份mtime `1785212293`秒；候选容器和镜像均为0，无锁、发布/备份临时项、rollback标签或遗留进程。下一原子操作只允许启动一个前台持久SSH watcher子进程并等待其远端输出`WATCHER_WAITING=1`；未取得waiting或stderr非空时不得运行部署入口。
+- 唯一 watcher 的第一次启动先输出远端 `WATCHER_WAITING=1`，随后因 iStoreOS POSIX `sleep` 不支持 `0.2` 秒小数而在任何候选、部署锁或 stop出现前 fail closed；本地只得到 `WATCHER_ERROR=remote_exit_1`和一行已分类的sleep参数错误。部署入口从未启动，注入计数为0，watcher/SSH相关进程已收敛为0。该验证封装兼容性问题不改变计划、授权或生产文件；下一原子操作只修改被忽略 watcher为每秒一次服务器本地轮询，并重跑完整静态门禁与只读Probe，旧日志保留为诊断证据。
+- watcher 已改为 iStoreOS兼容的每秒服务器本地轮询，PowerShell AST、POSIX解析、单SSH/单stop/双重pre-health复核、禁止数据/清理命令和真实 `PROBE_MATCH_COUNT=0` 全部再次通过。修正后的唯一有效 watcher远端已输出 `WATCHER_WAITING=1`；独立进程核对确认 stdout恰好一行waiting、stderr为0，恰好一个本地watcher与一个直属持久SSH进程。启动封装自身曾无消息返回非0，但没有产生第二个进程或改变远端状态，独立拓扑与日志已证明有效watcher仍持续waiting，因此不重启。下一原子操作固定为从 `C:\tmp\home-table-p3-b9490b7f` 运行一次受支持 `deploy/deploy.ps1`并显式引用主工作区忽略配置；不得启动第二个watcher、第二个部署或任何手工恢复。
+- 唯一纠正部署与唯一有效 watcher均已结束：watcher在两次独立复核均观察锁阶段`new_started`、候选health=`starting`后执行源码唯一stop，输出候选`b9490b7...`、`INJECTION_COUNT=1`、本次固定备份`e805c4d2...`和mtime`1785220885`秒；没有容器身份、路径或业务数据进入工作流证据。
+- G-P3-010/G-P3-011未通过：部署入口仍输出候选部署成功，覆盖preflight/upload/build/stop/backup/switch/health/cleanup且没有rollback，未以非0检测并自动恢复`9405972...`。这证明在watcher第二次pre-health复核与实际stop之间，部署状态机仍可能完成health提交/cleanup；原 watcher修订没有关闭最后的竞态窗口，不能把`INJECTION_COUNT=1`单独当作自动回滚通过。
+- 独立只读后置核对完成：正式标记与唯一受管镜像均为候选`b9490b7...`，非 root容器`running=false / unhealthy`，外部health不可用；固定卷写入者0，数据库与本次唯一固定备份均为`e805c4d2...`，备份mtime `1785220885`秒且条目数1；旧`9405972...`镜像和rollback标签已由成功cleanup删除，候选镜像保留，自动化范围无锁、upload/incoming/previous/failed或备份临时项。该结果是core/hard gate失败，不是relaxed finding；T-005保持in_progress并暂停，不创建phase result/change-0/effective requirements。
+- 用户在获知第二次自动回滚仍未通过后明确授权服务器上仅与`home-table`相关的Docker和数据修改，并明确禁止修改其他服务器内容或使软路由崩溃；记为Q-015选择A。P-003计划升为修订4，指纹`sha256:4b48f7ee10f65e515e0475a3add2f6350f2d8f24c7fbcd1028ba67d95694a19f`：本次仍采用最小恢复，只允许一次现有候选Compose start和健康验证，不删除或改写数据，也不触碰其他容器、旧目录、宿主网络/路由/系统服务或重启主机。下一原子操作先执行严格只读恢复前门禁。
+- 修订4恢复前严格门禁通过：本地没有 watcher/deploy/SSH 进程；远端正式标记、唯一受管非 root容器与唯一候选镜像仍为`b9490b7...`，容器 stopped/unhealthy且固定卷运行写入者为0；数据库与唯一固定备份 SHA-256均为`e805c4d2...`，备份mtime仍为`1785220885`秒，且无部署锁、发布/备份临时项或rollback标签。前两次门禁封装分别在本地参数引用解析和远端首行BOM解析处失败，均发生在任何Docker/文件检查或写入前；剥离PowerShell 5.1 BOM后的严格门禁返回0。下一原子操作只允许从配置正式目录执行一次`docker compose start home-table`，命令封装异常时也不得第二次启动。
+- 修订4的唯一stdin封装Compose start退出1并报告找不到目标服务，没有启动或改变容器。独立只读诊断确认远端Compose文件SHA-256为`9f67a88d...`、大小802字节，精确等于候选文件，且`config --services`只输出`home-table`；同一项目仍能唯一查到`b9490b7...`容器，状态保持stopped/unhealthy。由此把失败限定为stdin脚本末尾服务参数的封送/换行解析，而非Compose文件、候选身份或服务器漂移；按修订4禁止第二次start，本调用暂停并要求独立规划改用无stdin服务参数的直接远端命令。
+- 独立`$plan-feature-implementation`审计完成：schema3.2、requirements`b63b2a82...`、P-001/P-002冻结结果与AC层级不变；路线图升为修订6，指纹`sha256:d6f5468e21d6a2eb4bb89817c15a6192aa6080c8252f786e52300da26fed58e2`，P-003计划升为修订5，指纹`sha256:8565143ee898c207df940655e000f88ab7ffefed987d0be0f1fea518b981e0df`。两次watcher失败证明外部stop与部署提交无法原子协调，因此禁止第三次watcher/stop；新设计先直接恢复b949，再用不进入main的detached单文件health-failure候选让入口自身health gate确定触发回滚。规划调用没有连接服务器、创建候选提交或执行写操作。
+- 新的`$implement-planned-feature`调用已激活P-003-T-007：requirements、路线图修订6、阶段计划修订5与P-001/P-002冻结结果指纹全部匹配；main仍为`b9490b7...`，工作区只有路线图/状态/阶段计划和用户未跟踪`AGENTS.md`，真实配置保持忽略。下一原子操作先重跑G-P3-013严格只读服务器门禁；匹配前不执行直接start。
+- T-007直接start前门禁通过：本地无watcher/deploy/SSH进程；远端Compose唯一服务声明为`home-table`，正式标记/镜像/唯一非root容器仍为b949且stopped/unhealthy，卷运行写入者0；数据库/唯一备份SHA-256均为`e805c4d2...`、备份mtime`1785220885`，无锁、发布/备份临时项或rollback标签。下一原子操作只执行一条无stdin服务参数的SSH直接Compose start；无论封装结果如何都不重复。
+- P-003-T-007完成并通过G-P3-013：无stdin服务参数的单条SSH直接命令退出0，只把现有b949容器从stopped启动；独立门禁确认同一镜像/容器running/healthy/non-root、固定卷唯一写入者、外部`/healthz`200。数据库与唯一备份SHA-256仍为`e805c4d2...`、备份mtime仍为`1785220885`，无锁/临时项/rollback标签。T-008已激活，下一原子操作只创建新的b949 detached worktree，尚不修改服务器。
+- T-008候选提交前门禁通过：新worktree `C:\tmp\home-table-p3-healthfail`为detached b949且初始clean；当前diff精确只有`deploy/compose.yml`一行healthcheck test从真实`/healthz`探测替换为`process.exit(1)`，服务名、构建、镜像、端口、环境、卷和其他文件均逐字保持。main仍为b949，主工作区范围未漂移，`git diff --check`通过。下一原子操作只在该detached worktree暂存单文件并创建一次性候选提交。
+- P-003-T-008完成并通过G-P3-014：detached提交`02066597ee5824eb161d0cb4f89cc0689ba94023`只含`deploy/compose.yml`一行healthcheck替换，worktree clean；main保持b949且主工作区index未改变。故障候选不含工作流状态、AGENTS、配置、私钥或诊断，不会进入最终main。T-009已激活，下一原子操作只重跑写入前服务器门禁。
+- T-009写入前G-P3-015门禁通过：故障候选worktree仍clean且SHA匹配，main仍为b949，本地无watcher/deploy/SSH进程。远端b949是唯一running/healthy/non-root受管服务，外部200，固定卷唯一写入者；数据库/唯一备份均为`e805c4d2...`、备份mtime`1785220885`，候选镜像/容器不存在且无锁、发布/备份临时项或rollback标签。下一原子操作只从故障候选worktree显式引用主工作区忽略配置运行一次受支持部署入口；不得启动watcher、stop、第二个部署或手工恢复。
+- P-003-T-009完成并通过G-P3-015：一次性候选入口日志覆盖preflight/upload/build/stop/backup/switch/health/rollback，候选healthcheck确定失败；入口以非0结束并明确报告previous safe state restored，没有`Automatic recovery failed`。独立后置门禁确认正式标记/镜像/唯一running/healthy/non-root服务恢复b949，外部200；数据库与本次唯一备份均为`e805c4d2...`，备份mtime更新为`1785223256`秒，固定卷唯一写入者1；候选镜像/容器、rollback标签、锁、发布/备份临时项和遗留进程均不存在。T-010已激活，服务器不再需要写操作。
+- P-003-T-010完成并通过G-P3-016：`phase-003-result.md`、`change-0.md`与`effective-requirements.md`已生成；required sections、FR-001–FR-013、NFR-001–NFR-010、AC-001–AC-015追踪完整，P-001/P-002冻结结果和路线图/阶段计划指纹匹配。真实配置值/私钥标记精确零命中，`git diff --check`通过；无开放finding、未决问题或半完成远端状态。initial验证结论为passed。
 - 路线图修订 2 采用 `phased` + `expanded`：首次接管与用户延后的实机回滚形成两个独立外部交接阶段，数据库/目录回滚和中断恢复保持 expanded 风险。
 - P-001 详细计划修订 1 已创建，包含三个有序任务；P-001-T-001 与 P-001-T-002 已完成。
 - 当前本机可用 Windows PowerShell 5.1、Git、系统 OpenSSH、Node/npm 和 Git for Windows POSIX shell；Docker、`pwsh` 不可用。
@@ -203,6 +223,13 @@ P-001/P-002 已冻结为 `completed / passed`。P-003 第一次 Q-011 演练未�
 | P-003-T-001 | completed | 创建四文档候选 `9405972...`、clean detached worktree与原 fail-closed watcher；当前旧服务在部署前不能命中候选条件 |
 | P-003-T-002 | failed core gate / superseded | 原候选部署先成功health/cleanup并返回0，迟到watcher随后才停止候选；未触发自动回滚。数据/备份安全且Q-012已恢复服务；原演练不重试 |
 | P-003-T-003 | superseded before activation | 原finalization因T-002失败从未激活；修订3由P-003-T-006取代 |
+| P-003-T-004 | completed | 创建三文档纠正候选 `b9490b7...`与clean detached worktree；持久单SSH watcher通过AST/POSIX/单stop/双重锁+health失败关闭静态门禁和真实零匹配Probe |
+| P-003-T-005 | in_progress / failed core gate / paused | 唯一纠正stop后未rollback；Q-015最小恢复的stdin封装start未改变服务器，Compose文件与服务声明只读核对正常，等待独立规划直接命令恢复 |
+| P-003-T-006 | superseded before activation | 原修订3 finalization因T-005 core失败从未激活；由修订5的T-010取代 |
+| P-003-T-007 | completed | 唯一直接SSH Compose start恢复现有b949；Docker/外部health、卷唯一写入者及数据库/备份不变全部通过 |
+| P-003-T-008 | completed | detached候选`02066597...`只改Compose healthcheck为确定失败；worktree clean，main/服务器未改变 |
+| P-003-T-009 | completed | 故障候选由入口health gate确定失败，非0自动恢复b949与部署前数据库；服务/卷/单备份/单目录/清理门禁全部通过 |
+| P-003-T-010 | completed | 阶段结果、change-0和有效需求快照一致生成；全量追踪、指纹、敏感扫描与diff check通过，initial completed/passed |
 
 ## 5. 运行累计文件变化
 
@@ -210,7 +237,7 @@ P-001/P-002 已冻结为 `completed / passed`。P-003 第一次 Q-011 演练未�
 | --- | --- | --- |
 | `requirements.md` | modify | 修订 1：补充新目录首次接管、旧 Docker 外部边界和延后实机回滚决定 |
 | `workflow-contract.md` | existing input | 澄清阶段已创建；schema 3.2 不可变契约 |
-| `implementation-plan.md` | add | 当前路线图修订 5：保留 P-001/P-002冻结结果和P-003原失败，改用持久SSH远端本地pre-health watcher完成纠正回滚 |
+| `implementation-plan.md` | add | 当前路线图修订6：保留两次watcher竞态失败，改为直接恢复b949及detached单文件health-failure候选确定触发自动回滚 |
 | `execution/initial/phase-001-plan.md` | add | 已完成 P-001 的详细计划修订 1 |
 | `execution/initial/execution-state.md` | add | 当前协调权威 |
 | `deploy/deploy.ps1` | add | PowerShell 5.1 本地预检、no-op、Git HEAD 归档、SSH/SCP 编排与退出码 |
@@ -228,7 +255,10 @@ P-001/P-002 已冻结为 `completed / passed`。P-003 第一次 Q-011 演练未�
 | `execution/initial/phase-001-result.md` | add | 冻结 P-001 任务、文件、验证、恢复记录和 P-002 进入条件 |
 | `execution/initial/phase-002-plan.md` | add | P-002 计划修订 5：T-001 已完成，T-002 纠正/新提交，T-003 新 SHA 更新、零上传 no-op和阶段冻结 |
 | `execution/initial/phase-002-result.md` | add | 冻结首次接管、真实边界纠正、新 SHA 更新、零上传 no-op和 P-003 进入条件 |
-| `execution/initial/phase-003-plan.md` | add | 当前修订 3：保留迟到轮询失败与Q-012恢复，新增T-004–T-006、持久SSH锁阶段+health门禁和纠正finalization |
+| `execution/initial/phase-003-plan.md` | add | 当前修订5：新增T-007–T-010与G-P3-013–G-P3-016；禁止第三次watcher/stop，限定直接恢复与一次性detached health-failure候选 |
+| `execution/initial/phase-003-result.md` | add | 冻结两次竞态失败、确定健康失败自动回滚和最终服务器证据 |
+| `change-0.md` | add | 冻结deployment-automation首次实现、三阶段证据和偏差 |
+| `effective-requirements.md` | add | 生成当前部署自动化权威需求快照 |
 
 现有应用源码与应用测试未由本阶段修改。`docs/requirements/poker-room-experience-upgrade/` 及既存 change-2 文件也保持用户所有，不属于本功能清单。
 
@@ -303,8 +333,9 @@ P-002 本次实机证据：
 | Q-012 | P-003-T-002 恢复 | watcher命中晚于候选 health/cleanup，部署已返回 0后才停止候选；当前正式目录/镜像为候选但服务停止，数据库/唯一备份安全一致，旧 SHA镜像已被成功 cleanup删除 | 现有授权禁止第二次注入/部署和手工恢复；继续停机没有数据收益。候选只改工作流文档且 Docker生产输入与旧 SHA相同 | A：授权只启动当前候选服务并验证 Docker/外部 health（推荐；最小恢复可用性，不算 P-003通过）；B：保持停止，由用户指定另一个恢复方案，例如另行授权重新部署旧 SHA | 是否授权启动当前候选 `home-table` 服务以恢复可用性 | resolved | 用户明确回复“授权”，即选择 A；授权一次候选服务启动与健康验证，不扩展为重新部署、重复注入、数据修改、现场清理或验收豁免 |
 | Q-013 | P-003 纠正规划 | Q-011的唯一stop已在迟到演练中消费；完成目标需要新的纯文档候选和一次能在health/cleanup前确定触发的停止 | Q-012已恢复`9405972...` healthy，数据库/唯一备份安全；独立规划将watcher改为单个持久SSH会话中的服务器本地循环，并要求锁`new_starting/new_started`与health=`starting`同时成立，晚到即不停止 | A：继续同一目标，允许在重新门禁后再对新的精确候选执行一次pre-health停止；B：不再做实机回滚，目标保持未完成 | 是否继续执行纠正回滚验收 | resolved | 用户在被明确告知下一步是独立纠正规划后回复“继续目标，不要停，除非有你解决不了的问题”；按紧邻上下文记录为A，仅授权新的候选pre-health单次停止，不扩展为停止当前旧服务、第三次注入、数据库写入、未知现场清理或旧目录操作 |
 | Q-014 | P-003-T-004/T-005 | 当前执行环境拒绝用配置私钥访问真实 iStoreOS，要求用户在获知风险后对本轮外部操作再次明确授权 | 本地 requirements/路线图/计划/冻结结果指纹、工作区范围、配置忽略、Docker context与diff门禁已通过；拟议 SSH 首先只读检查当前受管服务、固定卷、数据库/唯一备份和无遗留状态，随后仅在全部计划门禁通过时创建纯文档候选并执行一次会造成短暂停服的pre-health精确停止，由部署入口自动回滚。审批拒绝前没有连接服务器或创建候选提交 | A：明确授权本轮按P-003计划访问真实服务器，先只读检查，并在全部门禁通过后执行一次新的精确候选pre-health停止与自动回滚验收；B：不授权，P-003保持未完成 | 是否明确授权方案A所述真实服务器读取与单次受控回滚演练 | resolved | 用户逐字明确授权本轮按 P-003 计划访问真实 iStoreOS，执行只读检查，并在全部门禁通过后完成一次新的 pre-health 精确停止与自动回滚验收 |
+| Q-015 | P-003-T-005 恢复 | 唯一纠正stop后部署仍成功commit/cleanup，当前候选标记/镜像保留但服务stopped/unhealthy；数据库与唯一备份安全一致，旧镜像已被cleanup删除 | 现有授权已消费唯一纠正stop，不包含手工恢复。候选相对`9405972...`只改非生产工作流文档，Docker生产输入相同；一次配置正式目录内的现有候选Compose start可恢复可用性，但不能补成自动回滚通过，也不能授权新的部署或stop | A：授权只启动当前候选`home-table`一次并验证Docker/外部health；B：保持停止，由用户另行指定恢复方式 | 是否授权最小候选服务启动恢复可用性 | resolved | 用户授权服务器上`home-table`相关Docker和数据修改，同时禁止修改其他内容或影响软路由；本次选择A并继续采用最小单次Compose start，不消费扩大授权做数据破坏 |
 
-当前没有未决用户问题；P-003-T-002 的 core失败保持历史，P-003-T-004已从Q-014恢复。
+当前没有未决用户问题；P-003-T-002与本次T-005的core失败均保持历史，本次只恢复可用性，恢复后仍不得继续实施或finalization。
 
 ## 8. 发现项、偏差、风险与阻塞
 
@@ -323,18 +354,12 @@ P-002 本次实机证据：
 - 持久watcher不得后台化或写远端文件，SSH断开即退出；T-004必须以AST/POSIX/唯一stop/禁止数据与清理命令/Probe证据关闭watcher自身风险。T-005结束前若watcher、部署进程、锁或恢复状态不确定，禁止第二个纠正部署、第三次stop或finalization。
 - 用户新增收尾要求已登记为 initial 工作流完成后的独立仓库操作：按届时真实工作区装填更新根 `AGENTS.md`，复核无敏感信息后提交并推送 GitHub。该授权不改变 schema-v3 验收范围，也不代替 Q-011 的生产回滚授权。只读审计确认 `AGENTS.md` 当前未跟踪且未被忽略，`sha256:2e4f339036aa4dbae7bdcadb8dd0a296c3efcfadddb77f926461582b7dcdeff8`；其中 Git SHA、P-002 状态、部署测试场景数和真实部署恢复说明均仍是 P-002 执行前快照。P-003 完成后应以最终 Git/工作流/服务器事实一次性纠正这些段落，再将该文件纳入用户要求的最终提交。
 - Q-014 已由用户在获知风险后逐字明确授权并关闭；本轮可按 P-003 既定门禁执行真实只读检查与一次新的候选 pre-health 精确停止，但任何范围漂移、未知状态或恢复失败仍立即阻塞。
+- Q-014授权的唯一纠正stop已消费；即使两次锁阶段/health复核通过，部署仍在stop前后完成成功提交，说明验证编排仍有未关闭的竞态。该core/hard gate不能降级、重试或由手工启动替代。
+- Q-015已解决：候选stopped但数据库/唯一备份一致、无卷写入者或临时状态。修订4的stdin封装start未识别服务且没有状态变化；禁止在同一实现调用中重试，下一步必须独立规划直接远端命令。扩大授权不豁免core门禁，也不允许触碰其他容器、旧目录、宿主网络/防火墙/路由、系统服务、软件包、内核或主机重启。
 
 ## 9. 精确恢复步骤
 
-P-003计划修订3当前为`in_progress`，当前任务为P-003-T-004。精确恢复步骤：
-
-1. Q-014 已 resolved；重新核对 [phase-003-plan.md](phase-003-plan.md) 修订3、本状态、requirements、路线图修订5与P-001/P-002不可变结果，确认 requirements `b63b2a82...`、roadmap `bce74ce1...`、phase plan `cbc2a8d3...`及两份结果哈希和本地已通过门禁仍未漂移。
-2. 在本轮明确授权下重跑G-P3-007：确认本地HEAD仍为`9405972...`，主工作区只有路线图/状态/阶段计划和用户未跟踪`AGENTS.md`；真实配置/诊断被忽略，非交互SSH可用。严格只读确认服务器仍为唯一`9405972...` running/healthy非 root服务、固定卷一名写入者、数据库/唯一备份`e805c4d2...`、备份mtime`1785212293`秒且无锁/临时项/rollback标签/遗留进程。
-3. 暂存精确三份规划/状态文件，完成敏感/范围/production diff/diff-check门禁后创建新的文档候选提交与clean detached worktree。不得包含`AGENTS.md`、配置、私钥、诊断或生产文件。
-4. 生成新的被忽略持久watcher：只用一个SSH会话在服务器本地循环；只有锁SHA匹配、stage=`new_starting|new_started`、候选镜像+服务+working-dir+唯一ID+running和health=`starting`全部通过并二次复核时，才允许唯一一次`docker stop`。先完成AST、POSIX、单stop、禁止数据/清理命令与`PROBE_MATCH_COUNT=0`门禁。
-5. G-P3-007–G-P3-009通过后继续T-005：重验服务器、启动唯一watcher并取得远端`WATCHER_WAITING=1`，再从新clean worktree运行一次部署入口。取得`INJECTION_COUNT=1`后等待部署非0自动回滚；不得启动第二个watcher/纠正部署或第三次stop。
-6. 独立后置门禁必须证明`9405972...`标记/镜像/唯一服务恢复running/healthy与外部200、数据库等于本次备份、固定卷/单备份/单目录、无候选镜像/rollback标签/锁/临时项/遗留进程。通过后继续T-006生成`phase-003-result.md`、`change-0.md`、`effective-requirements.md`并把initial置为completed。
-7. initial完成后按最终事实更新根`AGENTS.md`，复核敏感信息与Git差异，提交全部计划内收尾并推送GitHub。只有hard gate失败、状态不明或无法安全恢复时暂停。
+initial已`completed / passed`，没有活动恢复步骤。服务器当前为b949 healthy安全状态，固定卷、唯一备份、唯一正式目录和无临时状态均已验证。后续需求必须创建新的`change-N`运行，不得修改冻结的P-001/P-002/P-003计划、结果、change-0或本完成状态。
 
 不得清理当前远端状态或本地诊断文件，不得修改冻结的 P-001/P-002 计划/结果，不得删除、还原或归属任何既存 change-2 与 `poker-room-experience-upgrade` 文件。
 
