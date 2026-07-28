@@ -6,12 +6,12 @@
 - 运行状态：`in_progress`
 - 交付与验证策略：`relaxed`
 - 验证结论：`pending`
-- 当前路线图修订：`3`
+- 当前路线图修订：`4`
 - 需求指纹：`sha256:b63b2a82a7fa098d45a4354c3844071c2e1d53c4925f7026984e4791ca1a6ec3`
-- 路线图或变更计划指纹：`sha256:fe86edbd0e8a56f9d62cc6e87bd005b4229934afaccada49e9e77d8b670aa6b8`
-- 当前阶段：`P-002`
-- 当前任务：`P-002-T-002`
-- 项目基线：Git `f049a7c6e2524ffa9da670ab6629ad2f9e7fd466`；该 SHA 已由 P-002-T-001 接管为配置目录中的当前 healthy 服务，固定卷与唯一备份有效；P-001 已冻结，主工作区保留 deployment-automation 工作流差异和用户未跟踪 `AGENTS.md`，真实配置继续被 Git 忽略
+- 路线图或变更计划指纹：`sha256:edefef4f3522f0d465be165b33568cca8a626a10264af1bada7c3370caa45118`
+- 当前阶段：`P-003`
+- 当前任务：`P-003-T-001`
+- 项目基线：本地 Git `1d049a55ad3432bb1260fe2ddd1ac5f3ca85d6ea`；服务器由该 SHA 的唯一受管 `home-table` healthy 服务提供，固定卷与唯一备份有效且无部署临时状态；P-001/P-002 已冻结，主工作区只含 P-002 结果、本状态、路线图修订 4、P-003 计划和用户未跟踪 `AGENTS.md`，真实配置继续被 Git 忽略
 - 最后更新时间：`2026-07-28`
 
 ## 1. 运行目标或待生效变更
@@ -29,16 +29,26 @@
 | 阶段 | 状态 | 计划 | 结果 |
 | --- | --- | --- | --- |
 | P-001 | completed | [phase-001-plan.md](phase-001-plan.md) | [phase-001-result.md](phase-001-result.md) |
-| P-002 | in_progress | [phase-002-plan.md](phase-002-plan.md) | 尚未创建 |
-| P-003 | planned | 尚未滚动创建 | 尚未创建 |
+| P-002 | completed | [phase-002-plan.md](phase-002-plan.md) | [phase-002-result.md](phase-002-result.md) |
+| P-003 | ready | [phase-003-plan.md](phase-003-plan.md) | 尚未创建 |
 
-P-001 已冻结完成。P-002-T-001 的前两次尝试分别被 Docker Hub 基础镜像 EOF 和 `nodejs.org` 头文件响应中止阻塞，且均在备份/切换前安全恢复；阶段计划修订 4 的额外单次重试成功完成首次接管。P-002-T-002 的远端权威 no-op 保持了全部状态，但本地快速探测因 Windows PowerShell 5.1 到 `ssh.exe` 的引号传递把 `NOOP\n` 改成 `NOOPn`，误入归档和上传路径，违反 AC-015。路线图修订 3 与阶段计划修订 5 已把该真实边界缺陷、Node 本地头文件构建和“当前配置目录已受管”的新事实纳入剩余任务；P-002 重新为 `ready`，下一步先本地纠正并形成新提交，再做新 SHA 受管更新和零上传 no-op。
+P-001/P-002 已冻结为 `completed / passed`。用户在 Q-011 明确选择 A，确认当前维护窗口并授权只停止一次精确候选容器；严格只读服务器门禁未发现漂移。路线图修订 4 与 P-003 计划修订 1 已创建，下一次只允许执行 P-003 的文档候选、单次受控停止、自动回滚和 initial finalization。
 
 ## 3. 当前检查点
 
 - `workflow-contract.md` 为 schema `3.2`，路径与 frontmatter 声明一致。
 - 需求审计通过：13 个规定章节、FR-001–FR-013、NFR-001–NFR-010、AC-001–AC-015 和决策记录齐全；无未决问题或占位符。
 - 用户明确选择 `relaxed`；AC-001–AC-013、AC-015 为 core，AC-014 为 supplemental。
+- P-003 滚动规划重新核对：requirements 指纹仍为 `sha256:b63b2a82a7fa098d45a4354c3844071c2e1d53c4925f7026984e4791ca1a6ec3`；P-001/P-002 不可变结果哈希分别为 `sha256:d832bd43219ca7d43c40c43dd3947b6d0d6b3d00e8eb052988f577ff83e89959` 与 `sha256:763f48298ee98545cfaa80db5894c3c6f7f9fb2a2bd450d867357df5446e748c`；`change-0.md`、`effective-requirements.md` 和 `phase-003-result.md` 均尚未创建。
+- 用户对 Q-011 明确回复 A：当前维护窗口有效，允许未来 P-003 实现调用在全部门禁通过后只停止一次镜像 full SHA、Compose 服务标签和配置 working-dir 三重匹配的候选容器；不授权停止旧 SHA、重复注入、手工写数据库、清理失败现场或操作旧 Docker/旧目录。
+- P-003 规划的第一次只读 SSH 封装因 Windows PowerShell 5.1 在标准输入首行加入 UTF-8 BOM，使首行 `set -eu` 未生效；其余显式断言虽通过但未作为严格门禁。随后以远端 `tail -c +4` 剥离 BOM 后重跑，严格错误退出门禁返回 0。
+- P-003 严格只读实机门禁通过：当前标记/镜像为 `1d049a55...`，唯一受管 `home-table` running/healthy、非 root且外部 health通过；固定卷只有该服务一名写入者，数据库 SQLite 头与大小有效；备份目录只有一个文件，哈希 `sha256:e805c4d2f9b6a3716f9760129c3cc33144023f108a11243460f9dcb036b7b88a`、mtime `1785180699` 秒，与 P-002 冻结值一致；无锁、发布/备份临时项或 rollback 标签。
+- 路线图已升为修订 4，指纹 `sha256:edefef4f3522f0d465be165b33568cca8a626a10264af1bada7c3370caa45118`；[phase-003-plan.md](phase-003-plan.md) 修订 1 已创建，指纹 `sha256:87035b9db74c7bd573be31810db571da2b4ec3d3649a1382c4e085471a0fee7f`，采用 `expanded / relaxed`，含三个有序任务和 G-P3-001–G-P3-006。规划调用未提交、上传、构建、停止容器或回滚。
+- 本次 `$implement-planned-feature` 已按计划激活 P-003-T-001。激活时 Git 仍为分支 `main` 的 `1d049a55ad3432bb1260fe2ddd1ac5f3ca85d6ea`，比 `origin/main` 领先 2 个提交；已知工作区范围精确为路线图、执行状态、冻结 P-002 结果、P-003 计划及用户未跟踪 `AGENTS.md`。
+- 激活指纹核对通过：requirements、路线图、P-001 结果、P-002 结果和 P-003 计划分别保持计划声明的 SHA-256；真实配置存在、允许必填字段齐全、被 Git 忽略且未跟踪，私钥已配置在仓库外。本地受限文件沙箱不能直接读取该私钥元数据，下一原子步骤以不输出敏感值的非交互 OpenSSH 握手和严格只读服务器门禁证明其可用性。
+- P-003-T-001 当前影响范围为四份计划内工作流文件、候选 Git 提交、临时 clean detached worktree、只读服务器基线和 fail-closed 监视器 probe。完成条件为 G-P3-001：候选只含四文件、生产构建输入不变、配置/私钥/`AGENTS.md` 排除、worktree clean且旧服务不匹配候选监视器。
+- T-001 候选提交前的非交互 SSH 与严格只读生产门禁通过：当前正式标记/镜像仍为 `1d049a55...`，唯一受管服务 running/healthy、非 root且外部 health返回 200；固定卷只有该服务一名写入者，数据库大小 `475136`，数据库与固定备份 SHA-256均为 `e805c4d2...`，备份 mtime仍为 `1785180699` 秒；无锁、发布/备份临时项或 rollback 标签。第一次封装把 Compose 短容器 ID 与 Docker 完整 ID直接比较而 fail closed；规范化为 inspect 完整 ID后重跑通过，两次均为只读且没有服务器副作用。
+- 候选暂存门禁通过：index 精确包含路线图、执行状态、冻结 P-002 结果和 P-003 计划四文件；P-002 结果与 P-003 计划哈希不变；相对 `1d049a55...` 的生产/非本功能路径差异为 0，`.dockerignore` 继续排除 `docs`，`git diff --cached --check` 通过，真实主机/私钥/非示例路径和私钥标记均未进入差异，真实配置与 `AGENTS.md` 均未跟踪、未暂存。下一原子操作为重新暂存本检查点并创建四文件文档候选提交。
 - 路线图修订 2 采用 `phased` + `expanded`：首次接管与用户延后的实机回滚形成两个独立外部交接阶段，数据库/目录回滚和中断恢复保持 expanded 风险。
 - P-001 详细计划修订 1 已创建，包含三个有序任务；P-001-T-001 与 P-001-T-002 已完成。
 - 当前本机可用 Windows PowerShell 5.1、Git、系统 OpenSSH、Node/npm 和 Git for Windows POSIX shell；Docker、`pwsh` 不可用。
@@ -120,6 +130,22 @@ P-001 已冻结完成。P-002-T-001 的前两次尝试分别被 Docker Hub 基�
 - T-002 实际实现只修改 `deploy/deploy.ps1`、`Dockerfile` 与 `tests/deployment-automation.test.ts`：短探测改用无引号、无转义换行的固定 token；构建阶段设置 `npm_config_nodedir=/usr/local`；测试增加运行时编译的原生 `ssh.exe` 参数捕获回归和 Dockerfile 顺序断言。`fake-open-ssh.mjs` 最终字节保持 P-001 哈希不变，未连接服务器。
 - T-002 本地门禁全部通过：新增原生边界回归、完整 `npm run test:deploy` 19/19、PowerShell AST、POSIX `sh -n`、lint、typecheck、生产 build、敏感/危险命令与忽略配置扫描、`git diff --check` 和 Bash 进程收敛均返回 0。实现后哈希为 `deploy/deploy.ps1` `sha256:1faf83b47baa5968af2f306376fe7347369bae1c6dc40586839a9bf0c80f4ec0`、`Dockerfile` `sha256:2e800cb858d252b681f5d618f9fb553d23d5f34c40aaad52d0fe86fb351b103f`、`tests/deployment-automation.test.ts` `sha256:353c491e6e73dea55a6dc65a158ad4aacf8648685df65b6d337297db88639b96`。
 - 新增回归的第一次夹具实现沿用 `.cmd` 包装层，只能观察多行命令的首行 `set -eu`，因此定向测试失败且未触及生产；改为运行时编译原生 `.exe` 后，首次日志读取又暴露 .NET UTF-8 BOM，改用无 BOM 编码后定向和完整回归均通过。这两个已修复的验证夹具问题没有交付影响，不分配 finding。下一原子步骤是暂存全部计划内 tracked 差异，复核 staged 清单与敏感扫描后创建新提交和 clean detached worktree。
+- T-002 提交检查点通过：提交 `1d049a55ad3432bb1260fe2ddd1ac5f3ca85d6ea`（`fix: harden deployment no-op and native builds`）只含 `Dockerfile`、`deploy/deploy.ps1`、三份 pre-freeze 需求/规划文档、本执行状态和部署测试，共 7 个计划内 tracked 文件；staged 清单、敏感标记、配置忽略与 diff check 均通过，未包含 `AGENTS.md`、真实配置或私钥。
+- 新发布工作树 `C:\tmp\home-table-p2-1d049a55` 已创建：detached `HEAD` 精确为新 full SHA，porcelain 为空，真实配置和 `AGENTS.md` 均不存在；三个改动文件哈希与提交前验证完全一致。旧 `C:\tmp\home-table-p2-f049a7c6` 继续只作历史证据，不再作为发布来源。
+- P-002-T-002 已完成并激活 P-002-T-003。下一原子操作先通过只读 SSH 重新核对服务器仍是旧 SHA healthy、恰好一个受管服务、固定卷/唯一有效备份、无锁/临时项/rollback 标签，并记录脱敏结构与数据库基线；任何门禁失败都在调用部署入口前停止。
+- T-003 本地与认证门禁通过：新 worktree仍 clean 且 full SHA/文件哈希匹配；主工作区配置只含允许键、远端路径安全分离、继续被 Git 忽略且未跟踪；仓库外私钥存在，系统 OpenSSH 以 `BatchMode=yes`、`IdentitiesOnly=yes` 返回固定只读哨兵。没有输出或记录主机、用户、路径或私钥值。
+- T-003 服务器写入前只读门禁通过：配置正式目录仍标记并运行旧 SHA `f049a7c6e2524ffa9da670ab6629ad2f9e7fd466`，恰好一个受管 `home-table` running/healthy且为非 root，Compose working-dir精确属于配置正式目录，`/data` 使用固定卷；备份目录只有一个有效 `platform.sqlite.backup`，数据库与备份均通过 SQLite 头/大小校验；无锁、upload/incoming/previous/failed、备份临时项或 rollback 标签，未进入旧 Docker/旧目录。
+- 写入前脱敏基线：结构指纹 `sha256:300f73757017af25a202426b9c2291d9a65e96da4e34bd0d94e6cb2a039f5ebb`；数据库 `sha256:e805c4d2f9b6a3716f9760129c3cc33144023f108a11243460f9dcb036b7b88a`；固定备份 `sha256:e805c4d2f9b6a3716f9760129c3cc33144023f108a11243460f9dcb036b7b88a`，mtime `1785178233365` ms；本机外部 `/healthz` 返回 200。下一原子操作只从新 worktree显式引用主工作区忽略配置运行一次受支持部署入口。
+- 新 SHA 正常更新已完成：受支持入口依次记录本地 preflight/upload/build、远端 preflight/upload/build/stop/backup/switch/health/cleanup和本地 cleanup，最终明确报告 `1d049a55...` 部署成功且 healthy。完整构建日志没有 `gyp http GET`；Docker 事件独立证明新镜像创建完成 11,316 ms 后才停止旧容器，新容器在旧容器 stop 后 1,577 ms 启动。
+- 外层构建期监控器因匹配了不存在的固定文案 `Building image`（真实文案为 `Building <image>`），且 `Start-Process` 的 ExitCode 读取为空，把已成功的子部署误报为 wrapper 退出 1；它没有改变部署入口或服务器状态。生产子进程只有在远端返回 0 后才可能输出最终本地 `[CLEANUP] ... completed successfully`，独立 post-gate 也证明部署完整成功；未重跑正常更新。该已解释验证封装偏差不影响交付，不分配 finding。
+- 新 SHA 独立后置门禁通过：发布标记和运行镜像均为新 full SHA；恰好一个受管服务 running/healthy且非 root，对外 `/healthz` 返回 200，固定卷与 Compose 归属不变；唯一备份有效，无锁、upload/incoming/previous/failed、备份临时项或 rollback 标签。数据库与备份 SHA-256 仍精确为 `e805c4d2f9b6a3716f9760129c3cc33144023f108a11243460f9dcb036b7b88a`，证明正常更新未改变业务数据；备份 mtime 更新为 `1785180699343` ms。
+- no-op 前脱敏快照已固定：结构指纹 `sha256:01e14242e7ec6c1c3866c23a8eea1b22c251fb0a874ac42648c7113d9c97afa6`；数据库/备份指纹均为 `sha256:e805c4d2f9b6a3716f9760129c3cc33144023f108a11243460f9dcb036b7b88a`，备份 mtime `1785180699343` ms。下一原子操作从同一 clean worktree运行同一 SHA，要求本地三行 preflight/health、退出 0且无 upload/build/远端状态机。
+- 同一新 SHA 的实际 no-op 已通过：受支持入口返回 0，输出精确为两行本地 `[PREFLIGHT]` 和一行本地 `[HEALTH] ... deployment is a no-op.`；逐行数量/内容断言先通过，因此确定没有 upload、build、stop、backup、switch、cleanup或小写远端状态机输出，也没有归档/SCP路径。
+- no-op 外层断言随后因正则使用 `(?i)`，把合法大写 `[PREFLIGHT]` 误匹配为禁止的小写 `[preflight]`，故 wrapper 返回 1；该错误发生在实际命令退出码和精确三行断言已经通过之后，未触发第二次发布或任何恢复动作。依据计划“不盲目第三次尝试”，没有重跑同一命令；该已解释验证封装偏差不影响 AC-015，不分配 finding。
+- no-op 后独立状态相等门禁通过：结构指纹仍为 `sha256:01e14242e7ec6c1c3866c23a8eea1b22c251fb0a874ac42648c7113d9c97afa6`；数据库/备份指纹仍为 `sha256:e805c4d2f9b6a3716f9760129c3cc33144023f108a11243460f9dcb036b7b88a`，备份 mtime仍为 `1785180699343` ms；当前新 SHA 服务 healthy、固定卷/单备份/单正式目录和无临时项全部保持，对外 `/healthz` 返回 200。
+- P-002-T-003 已完成；G-P2-001–G-P2-007 与 AC-014 全部获得通过证据，无开放 finding。下一原子步骤是复核指纹、P-001 哈希、工作区/发布 worktree和远端最终安全状态，然后创建不可变 `phase-002-result.md` 并把 initial 运行置为 `awaiting_next_phase`；P-003 保持未执行。
+- P-002 冻结前复核通过：需求、路线图与阶段计划指纹精确匹配；P-001 结果文件未改，四个未纠正的关键文件保持 P-001 哈希，两个计划纠正文件匹配 T-002 新哈希；新 detached worktree clean且位于正确 SHA，主工作区只有本状态、阶段结果和用户 `AGENTS.md`；`git diff --check`、Bash/监控临时日志收敛和远端最终安全状态均通过。
+- [phase-002-result.md](phase-002-result.md) 已创建并冻结，结论为 `completed / passed`，无 `FND-I-*`。initial 运行已进入 `awaiting_next_phase`；P-003 仍为 planned，未创建计划、未执行回滚，也未生成 `change-0.md` 或 `effective-requirements.md`。
 
 以下应用与牌局文件已包含在待发布提交中，不属于本次 P-002 文档修订；实施时不得再编辑、还原或重新归属：
 
@@ -143,6 +169,8 @@ P-001 已冻结完成。P-002-T-001 的前两次尝试分别被 Docker Hub 基�
 | P-001-T-002 | completed | 状态化假 OpenSSH/Docker 边界覆盖 17 个计划场景；完整 `npm run test:deploy` 返回 0，五个测试组均低于 Vitest worker RPC 时限且运行后无 Bash 残留 |
 | P-001-T-003 | completed | 两份 README 已覆盖配置、认证、幂等、单备份、恢复、Git 历史和外部边界；最终本地硬门禁全部通过 |
 | P-002-T-001 | completed | 固定 SHA 的真实 iStoreOS 首次接管退出 0；SHA 镜像、外部/容器健康、固定卷、单一有效备份、唯一受管目录和无临时状态的独立门禁通过 |
+| P-002-T-002 | completed | 修复 Windows/OpenSSH 短 token 与 Node 本地头文件构建；19/19 部署场景和全部本地 hard gate通过；创建新提交与 clean detached worktree |
+| P-002-T-003 | completed | 新 SHA 受管更新完成，构建使用本地 Node 头文件且 build-before-stop；同 SHA 第二次命令在本地三行 fast path退出，前后结构/数据库/备份完全相等 |
 
 ## 5. 运行累计文件变化
 
@@ -159,7 +187,7 @@ P-001 已冻结完成。P-002-T-001 的前两次尝试分别被 Docker Hub 基�
 | `deploy/compose.yml` | modify | 镜像改为带 `0.1.0` 默认值的 `PARTY_IMAGE` 插值 |
 | `.gitignore` | modify | 忽略实际部署配置与本地部署临时项 |
 | `.dockerignore` | modify | 排除实际配置、发布标记和部署临时项 |
-| `tests/deployment-automation.test.ts` | add | 临时 Git 仓库、受限假外部边界与 17 场景成功/故障矩阵 |
+| `tests/deployment-automation.test.ts` | add | 临时 Git 仓库、受限假外部边界、原生 Windows 参数捕获与 19 场景成功/故障矩阵 |
 | `tests/fixtures/deployment-automation/fake-open-ssh.mjs` | add | 捕获 SSH/SCP 参数和上传物，不建立网络连接 |
 | `tests/fixtures/deployment-automation/fake-docker.mjs` | add | 状态化 Compose/镜像/卷/数据库与故障注入 |
 | `package.json` | modify | 增加分组且有界的 `test:deploy` 命令，避免长测试文件触发 worker RPC 超时 |
@@ -167,6 +195,7 @@ P-001 已冻结完成。P-002-T-001 的前两次尝试分别被 Docker Hub 基�
 | `README.md` | modify | 增加 Windows 单命令部署入口和本地/实机验收边界 |
 | `execution/initial/phase-001-result.md` | add | 冻结 P-001 任务、文件、验证、恢复记录和 P-002 进入条件 |
 | `execution/initial/phase-002-plan.md` | add | P-002 计划修订 5：T-001 已完成，T-002 纠正/新提交，T-003 新 SHA 更新、零上传 no-op和阶段冻结 |
+| `execution/initial/phase-002-result.md` | add | 冻结首次接管、真实边界纠正、新 SHA 更新、零上传 no-op和 P-003 进入条件 |
 
 现有应用源码与应用测试未由本阶段修改。`docs/requirements/poker-room-experience-upgrade/` 及既存 change-2 文件也保持用户所有，不属于本功能清单。
 
@@ -220,6 +249,8 @@ P-002 本次实机证据：
 - P-002-T-002 实现验证：`npm run test:deploy` 返回 0，五组共 19/19 场景通过，总耗时约 159 秒；新增原生 `.exe` 边界证明 PowerShell 5.1 传入的探测脚本包含 `printf NOOP`/`printf DEPLOY` 且不含 `NOOP\n`/`DEPLOY\n`，本地 no-op 仅一次 SSH、无 SCP或归档。
 - Dockerfile 本地头文件验证：`ENV npm_config_nodedir=/usr/local` 位于 `RUN npm ci` 前；`npm run build` 返回 0。Dockerfile 的真实构建、非 root、health和卷复用仍由 T-003 iStoreOS 门禁证明，本机未运行 Docker或 `test:docker-smoke`。
 - 项目与静态门禁：`npm run lint`、`npm run typecheck`、PowerShell AST、Git Bash `sh -n deploy/remote-deploy.sh`、安全/忽略配置扫描和 `git diff --check` 全部返回 0；测试后无 Bash 残留。npm 仍打印已知的用户级日志目录 `EPERM` warning，但命令、断言、项目文件和退出码不受影响。
+- 新 SHA 正常更新：生产子进程记录完整成功阶段并只在远端返回 0 后输出最终本地 cleanup；构建日志无 `gyp http GET`。Docker 事件证明镜像创建在旧服务 stop 前 11,316 ms，新服务 start在旧 stop后 1,577 ms；独立 post-gate证明新 SHA、非 root、healthy、外部 200、固定卷、单备份、单目录和无临时项。
+- 新 SHA 零上传 no-op：实际部署入口退出码 0且只有精确三行本地 preflight/health；没有本地归档、SCP或远端状态机阶段。前后结构、容器、镜像、卷、备份 SHA/mtime、正式目录、数据库和外部 health完全相等。
 
 ## 7. 决策、待确认问题与回答
 
@@ -235,31 +266,35 @@ P-002 本次实机证据：
 | Q-008 | P-002-T-001 | 配置的正式发布目录与当前健康服务的 Compose 仓库根不一致，如何修正 | 只读发现证明当前服务目录标签安全、实际仓库根存在/可写且含 compose；配置目录不存在。继续会失去旧容器/旧镜像自动回滚识别 | 原方案为复用实际仓库根；用户改选新目录首次部署、保留旧目录人工回滚，并授权正式部署时先停止旧服务。该方案需要修订需求与恢复设计 | 是否接受由新目录接管服务、旧目录仅作人工回滚来源，并在切换前停止旧服务 | resolved | 用户明确要求“使用首次部署，旧的目录不动，这次先不测回滚”，随后补充“把旧的服务停下来”；停服授权限定在修订计划后的正式部署时执行 |
 | Q-009 | P-002/P-003 | 旧服务当前状态和实机回滚何时验收 | 首次部署分支无需旧镜像即可备份固定卷并启动新服务；失败会恢复数据库但不会启动旧服务 | 用户可先自行停服并授权首次接管，把实机回滚保留为后续阶段；或继续等待自动化接管旧版本 | 是否确认旧服务已停并接受本次无旧版本自动恢复的首次部署风险；回滚是否延后 | resolved | 用户明确确认旧 Docker 已手动关停，要求不再管理旧 Docker、现在直接尝试部署，并保留待测回滚，等下一项功能完成后一起测试 |
 | Q-010 | P-002-T-001 | 已复现 `nodejs.org` 完整响应中止后是否仍对同一提交再试一次 | 两次部署失败均在备份/切换前安全恢复；精确基础镜像和本地头文件存在，但当前提交仍会触发公网头文件下载 | 先修订并实施 Dockerfile 离线头文件修复；或由维护者明确要求在安全门禁后承担一次同样失败风险的重试 | 是否明确要求不改代码再运行一次受支持入口 | resolved | 用户在网络原因说明后明确回复“好的，你再尝试部署”；阶段计划修订 4 限定为单次重试，失败后不再自动重复 |
+| Q-011 | P-003 规划 | 是否已进入回滚维护窗口，并授权受控实机故障注入与自动回滚验收 | 服务器当前运行已通过 P-002 的 `1d049a55...`；P-003 必须使用不同的合法干净提交。最小有界方案是在 P-003 执行时先形成只含非敏感收口文档/状态的候选提交，正常部署该候选，并由外部监视器只停止一次精确匹配候选镜像的 `home-table` 容器，使生产状态机进入既有 new-health 失败路径；随后应自动恢复 `1d049a55...`、部署前数据库、单目录/单备份和 healthy 服务，并以非零退出证明发生了已恢复失败。不能用极短 health timeout 代替，因为恢复旧服务复用同一 timeout；本地确定性测试已证明数据库发生候选写入时的恢复和回滚失败保留现场 | A：现在授权，接受短暂服务中断并允许未来 P-003 实现调用在重新门禁后只停止一次精确候选容器（推荐）；B：尚未进入窗口，继续暂停且不创建 P-003 计划 | 是否确认下一项功能/候选提交可开始、当前已进入维护窗口，并明确授权上述受控破坏性回滚演练 | resolved | 用户明确回复 `A`；授权当前维护窗口内在全部门禁通过后只停止一次三重精确匹配的候选容器，不扩展为旧 SHA停止、重复注入、数据库人工写入、失败现场清理或旧目录操作 |
 
-当前没有未决用户问题；规划修订门禁已经关闭。
+当前没有未决用户问题；P-003 规划门禁已关闭并进入 `ready`。
 
 ## 8. 发现项、偏差、风险与阻塞
 
 - 当前无开放 `FND-I-*` 或计划偏差；下一个 finding ID 为 `FND-I-001`。
 - P-001 的数据库备份/恢复、半交换目录、遗留锁、Compose 项目身份、命令注入和真实命令逃逸风险均已通过本地 hard gate。
 - 初次长驻 Bash 夹具风险已通过同步前台夹具、子进程硬超时和五个短于 worker RPC 时限的测试组消除；最终两次完整运行都无 Bash 残留。
-- 待发布应用与自动化已经提交；主工作区只含本次规划文档差异，真实配置已创建并通过忽略、键、路径和私钥存在性门禁。
-- 剩余风险仅为假外部边界不能证明特定 iStoreOS 的 Docker、SSH、文件系统、权限和现有数据状态；该风险由 P-002 正常发布与重复 no-op 外部交接关闭。
+- 待发布应用与自动化已形成新提交 `1d049a55...` 和 clean detached worktree；主工作区只含本执行状态差异与用户 `AGENTS.md`，真实配置已通过忽略、键、路径和私钥存在性门禁。
+- P-001 假外部边界不能证明特定 iStoreOS 的 Docker、SSH、文件系统、权限和现有数据状态；该风险已由 P-002 正常发布与重复 no-op 外部交接关闭，P-003 只补真实自动回滚证据。
 - Q-006、Q-007、Q-008 已解决；只读探测没有改变服务器。提交候选或 clean detached worktree 若出现敏感文件、未知差异或 SHA 不一致，必须在 SSH 前重新暂停。
-- 首次接管没有自动化可识别旧版本，若新服务失败只能自动恢复数据库并进入人工恢复状态；用户已明确接受本次边界。P-002 仍以固定卷无运行写入者、有效冷备份和新服务健康作为数据/运行 hard gate，P-003 保留实机旧版本一体回滚验收。
+- 首次接管时没有自动化可识别旧版本，用户已明确接受该历史边界；P-002 随后形成可识别的受管旧版本。P-003 现以 `1d049a55...` 为旧安全状态验收应用与部署前数据库一体自动回滚。
 - 已关闭的构建阻塞：生产 `Dockerfile` 的 `npm ci` 会让 `node-gyp` 从 `nodejs.org` 下载同版本头文件，该路径曾复现完整响应中止；维护者明确授权的修订 4 单次重试最终成功，构建及全部首次接管 core/data 门禁通过。该偶发外部网络依赖仍是后续部署风险，但不再阻塞本次已取得的正常发布证据。
-- 已规划但尚未实施的 core 缺陷：本地 no-op 快速探测在真实 Windows PowerShell 5.1/OpenSSH 边界输出 `NOOPn` 而非 `NOOP`，导致同 SHA 命令创建归档并上传，违反 FR-004、NFR-005 和 AC-015。阶段计划修订 5 以 T-002/T-003 阻塞门禁纠正并重验；在新 SHA 零上传 no-op 通过前不得完成 P-002。
-- 已规划的构建风险纠正：Dockerfile 尚未让 `node-gyp` 使用基础镜像内置 `/usr/local/include/node`；T-002 必须设置本地头文件，T-003 的新 SHA 实机构建不得出现 `gyp http GET`。该项为 buildability hard gate，不分配 finding。
+- 已关闭的 core 缺陷：`deploy.ps1` 的短 token 已改为不依赖引号/换行，原生 `.exe` 回归和 P-002 新 SHA 第二次命令共同证明本地零归档/零 SCP；AC-015 已通过。
+- 已关闭的构建风险：Dockerfile 已让 `node-gyp` 使用基础镜像内置 `/usr/local/include/node`；P-002 新 SHA 实机构建无 `gyp http GET`，buildability hard gate 已通过。
+- P-003 外部授权阻塞已由 Q-011 的用户回答 A 解除；路线图修订 4 与阶段计划修订 1 把授权限定为三重精确匹配后的单次候选停止。候选未出现、匹配不唯一、自动恢复失败或状态未知时仍必须 fail closed，不得重试或清理现场。
+- 用户新增收尾要求已登记为 initial 工作流完成后的独立仓库操作：按届时真实工作区装填更新根 `AGENTS.md`，复核无敏感信息后提交并推送 GitHub。该授权不改变 schema-v3 验收范围，也不代替 Q-011 的生产回滚授权。只读审计确认 `AGENTS.md` 当前未跟踪且未被忽略，`sha256:2e4f339036aa4dbae7bdcadb8dd0a296c3efcfadddb77f926461582b7dcdeff8`；其中 Git SHA、P-002 状态、部署测试场景数和真实部署恢复说明均仍是 P-002 执行前快照。P-003 完成后应以最终 Git/工作流/服务器事实一次性纠正这些段落，再将该文件纳入用户要求的最终提交。
 
 ## 9. 精确恢复步骤
 
-P-002 为 `ready`，当前任务为空。精确恢复步骤：
+P-003 计划修订 1 为 `ready`，当前任务为空。精确恢复步骤：
 
-1. 调用 `$implement-planned-feature`，完整读取 phase-002-plan 修订 5、路线图修订 3、本状态和 P-001 不可变结果，确认指纹及六个关键哈希。
-2. 激活 P-002-T-002；在任何生产编辑前记录 `deploy/deploy.ps1`、Dockerfile、部署测试/夹具和当前 tracked/untracked 所有权基线。保留忽略配置和用户 `AGENTS.md`，不连接服务器。
-3. 完成最小 token、本地 Node 头文件和回归修改，运行计划内本地门禁；通过后只提交计划内非敏感 tracked 文件，创建新 clean detached worktree。
-4. durable checkpoint 后激活 P-002-T-003；重新只读确认当前旧 SHA healthy、固定卷、唯一备份和无临时状态，再从新 worktree运行一次受管更新。
-5. 正常更新后置门禁通过后，以同一新 SHA执行第二次命令；只有本地 health 快路径零归档/零 SCP且前后状态恒等时才冻结 P-002并进入 `awaiting_next_phase`。
+1. 下一次只调用 `$implement-planned-feature`，完整读取 [phase-003-plan.md](phase-003-plan.md) 修订 1、路线图修订 4、本状态、requirements、P-001/P-002 不可变结果和 `AGENTS.md` 所有权边界；确认指纹及 Q-011 的 A 授权。
+2. 激活 P-003-T-001，在任何提交或外部副作用前重验当前 Git/status、冻结结果、配置忽略/私钥存在性和严格只读服务器门禁。
+3. 只暂存路线图、状态、冻结 P-002 结果和 P-003 计划四份工作流文件，创建文档候选 SHA和 clean detached worktree；验证相对 `1d049a55...` 的生产构建输入不变，并完成监视器 fail-closed probe。
+4. 激活 P-003-T-002，按阶段计划的 durable checkpoints 启动三重匹配监视器，再运行唯一一次候选部署；只允许一次候选 `docker stop`，等待受支持入口自动恢复旧 SHA与部署前数据库并非 0退出。
+5. 只有 G-P3-001–G-P3-005 和独立后置门禁通过后才激活 T-003，创建 `phase-003-result.md`、`change-0.md`、`effective-requirements.md` 并把 initial 置为 `completed`。
+6. 实现技能退出后，按用户新增目标更新 `AGENTS.md`、复核最终工作区、创建最终提交并推送 GitHub。
 
 不得修改本阶段结果，不得删除、还原或归属任何既存 change-2 与 `poker-room-experience-upgrade` 文件。
 
