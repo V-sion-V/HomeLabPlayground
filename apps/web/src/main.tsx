@@ -2,6 +2,7 @@ import {
   StrictMode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState
 } from "react";
@@ -36,6 +37,8 @@ import {
   ConfirmDialog,
   SelectField,
   ThemeToggle,
+  applyProductTheme,
+  readStoredTheme,
   type ThemeScope
 } from "./ui";
 import "./styles.css";
@@ -65,6 +68,11 @@ function App() {
   const [notice, setNotice] = useState("");
   const restoreStarted = useRef(false);
   const activeRoomId = room?.id;
+  const themeScope: ThemeScope = displayRoomId || room ? "poker" : "main";
+
+  useLayoutEffect(() => {
+    applyProductTheme(themeScope, readStoredTheme());
+  }, [themeScope]);
 
   useEffect(() => {
     if (localStorage.getItem("party-language")) return;

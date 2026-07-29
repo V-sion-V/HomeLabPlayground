@@ -410,6 +410,101 @@ describe("platform domain", () => {
     expect(domain.state.seasonAssets[cara.id]?.score).toBe(10_000);
     domain.validateInvariants();
   });
+
+  it("filters departed players from live settlement projections without rewriting history", () => {
+    const domain = new PlatformDomain(initialSnapshot(), () => 1_000);
+    const alice = domain.enterAccount("Alice", "🦊");
+    const bob = domain.enterAccount("Bob", "🐼");
+    const room = domain.createRoom(alice.id, "Settlement projection", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    room.poker.phase = "complete";
+    const cards = room.poker.deck.slice(0, 9);
+    domain.recordHandResult(
+      room.id,
+      room.poker.handNumber,
+      room.config.mode,
+      [
+        { accountId: alice.id, amount: 100 },
+        { accountId: bob.id, amount: 0 }
+      ],
+      "settled",
+      [alice.id, bob.id],
+      {
+        chipDeltas: [
+          { accountId: alice.id, amount: 100, endingChips: 2_100 },
+          { accountId: bob.id, amount: -100, endingChips: 1_900 }
+        ],
+        showdown: {
+          communityCards: cards.slice(0, 5),
+          players: [
+            {
+              accountId: alice.id,
+              cards: cards.slice(5, 7),
+              handCategory: "high-card",
+              winner: true
+            },
+            {
+              accountId: bob.id,
+              cards: cards.slice(7, 9),
+              handCategory: "high-card",
+              winner: false
+            }
+          ]
+        }
+      }
+    );
+
+    domain.leaveRoom(room.id, bob.id);
+
+    const durableResult = domain.state.handResults.at(-1)!;
+    expect(durableResult.participantAccountIds).toEqual([alice.id, bob.id]);
+    expect(durableResult.playerResults?.map((player) => player.accountId)).toEqual([
+      alice.id,
+      bob.id
+    ]);
+    expect(durableResult.showdown?.players.map((player) => player.accountId)).toEqual([
+      alice.id,
+      bob.id
+    ]);
+
+    const afterLeave = domain.projectRoom(room.id, { accountId: alice.id });
+    expect(afterLeave.lastResult?.participantAccountIds).toEqual([alice.id]);
+    expect(afterLeave.lastResult?.payouts.map((payout) => payout.accountId)).toEqual([
+      alice.id
+    ]);
+    expect(afterLeave.lastResult?.playerResults?.map((player) => player.accountId)).toEqual([
+      alice.id
+    ]);
+    expect(afterLeave.lastResult?.showdown?.players.map((player) => player.accountId)).toEqual([
+      alice.id
+    ]);
+
+    domain.joinRoom(room.id, bob.id, 3_000);
+    const afterRejoin = domain.projectRoom(room.id, { accountId: alice.id });
+    expect(afterRejoin.seats.find((seat) => seat.accountId === bob.id)).toMatchObject({
+      tableChips: 3_000,
+      role: "member"
+    });
+    expect(
+      afterRejoin.lastResult?.participantAccountIds.includes(bob.id)
+    ).toBe(false);
+    expect(
+      afterRejoin.lastResult?.playerResults?.some((player) => player.accountId === bob.id)
+    ).toBe(false);
+    domain.validateInvariants();
+  });
 });
 
 describe("SQLite command boundary", () => {

@@ -889,6 +889,7 @@ export class PlatformDomain {
 
   projectRoom(roomId: string, viewer?: { accountId?: string; display?: boolean }): RoomProjection {
     const room = this.requireRoom(roomId);
+    const departedAccountIds = new Set(room.poker?.departedAccountIds ?? []);
     const pokerPlayers = new Map(
       room.poker?.players.map((player) => [player.accountId, player]) ?? []
     );
@@ -986,13 +987,30 @@ export class PlatformDomain {
       projection.lastResult = {
         handNumber: lastResult.handNumber,
         outcome: lastResult.outcome,
-        participantAccountIds: [...lastResult.participantAccountIds],
-        payouts: structuredClone(lastResult.payouts),
+        participantAccountIds: lastResult.participantAccountIds.filter(
+          (accountId) => !departedAccountIds.has(accountId)
+        ),
+        payouts: structuredClone(
+          lastResult.payouts.filter(
+            (payout) => !departedAccountIds.has(payout.accountId)
+          )
+        ),
         playerResults: lastResult.playerResults
-          ? structuredClone(lastResult.playerResults)
+          ? structuredClone(
+              lastResult.playerResults.filter(
+                (player) => !departedAccountIds.has(player.accountId)
+              )
+            )
           : undefined,
         showdown: lastResult.showdown
-          ? structuredClone(lastResult.showdown)
+          ? {
+              communityCards: structuredClone(lastResult.showdown.communityCards),
+              players: structuredClone(
+                lastResult.showdown.players.filter(
+                  (player) => !departedAccountIds.has(player.accountId)
+                )
+              )
+            }
           : undefined
       };
     }

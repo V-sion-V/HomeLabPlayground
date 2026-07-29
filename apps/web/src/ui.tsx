@@ -20,7 +20,7 @@ function systemTheme(): ThemeMode {
     : "light";
 }
 
-function storedTheme(): ThemeMode {
+export function readStoredTheme(): ThemeMode {
   const stored = localStorage.getItem("party-theme");
   return stored === "light" || stored === "dark" ? stored : systemTheme();
 }
@@ -96,7 +96,7 @@ export function ThemeToggle({
   darkLabel: string;
   groupLabel: string;
 }) {
-  const [mode, setMode] = useState<ThemeMode>(storedTheme);
+  const [mode, setMode] = useState<ThemeMode>(readStoredTheme);
 
   useEffect(() => {
     applyProductTheme(scope, mode);

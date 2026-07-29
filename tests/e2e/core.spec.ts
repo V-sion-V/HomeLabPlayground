@@ -123,6 +123,8 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await enter(hostPage, hostName);
     await enter(guestPage, guestName);
     await enter(unreadyPage, unreadyName);
+    await hostPage.getByRole("button", { name: "切换到暗色主题" }).click();
+    await expect(hostPage.locator("html")).toHaveAttribute("data-theme", "dark");
 
     await hostPage.getByRole("button", { name: /创建房间/ }).click();
     const create = hostPage.getByRole("dialog", { name: "创建德州扑克房间" });
@@ -324,6 +326,32 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostSettlement).toBeVisible({
       timeout: 8_000
     });
+    await hostPage.reload();
+    await expect(hostSettlement).toBeVisible({ timeout: 8_000 });
+    await expect(hostPage.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(hostPage.locator("html")).toHaveAttribute(
+      "data-theme-scope",
+      "poker"
+    );
+    const settlementTheme = await hostSettlement.evaluate((panel) => {
+      const rootStyle = getComputedStyle(document.documentElement);
+      const panelStyle = getComputedStyle(panel);
+      return {
+        variables: [
+          "--color-canvas",
+          "--color-surface",
+          "--color-text",
+          "--color-text-muted",
+          "--color-border",
+          "--color-accent"
+        ].map((name) => rootStyle.getPropertyValue(name).trim()),
+        color: panelStyle.color,
+        backgroundColor: panelStyle.backgroundColor
+      };
+    });
+    expect(settlementTheme.variables.every(Boolean)).toBe(true);
+    expect(settlementTheme.color).not.toBe(settlementTheme.backgroundColor);
+    await expect(hostPage.getByLabel("主题选择")).toHaveCount(0);
     await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
     await expect(displayPage.getByText("本手结算", { exact: true })).toBeVisible();
     await expect(hostPage.locator(".settlement-player-list article")).toHaveCount(3);
@@ -352,6 +380,33 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
 
     await expect(hostPage.getByText("房主自动参赛")).toBeVisible();
     await expect(hostPage.getByRole("button", { name: "准备", exact: true })).toHaveCount(0);
+    await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
+    await guestPage.getByRole("button", { name: "离开房间" }).click();
+    await guestPage
+      .getByRole("alertdialog", { name: "确认退出房间" })
+      .getByRole("button", { name: "离开房间" })
+      .click();
+    await expect(guestPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+    await expect(
+      hostSettlement.locator(".settlement-player-list article").filter({
+        hasText: guestName
+      })
+    ).toHaveCount(0);
+    await expect(
+      displayPage.locator(".settlement-player-list article").filter({
+        hasText: guestName
+      })
+    ).toHaveCount(0);
+    await guestPage
+      .locator(".room-card")
+      .filter({ hasText: roomName })
+      .getByRole("button", { name: "加入牌局" })
+      .click();
+    const settlementRejoin = guestPage.getByRole("dialog", {
+      name: "选择买入金额"
+    });
+    await settlementRejoin.getByLabel("买入筹码").fill("2000");
+    await settlementRejoin.getByRole("button", { name: "加入牌局" }).click();
     await expect(guestPage.getByRole("dialog", { name: "本手结算" })).toBeVisible();
     await latePage.getByRole("button", { name: "准备", exact: true }).click();
     await hostPage.getByRole("button", { name: "开始下一手" }).click();
