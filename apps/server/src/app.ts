@@ -71,35 +71,26 @@ const pokerActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("bet"), amount: z.number().int().positive() }),
   z.object({ kind: z.literal("raise"), amount: z.number().int().positive() })
 ]);
+const globalSettingsSchema = z.object({
+  defaultLanguage: z.enum(["zh-CN", "en"]),
+  defaultTheme: z.enum(["light", "dark"]),
+  defaultHostTransferTimeoutSeconds: z.number().int().positive(),
+  poker: roomConfigSchema
+    .omit({ mode: true, hostTransferTimeoutSeconds: true })
+    .extend({
+      suitColorPreset: z.enum(["standard", "high-contrast"]),
+      denominations: z.array(z.number().int().positive()).min(1).max(16)
+    })
+});
 const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
   "account.profile": z.object({
     ...accountPayload,
     username: z.string().min(1).max(64),
-    avatar: z.string().min(1).max(16)
+    avatar: z.string().min(1).max(16),
+    language: z.enum(["zh-CN", "en"]),
+    theme: z.enum(["light", "dark"]),
+    volume: z.number().int().min(0).max(100)
   }),
-  "settings.update": z.object({
-    ...accountPayload,
-    settings: z.object({
-      defaultLanguage: z.enum(["zh-CN", "en"]),
-      defaultHostTransferTimeoutSeconds: z.number().int().positive(),
-      poker: roomConfigSchema
-        .omit({ mode: true, hostTransferTimeoutSeconds: true })
-        .extend({
-          suitColorPreset: z.enum(["standard", "high-contrast"]),
-          denominations: z.array(z.number())
-      })
-    })
-  }),
-  "account.delete": z.object({
-    ...accountPayload,
-    targetAccountId: z.string().min(1).max(128)
-  }),
-  "account.delete-others": z.object(accountPayload),
-  "season.delete": z.object({
-    ...accountPayload,
-    targetSeasonId: z.string().min(1).max(128)
-  }),
-  "season.delete-history": z.object(accountPayload),
   "room.create": z.object({
     ...accountPayload,
     name: z.string().max(80),
@@ -157,9 +148,19 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     ...roomPayload,
     pokerVersion: z.number().int().nonnegative().optional(),
     ready: z.boolean().optional()
+  })
+};
+const adminCommandPayloadSchemas: Record<string, z.ZodTypeAny> = {
+  "admin.settings.update": z.object({
+    settings: globalSettingsSchema
   }),
-  "season.start": z.object({
-    ...accountPayload,
+  "admin.accounts.delete": z.object({
+    accountIds: z.array(z.string().min(1).max(128)).min(1).max(1_000)
+  }),
+  "admin.seasons.delete": z.object({
+    seasonIds: z.array(z.string().min(1).max(128)).min(1).max(1_000)
+  }),
+  "admin.season.start": z.object({
     name: z.string().max(80).optional(),
     baseScore: z.number().int().nonnegative()
   })
@@ -364,27 +365,48 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     });
   });
 
-  app.post("/api/enter", async (request, reply) => {
+  app.post("/api/account/lookup", async (request, reply) => {
     const parsedBody = z
-      .object({
-        username: z.string().min(1).max(64),
-        avatar: z.string().min(1).max(16).optional()
-      })
+      .object({ username: z.string().min(1).max(64) })
+      .strict()
       .safeParse(request.body);
     if (!parsedBody.success) {
       return reply.code(400).send({ code: "INVALID_USERNAME" });
     }
+    try {
+      return new PlatformDomain(store.load()).lookupUsername(
+        parsedBody.data.username
+      );
+    } catch (error) {
+      const code =
+        error instanceof DomainError ? error.code : "INVALID_USERNAME";
+      return reply.code(400).send({ code });
+    }
+  });
+
+  app.post("/api/enter", async (request, reply) => {
+    const parsedBody = z
+      .object({
+        commandId: z.string().min(8).max(128),
+        username: z.string().min(1).max(64)
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!parsedBody.success) {
+      return reply.code(400).send({ code: "INVALID_ENTER_REQUEST" });
+    }
     const body = parsedBody.data;
     const snapshot = store.load();
-    const envelope: CommandEnvelope = {
-      commandId: `enter:${randomUUID()}`,
-      aggregateId: "platform",
-      expectedVersion: snapshot.version,
-      type: "account.enter",
-      payload: body
-    };
-    const result = store.execute(envelope, (domain) => {
-      const account = domain.enterAccount(body.username, body.avatar);
+    const result = store.execute(
+      {
+        commandId: body.commandId,
+        aggregateId: "platform",
+        expectedVersion: snapshot.version,
+        type: "account.enter-existing",
+        payload: { username: body.username }
+      },
+      (domain) => {
+      const account = domain.enterExistingAccount(body.username);
       const connectionId = domain.acquireLease(account.id);
       const room = domain.roomForAccount(account.id);
       return {
@@ -393,8 +415,103 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         lobby: domain.lobbyProjection(account.id),
         room: room ? domain.projectRoom(room.id, { accountId: account.id }) : undefined
       };
-    });
+      }
+    );
     if (result.status !== "rejected") {
+      broadcast();
+      scheduleTimers();
+    }
+    return reply.code(result.status === "rejected" ? 409 : 200).send(result);
+  });
+
+  app.post("/api/register", async (request, reply) => {
+    const parsedBody = z
+      .object({
+        commandId: z.string().min(8).max(128),
+        username: z.string().min(1).max(64),
+        avatar: z.string().min(1).max(16),
+        language: z.enum(["zh-CN", "en"]),
+        theme: z.enum(["light", "dark"])
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!parsedBody.success) {
+      request.log.warn(
+        { rejectionCode: "INVALID_REGISTER_REQUEST" },
+        "registration_rejected"
+      );
+      return reply.code(400).send({ code: "INVALID_REGISTER_REQUEST" });
+    }
+    const body = parsedBody.data;
+    const snapshot = store.load();
+    const result = store.execute(
+      {
+        commandId: body.commandId,
+        aggregateId: "platform",
+        expectedVersion: snapshot.version,
+        type: "account.register",
+        payload: {
+          username: body.username,
+          avatar: body.avatar,
+          language: body.language,
+          theme: body.theme
+        }
+      },
+      (domain) => {
+        const account = domain.registerAccount(
+          body.username,
+          body.avatar,
+          body.language,
+          body.theme
+        );
+        const connectionId = domain.acquireLease(account.id);
+        return {
+          account,
+          connectionId,
+          lobby: domain.lobbyProjection(account.id)
+        };
+      }
+    );
+    if (result.status === "rejected") {
+      request.log.warn(
+        {
+          commandId: body.commandId,
+          rejectionCode: result.code
+        },
+        "registration_rejected"
+      );
+    } else {
+      broadcast();
+      scheduleTimers();
+    }
+    return reply.code(result.status === "rejected" ? 409 : 200).send(result);
+  });
+
+  app.get("/api/admin/state", async () =>
+    new PlatformDomain(store.load()).adminProjection()
+  );
+
+  app.post("/api/admin/command", async (request, reply) => {
+    const parsed = parseAdminCommand(request.body);
+    if (!parsed) {
+      request.log.warn(
+        { rejectionCode: "INVALID_ADMIN_COMMAND" },
+        "admin_command_rejected"
+      );
+      return reply.code(400).send({ code: "INVALID_ADMIN_COMMAND" });
+    }
+    const result = dispatchAdmin(store, parsed);
+    if (result.status === "rejected") {
+      request.log.warn(
+        {
+          commandId: parsed.commandId,
+          commandType: parsed.type,
+          aggregateId: parsed.aggregateId,
+          rejectionCode: result.code
+        },
+        "admin_command_rejected"
+      );
+    } else {
       broadcast();
       scheduleTimers();
     }
@@ -543,25 +660,14 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
     switch (envelope.type) {
       case "account.profile":
         assertLease();
-        return domain.updateProfile(accountId, String(payload.username), String(payload.avatar));
-      case "settings.update":
-        assertLease();
-        return domain.updateSettings(payload.settings as GlobalSettings);
-      case "account.delete":
-        assertLease();
-        return domain.deleteAccount(String(payload.targetAccountId), accountId);
-      case "account.delete-others":
-        assertLease();
-        return domain.deleteOtherAccounts(accountId);
-      case "season.delete":
-        assertLease();
-        return domain.deleteHistoricalSeason(
-          String(payload.targetSeasonId),
-          accountId
+        return domain.updateProfile(
+          accountId,
+          String(payload.username),
+          String(payload.avatar),
+          payload.language,
+          payload.theme,
+          Number(payload.volume)
         );
-      case "season.delete-history":
-        assertLease();
-        return domain.deleteAllHistoricalSeasons(accountId);
       case "room.create":
         assertLease();
         {
@@ -842,8 +948,33 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
           ? domain.projectRoom(remaining.id, { display: true })
           : { closed: true };
       }
-      case "season.start":
-        assertLease();
+      default:
+        throw new DomainError("UNSUPPORTED_COMMAND");
+    }
+  });
+}
+
+export function dispatchAdmin(
+  store: PlatformStore,
+  envelope: CommandEnvelope
+) {
+  return store.execute(envelope, (domain) => {
+    const payload = envelope.payload as Record<string, any>;
+    switch (envelope.type) {
+      case "admin.settings.update":
+        return domain.updateSettings(payload.settings as GlobalSettings);
+      case "admin.accounts.delete": {
+        const targets = domain.validateAccountDeletionTargets(
+          (payload.accountIds as unknown[]).map(String)
+        );
+        removeAccountsFromRooms(domain, targets);
+        return domain.deleteAccounts(targets);
+      }
+      case "admin.seasons.delete":
+        return domain.deleteHistoricalSeasons(
+          (payload.seasonIds as unknown[]).map(String)
+        );
+      case "admin.season.start":
         domain.startSeason(
           typeof payload.name === "string" ? payload.name : undefined,
           Number(payload.baseScore)
@@ -853,6 +984,70 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         throw new DomainError("UNSUPPORTED_COMMAND");
     }
   });
+}
+
+function removeAccountsFromRooms(
+  domain: PlatformDomain,
+  accountIds: readonly string[]
+): void {
+  const selected = new Set(accountIds);
+  const roomIds = Object.values(domain.state.rooms)
+    .filter((room) =>
+      room.seats.some((seat) => selected.has(seat.accountId))
+    )
+    .map((room) => room.id)
+    .sort();
+
+  for (const roomId of roomIds) {
+    const initialRoom = domain.state.rooms[roomId];
+    if (!initialRoom) continue;
+    const selectedSeatIds = initialRoom.seats
+      .filter((seat) => selected.has(seat.accountId))
+      .sort((left, right) => left.position - right.position)
+      .map((seat) => seat.accountId);
+    const hostAccountId = initialRoom.hostAccountId;
+    let nextHostAccountId: string | undefined;
+
+    if (selected.has(hostAccountId)) {
+      const candidates = initialRoom.seats.filter(
+        (seat) => !selected.has(seat.accountId) && seat.connected
+      );
+      if (candidates.length === 0) {
+        domain.closeRoom(roomId);
+        continue;
+      }
+      nextHostAccountId = candidates[randomInt(candidates.length)]!.accountId;
+    }
+
+    for (const accountId of selectedSeatIds) {
+      if (accountId === hostAccountId) continue;
+      foldActivePlayerForRemoval(domain.state.rooms[roomId], accountId);
+      domain.leaveRoom(roomId, accountId, true);
+    }
+
+    if (selected.has(hostAccountId)) {
+      foldActivePlayerForRemoval(domain.state.rooms[roomId], hostAccountId);
+      domain.leaveRoom(roomId, hostAccountId, true, nextHostAccountId);
+    }
+  }
+}
+
+function foldActivePlayerForRemoval(
+  room: Room | undefined,
+  accountId: string
+): void {
+  const player = room?.poker?.players.find(
+    (candidate) => candidate.accountId === accountId
+  );
+  if (
+    !room?.poker ||
+    ["complete", "waiting", "void"].includes(room.poker.phase) ||
+    !player ||
+    player.folded
+  ) {
+    return;
+  }
+  forceFold(room.poker, accountId);
 }
 
 function startSelectedHand(
@@ -953,6 +1148,25 @@ function parseExternalCommand(input: unknown): CommandEnvelope | undefined {
   if (!envelope.success || envelope.data.type.startsWith("system.")) return undefined;
   const payloadSchema = commandPayloadSchemas[envelope.data.type];
   if (!payloadSchema || !payloadSchema.safeParse(envelope.data.payload).success) return undefined;
+  return envelope.data as CommandEnvelope;
+}
+
+function parseAdminCommand(input: unknown): CommandEnvelope | undefined {
+  const envelope = commandEnvelopeSchema.safeParse(input);
+  if (
+    !envelope.success ||
+    envelope.data.aggregateId !== "platform" ||
+    envelope.data.connectionId !== undefined
+  ) {
+    return undefined;
+  }
+  const payloadSchema = adminCommandPayloadSchemas[envelope.data.type];
+  if (
+    !payloadSchema ||
+    !payloadSchema.safeParse(envelope.data.payload).success
+  ) {
+    return undefined;
+  }
   return envelope.data as CommandEnvelope;
 }
 

@@ -75,10 +75,16 @@ describe("target household capacity", () => {
     ).toBe(true);
     expect(lobby.leaderboard).toEqual([]);
 
-    const accountDeletion = domain.deleteOtherAccounts(accounts[0]!.id);
+    const accountDeletion = domain.deleteAccounts(
+      accounts.slice(1).map((account) => account.id)
+    );
     expect(accountDeletion.deletedIds).toHaveLength(14);
     expect(domain.lobbyProjection(accounts[0]!.id).accounts).toHaveLength(1);
-    const seasonDeletion = domain.deleteAllHistoricalSeasons(accounts[0]!.id);
+    const seasonDeletion = domain.deleteHistoricalSeasons(
+      domain.state.seasons
+        .filter((season) => season.status === "historical")
+        .map((season) => season.id)
+    );
     expect(seasonDeletion.deletedIds).toHaveLength(20);
     expect(domain.state.historicalSeasons).toEqual([]);
     domain.validateInvariants();
@@ -99,9 +105,12 @@ describe("target household capacity", () => {
       }> = [];
       for (let index = 0; index < 15; index += 1) {
         entered.push(
-          await postJson(`${baseUrl}/api/enter`, {
+          await postJson(`${baseUrl}/api/register`, {
+            commandId: randomUUID(),
             username: `live-player-${String(index + 1).padStart(2, "0")}`,
-            avatar: index % 2 ? "🦊" : "🐼"
+            avatar: index % 2 ? "🦊" : "🐼",
+            language: "zh-CN",
+            theme: "dark"
           })
         );
       }

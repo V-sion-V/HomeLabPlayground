@@ -3,7 +3,7 @@ import { productConfig } from "@party/contracts";
 
 test.describe.configure({ mode: "serial" });
 
-test("uses real account, settings, profile, season, and language persistence flows", async ({
+test("uses anonymous admin routes, two-step registration, and account preference persistence", async ({
   page
 }, testInfo) => {
   test.setTimeout(60_000);
@@ -13,80 +13,112 @@ test("uses real account, settings, profile, season, and language persistence flo
   const seasonName = `验收赛季-${suffix}`;
 
   await emulateLanHttp(page);
-  await enter(page, username);
-  await expect(page.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
-  await page.getByRole("button", { name: "切换到暗色主题" }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.goto("/admin");
+  await expect(
+    page.getByRole("heading", { name: "管理员设置" })
+  ).toBeVisible();
+  await expect(page.getByText(username)).toHaveCount(0);
+  await expect(page).toHaveURL(/\/admin$/);
+
+  await page
+    .getByLabel("管理员本地主题")
+    .getByRole("button", { name: "切换到亮色主题" })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByLabel("默认房主转让秒数").fill("120");
+  const general = page.getByRole("region", { name: "通用设置" });
+  await general
+    .getByLabel("主题选择")
+    .getByRole("button", { name: "切换到暗色主题" })
+    .click();
+  await page.getByRole("button", { name: /德州扑克/ }).click();
+  await selectStyledOption(page, "花色配色", "高对比度");
+  await page.getByLabel("筹码面值 6").fill("1000");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+
+  await page.getByRole("button", { name: /账户管理/ }).click();
+  await expect(page).toHaveURL(/\/admin\/accounts$/);
+  await expect(
+    page.getByRole("heading", { name: "账户管理" })
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/admin$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/admin\/accounts$/);
+  await page.getByRole("button", { name: "返回管理员设置" }).click();
+  await expect(page).toHaveURL(/\/admin$/);
   await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  const adminViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 300, height: 760 });
+  expect(
+    await page.evaluate(() => ({
+      viewport: innerWidth,
+      documentWidth: document.documentElement.scrollWidth
+    }))
+  ).toEqual({ viewport: 300, documentWidth: 300 });
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeVisible();
+  await page.setViewportSize(adminViewport);
+
+  await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByLabel("输入用户名").fill(username);
+  await page.getByRole("button", { name: "继续" }).click();
+  await expect(
+    page.getByRole("heading", { name: "注册账户" })
+  ).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "用户名" })).toHaveValue(username);
+  await expect(page.getByRole("option")).toHaveCount(0);
+  await page.locator(".avatar-current").click();
+  await expect(page.getByRole("option")).toHaveCount(32);
+  await page.getByRole("option", { name: "avatar-🦊" }).click();
+  await page.getByRole("button", { name: "注册并进入" }).click();
+  await expect(page.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "全局设置" })).toHaveCount(0);
+  await expect(page.getByLabel("语言选择")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: new RegExp(username) })).toHaveCount(1);
 
   await page.getByRole("button", { name: new RegExp(username) }).click();
   const profile = page.getByRole("dialog", { name: "账户资料" });
+  await expect(profile.getByRole("option")).toHaveCount(0);
   await profile.getByLabel("用户名").fill(updatedUsername);
+  await profile.locator(".avatar-current").click();
+  await profile.getByRole("option", { name: "avatar-🐼" }).click();
+  await profile.getByRole("button", { name: "EN" }).click();
+  await profile.getByRole("button", { name: "切换到亮色主题" }).click();
+  await profile.getByRole("slider", { name: /音量/ }).fill("0");
   await profile.getByRole("button", { name: "保存资料" }).click();
-  await expect(page.getByRole("button", { name: new RegExp(updatedUsername) })).toBeVisible();
-
-  await page.getByRole("button", { name: "全局设置" }).click();
-  let settings = page.getByRole("dialog", { name: "全局设置" });
-  await expect(settings.getByLabel("花色配色")).toBeHidden();
-  await selectStyledOption(settings, "房主转让时限", "120s");
-  await settings.getByRole("button", { name: /德州扑克/ }).click();
-  await selectStyledOption(settings, "花色配色", "高对比度");
-  await settings.getByLabel("筹码面值 6").fill("1000");
-  await settings.getByRole("button", { name: "保存" }).click();
-  await page.getByRole("button", { name: "全局设置" }).click();
-  settings = page.getByRole("dialog", { name: "全局设置" });
-  await expect(settings.getByLabel("房主转让时限")).toContainText("120s");
-  await expect(settings.getByLabel("花色配色")).toBeHidden();
-  await settings.getByRole("button", { name: /德州扑克/ }).click();
-  await expect(settings.getByLabel("花色配色")).toContainText("高对比度");
-  await expect(settings.getByLabel("筹码面值 6")).toHaveValue("1000");
-  await settings.getByRole("button", { name: "开始新赛季" }).click();
-
-  const season = page.getByRole("dialog", { name: "开始新赛季" });
-  await season.getByLabel("新赛季名称").fill(seasonName);
-  await season.getByLabel("基础分").fill("12000");
-  await season.getByLabel("最终确认").check();
-  await season.getByRole("button", { name: "最终确认" }).click();
-  await expect(page.getByLabel("选择赛季")).toContainText(seasonName);
-  await expect(page.getByText("本赛季还没有玩家完成有效牌局。")).toBeVisible();
-
-  await page.getByRole("button", { name: "全局设置" }).click();
-  const languageSettings = page.getByRole("dialog", { name: "全局设置" });
-  await languageSettings.getByRole("button", { name: "EN" }).click();
-  await page
-    .getByRole("dialog", { name: "Global settings" })
-    .getByRole("button", { name: "Close" })
-    .click();
+  await expect(
+    page.getByRole("button", { name: new RegExp(updatedUsername) })
+  ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Party lobby" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.reload();
   await expect(page.getByRole("heading", { name: "Party lobby" })).toBeVisible();
-  await page.getByRole("button", { name: "Global settings" }).click();
-  await page
-    .getByRole("dialog", { name: "Global settings" })
-    .getByRole("button", { name: "Account management" })
-    .click();
-  const accountManagement = page.getByRole("dialog", {
-    name: "Account management"
-  });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: new RegExp(updatedUsername) }).click();
   await expect(
-    accountManagement.locator(".management-row").filter({
-      hasText: updatedUsername
-    })
+    page.getByRole("dialog", { name: "Account profile" })
+      .getByRole("slider", { name: /Volume/ })
+  ).toHaveValue("0");
+  await page.getByRole("dialog", { name: "Account profile" })
+    .getByLabel("Close")
+    .click();
+
+  await page.goto("/admin/seasons");
+  await expect(
+    page.getByRole("heading", { name: "赛季管理" })
   ).toBeVisible();
-  await accountManagement
-    .locator(".management-row")
-    .filter({ hasText: updatedUsername })
-    .getByRole("button", { name: "Delete account" })
+  await page.getByLabel("新赛季名称").fill(seasonName);
+  await page.getByLabel("基础分").fill("12000");
+  await page.getByRole("button", { name: "开始新赛季", exact: true }).click();
+  await page
+    .getByRole("alertdialog", { name: "开始新赛季" })
+    .getByRole("button", { name: "最终确认" })
     .click();
-  const selfDelete = page.getByRole("alertdialog", {
-    name: "Permanently delete account?"
-  });
-  await expect(selfDelete).toContainText("signed out immediately");
-  await selfDelete
-    .getByRole("button", { name: "Delete permanently" })
-    .click();
-  await expect(page.getByRole("heading", { name: "Home Table" })).toBeVisible();
+  await expect(page.locator(".admin-selection-row").first()).toContainText(
+    seasonName
+  );
 });
 
 test("runs a real two-player hand, isolates private cards, synchronizes display, and transfers control", async ({
@@ -123,7 +155,6 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await enter(hostPage, hostName);
     await enter(guestPage, guestName);
     await enter(unreadyPage, unreadyName);
-    await hostPage.getByRole("button", { name: "切换到暗色主题" }).click();
     await expect(hostPage.locator("html")).toHaveAttribute("data-theme", "dark");
 
     await hostPage.getByRole("button", { name: /创建房间/ }).click();
@@ -216,9 +247,27 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
-    await hostPage
-      .getByRole("button", { name: `${unreadyName} 成员操作` })
-      .click();
+    const memberTrigger = hostPage.getByRole("button", {
+      name: `${unreadyName} 成员操作`
+    });
+    await memberTrigger.click();
+    const memberMenu = hostPage.getByRole("menu", { name: "成员操作" });
+    await expect(memberMenu).toBeVisible();
+    expect(
+      await memberMenu.evaluate((menu) => {
+        const rect = menu.getBoundingClientRect();
+        return (
+          rect.left >= 0 &&
+          rect.top >= 0 &&
+          rect.right <= innerWidth &&
+          rect.bottom <= innerHeight
+        );
+      })
+    ).toBe(true);
+    await hostPage.keyboard.press("Escape");
+    await expect(memberMenu).toHaveCount(0);
+    await expect(memberTrigger).toBeFocused();
+    await memberTrigger.click();
     await hostPage.getByRole("menuitem", { name: "移除玩家" }).click();
     const kickConfirmation = hostPage.getByRole("alertdialog", {
       name: "确认踢出玩家"
@@ -430,7 +479,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(hostPage.getByText("第 2 手")).toBeVisible();
 
-    await enter(takeoverPage, hostName, false);
+    await enter(takeoverPage, hostName, false, false);
     await expect(takeoverPage.getByText(roomName)).toBeVisible();
     await expect(hostPage.getByRole("alert")).toContainText("新设备");
 
@@ -470,7 +519,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   }
 });
 
-test("manages accounts and historical seasons with protected items and explicit confirmation", async ({
+test("batch-manages accounts and historical seasons from direct admin routes", async ({
   browser,
   page
 }, testInfo) => {
@@ -485,50 +534,60 @@ test("manages accounts and historical seasons with protected items and explicit 
     await enter(page, managerName);
     await enter(targetPage, targetName);
 
-    await page.getByRole("button", { name: "全局设置" }).click();
-    const settings = page.getByRole("dialog", { name: "全局设置" });
-    await settings.getByRole("button", { name: "账户管理" }).click();
-    const accounts = page.getByRole("dialog", { name: "账户管理" });
-    const targetRow = accounts.locator(".management-row").filter({
+    await page.goto("/admin/accounts");
+    await expect(page).toHaveURL(/\/admin\/accounts$/);
+    const targetRow = page.locator(".admin-selection-row").filter({
       hasText: targetName
     });
     await expect(targetRow).toBeVisible();
-    await targetRow.getByRole("button", { name: "删除账户" }).click();
+    await targetRow.getByRole("checkbox").check();
+    const selectAll = page.getByLabel("全选");
+    expect(
+      await selectAll.evaluate(
+        (checkbox: HTMLInputElement) => checkbox.indeterminate
+      )
+    ).toBe(true);
+    await selectAll.check();
+    expect(
+      await page
+        .locator(".admin-selection-row input[type=checkbox]:not(:disabled)")
+        .evaluateAll((checkboxes: HTMLInputElement[]) =>
+          checkboxes.every((checkbox) => checkbox.checked)
+        )
+    ).toBe(true);
+    await page.getByLabel("取消全选").uncheck();
+    await targetRow.getByRole("checkbox").check();
+    await expect(page.getByText("已选择 1 项")).toBeVisible();
+    await page.getByRole("button", { name: "删除选中的用户" }).click();
     const accountConfirmation = page.getByRole("alertdialog", {
-      name: "永久删除账户？"
+      name: "永久删除所选账户？"
     });
-    await expect(accountConfirmation).toContainText(targetName);
+    await expect(accountConfirmation).toContainText("开放房间");
     await accountConfirmation
       .getByRole("button", { name: "永久删除" })
       .click();
     await expect(targetRow).toHaveCount(0);
     await expect(targetPage.getByRole("heading", { name: "家庭牌桌" })).toBeVisible();
 
-    await accounts.getByLabel("关闭").click();
-    await settings.getByRole("button", { name: "赛季管理" }).click();
-    const seasons = page.getByRole("dialog", { name: "赛季管理" });
-    const protectedRow = seasons.locator(".management-row").first();
+    await page.goto("/admin/seasons");
+    await page.reload();
+    const protectedRow = page.locator(".admin-selection-row").first();
     await expect(protectedRow).toContainText("当前赛季");
-    await expect(
-      protectedRow.getByRole("button", { name: "受保护" })
-    ).toBeDisabled();
-    const historicalRows = seasons.locator(".management-row").filter({
+    await expect(protectedRow.getByRole("checkbox")).toBeDisabled();
+    const historicalRows = page.locator(".admin-selection-row").filter({
       hasText: "历史赛季"
     });
     if ((await historicalRows.count()) > 0) {
-      const firstHistorical = historicalRows.first();
-      const seasonName = await firstHistorical.locator("strong").textContent();
-      await firstHistorical.getByRole("button", { name: "删除赛季" }).click();
+      await page.getByLabel("全选").check();
+      await expect(page.getByText(/已选择 [1-9]\d* 项/)).toBeVisible();
+      await page.getByRole("button", { name: "删除选中的赛季" }).click();
       const seasonConfirmation = page.getByRole("alertdialog", {
-        name: "永久删除历史赛季？"
+        name: "永久删除所选历史赛季？"
       });
-      await expect(seasonConfirmation).toContainText(seasonName ?? "");
       await seasonConfirmation
         .getByRole("button", { name: "永久删除" })
         .click();
-      await expect(
-        seasons.locator(".management-row").filter({ hasText: seasonName ?? "" })
-      ).toHaveCount(0);
+      await expect(historicalRows).toHaveCount(0);
     }
   } finally {
     await targetContext.close();
@@ -544,11 +603,22 @@ async function emulateLanHttp(page: Page): Promise<void> {
   });
 }
 
-async function enter(page: Page, username: string, expectLobby = true): Promise<void> {
+async function enter(
+  page: Page,
+  username: string,
+  expectLobby = true,
+  create = true
+): Promise<void> {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "家庭牌桌" })).toBeVisible();
   await page.getByLabel("输入用户名").fill(username);
-  await page.getByRole("button", { name: "进入大厅" }).click();
+  await page.getByRole("button", { name: "继续" }).click();
+  if (create) {
+    await expect(
+      page.getByRole("heading", { name: "注册账户" })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "注册并进入" }).click();
+  }
   if (expectLobby) {
     await expect(page.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
   }

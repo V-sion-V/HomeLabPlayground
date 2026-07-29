@@ -1,11 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type {
   Account,
+  AdminProjection,
   AssetLine,
   Card,
   GlobalSettings,
   HandCategory,
   HistoricalSeason,
+  Language,
   LobbyProjection,
   PlatformDataDeletionResult,
   PlatformParticipationFact,
@@ -13,7 +15,9 @@ import type {
   Room,
   RoomConfig,
   RoomProjection,
-  SeasonAsset
+  SeasonAsset,
+  ThemeMode,
+  UsernameLookupResult
 } from "@party/contracts";
 import {
   assertNoPrivateCards,
@@ -72,6 +76,7 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
     retiredIdentities: {},
     settings: {
       defaultLanguage: "zh-CN",
+      defaultTheme: "dark",
       defaultHostTransferTimeoutSeconds: 60,
       poker: {
         smallBlind: 50,
@@ -93,6 +98,13 @@ export class PlatformDomain {
     private readonly now: () => number = Date.now,
     private readonly id: () => string = randomUUID
   ) {
+    const legacySettings = state.settings as GlobalSettings & {
+      defaultTheme?: ThemeMode;
+    };
+    if (legacySettings.defaultTheme === undefined) {
+      legacySettings.defaultTheme = "dark";
+      this.normalizedPersistedState = true;
+    }
     const legacyPokerSettings = state.settings.poker as typeof state.settings.poker & {
       suitColorPreset?: GlobalSettings["poker"]["suitColorPreset"];
     };
@@ -117,8 +129,29 @@ export class PlatformDomain {
       }
     }
     for (const account of Object.values(state.accounts)) {
+      const legacyAccount = account as Account & {
+        language?: Language;
+        theme?: ThemeMode;
+        volume?: number;
+      };
+      let migratedAccount = false;
+      if (legacyAccount.language === undefined) {
+        legacyAccount.language = state.settings.defaultLanguage;
+        migratedAccount = true;
+      }
+      if (legacyAccount.theme === undefined) {
+        legacyAccount.theme = state.settings.defaultTheme;
+        migratedAccount = true;
+      }
+      if (legacyAccount.volume === undefined) {
+        legacyAccount.volume = 100;
+        migratedAccount = true;
+      }
       if (!isSelectableAvatar(account.avatar) && account.avatar !== fallbackAvatar) {
         account.avatar = fallbackAvatar;
+        migratedAccount = true;
+      }
+      if (migratedAccount) {
         account.updatedAt = this.now();
         this.normalizedPersistedState = true;
       }
@@ -220,18 +253,53 @@ export class PlatformDomain {
     return season;
   }
 
-  enterAccount(username: string, avatar = selectableAvatars[0]!): Account {
+  lookupUsername(username: string): UsernameLookupResult {
+    const normalizedUsername = normalizeUsername(username);
+    const normalizedDisplayUsername = username.normalize("NFKC").trim();
+    return {
+      version: this.state.version,
+      normalizedUsername,
+      username: normalizedDisplayUsername,
+      exists: Object.values(this.state.accounts).some(
+        (account) => account.normalizedUsername === normalizedUsername
+      )
+    };
+  }
+
+  findAccountByUsername(username: string): Account | undefined {
+    const normalizedUsername = normalizeUsername(username);
+    return Object.values(this.state.accounts).find(
+      (account) => account.normalizedUsername === normalizedUsername
+    );
+  }
+
+  enterExistingAccount(username: string): Account {
+    const account = this.findAccountByUsername(username);
+    if (!account) throw new DomainError("ACCOUNT_NOT_FOUND");
+    return account;
+  }
+
+  registerAccount(
+    username: string,
+    avatar: string,
+    language: Language,
+    theme: ThemeMode
+  ): Account {
     const normalizedUsername = normalizeUsername(username);
     const existing = Object.values(this.state.accounts).find(
       (account) => account.normalizedUsername === normalizedUsername
     );
-    if (existing) return existing;
+    if (existing) throw new DomainError("USERNAME_TAKEN");
     if (!isSelectableAvatar(avatar)) throw new DomainError("INVALID_AVATAR");
+    this.validateAccountPreferences(language, theme, 100);
     const account: Account = {
       id: this.id(),
       username: username.normalize("NFKC").trim(),
       normalizedUsername,
       avatar,
+      language,
+      theme,
+      volume: 100,
       updatedAt: this.now()
     };
     this.state.accounts[account.id] = account;
@@ -245,8 +313,30 @@ export class PlatformDomain {
     return account;
   }
 
-  updateProfile(accountId: string, username: string, avatar: string): Account {
+  enterAccount(username: string, avatar = selectableAvatars[0]!): Account {
+    return (
+      this.findAccountByUsername(username) ??
+      this.registerAccount(
+        username,
+        avatar,
+        this.state.settings.defaultLanguage,
+        this.state.settings.defaultTheme
+      )
+    );
+  }
+
+  updateProfile(
+    accountId: string,
+    username: string,
+    avatar: string,
+    language?: Language,
+    theme?: ThemeMode,
+    volume?: number
+  ): Account {
     const account = this.requireAccount(accountId);
+    const nextLanguage = language ?? account.language;
+    const nextTheme = theme ?? account.theme;
+    const nextVolume = volume ?? account.volume;
     const normalizedUsername = normalizeUsername(username);
     const duplicate = Object.values(this.state.accounts).find(
       (candidate) =>
@@ -254,9 +344,13 @@ export class PlatformDomain {
     );
     if (duplicate) throw new DomainError("USERNAME_TAKEN");
     if (!isSelectableAvatar(avatar)) throw new DomainError("INVALID_AVATAR");
+    this.validateAccountPreferences(nextLanguage, nextTheme, nextVolume);
     account.username = username.normalize("NFKC").trim();
     account.normalizedUsername = normalizedUsername;
     account.avatar = avatar;
+    account.language = nextLanguage;
+    account.theme = nextTheme;
+    account.volume = nextVolume;
     account.updatedAt = this.now();
     return account;
   }
@@ -286,6 +380,9 @@ export class PlatformDomain {
   updateSettings(settings: GlobalSettings): GlobalSettings {
     if (!["zh-CN", "en"].includes(settings.defaultLanguage)) {
       throw new DomainError("INVALID_LANGUAGE");
+    }
+    if (!["light", "dark"].includes(settings.defaultTheme)) {
+      throw new DomainError("INVALID_THEME");
     }
     if (!["standard", "high-contrast"].includes(settings.poker.suitColorPreset)) {
       throw new DomainError("INVALID_SUIT_COLOR_PRESET");
@@ -336,6 +433,21 @@ export class PlatformDomain {
         .sort((left, right) => left.username.localeCompare(right.username)),
       settings: structuredClone(this.state.settings),
       accountRoomId: accountId ? this.roomForAccount(accountId)?.id : undefined
+    };
+  }
+
+  adminProjection(): AdminProjection {
+    return {
+      version: this.state.version,
+      accounts: Object.values(this.state.accounts)
+        .map(({ id, username, avatar }) => ({ id, username, avatar }))
+        .sort((left, right) => left.username.localeCompare(right.username)),
+      currentSeason: structuredClone(this.currentSeason),
+      historicalSeasons: this.state.seasons
+        .filter((season) => season.status === "historical")
+        .map((season) => structuredClone(season))
+        .sort((left, right) => right.startedAt - left.startedAt),
+      settings: structuredClone(this.state.settings)
     };
   }
 
@@ -662,6 +774,10 @@ export class PlatformDomain {
 
   recoverAfterRestart(): boolean {
     let changed = this.normalizedPersistedState;
+    if (Object.keys(this.state.leases).length > 0) {
+      this.state.leases = {};
+      changed = true;
+    }
     for (const room of Object.values(this.state.rooms)) {
       let roomChanged = false;
       if (room.waitingReadyAccountIds.length > 0) {
@@ -731,14 +847,33 @@ export class PlatformDomain {
       const refundable = pokerPlayer
         ? pokerPlayer.stack + (handActive ? pokerPlayer.totalBet : 0)
         : (seat?.tableChips ?? 0) + (seat?.currentBet ?? 0);
-      if (refundable > 0) this.transfer(room.id, accountId, refundable, "room-close");
+      const account = this.state.accounts[accountId];
+      if (refundable > 0 && account) {
+        this.transfer(room.id, accountId, refundable, "room-close");
+      } else if (refundable > 0) {
+        const lineId = this.id();
+        this.state.ledger.push({
+          id: lineId,
+          groupId: lineId,
+          seasonId: this.currentSeason.id,
+          accountId,
+          roomId,
+          source: `table:${roomId}:${accountId}`,
+          destination: "asset-retirement",
+          amount: refundable,
+          reason: "deleted-account-room-close",
+          createdAt: this.now()
+        });
+      }
       if (seat) {
         seat.tableChips = 0;
         seat.currentBet = 0;
       }
-      const asset = this.requireAsset(accountId);
-      asset.inGame = false;
-      asset.frozenScore = null;
+      const asset = this.state.seasonAssets[accountId];
+      if (asset) {
+        asset.inGame = false;
+        asset.frozenScore = null;
+      }
     }
     room.status = "closed";
     room.version += 1;
@@ -813,77 +948,53 @@ export class PlatformDomain {
     }));
   }
 
-  deleteAccount(
-    targetAccountId: string,
-    actorAccountId: string
-  ): PlatformDataDeletionResult {
-    this.assertNoOpenRooms();
-    this.requireAccount(actorAccountId);
-    this.requireAccount(targetAccountId);
-    this.deleteAccountInternal(targetAccountId);
-    return {
-      kind: "account",
-      deletedIds: [targetAccountId],
-      protectedIds: [],
-      selfDeleted: targetAccountId === actorAccountId,
-      noOp: false
-    };
+  validateAccountDeletionTargets(accountIds: readonly string[]): string[] {
+    const targets = [...new Set(accountIds)].sort();
+    if (targets.length === 0) throw new DomainError("EMPTY_SELECTION");
+    for (const accountId of targets) this.requireAccount(accountId);
+    return targets;
   }
 
-  deleteOtherAccounts(actorAccountId: string): PlatformDataDeletionResult {
-    this.assertNoOpenRooms();
-    this.requireAccount(actorAccountId);
-    const targets = Object.keys(this.state.accounts)
-      .filter((accountId) => accountId !== actorAccountId)
-      .sort();
+  deleteAccounts(accountIds: readonly string[]): PlatformDataDeletionResult {
+    const targets = this.validateAccountDeletionTargets(accountIds);
+    if (
+      Object.values(this.state.rooms).some((room) =>
+        room.seats.some((seat) => targets.includes(seat.accountId))
+      )
+    ) {
+      throw new DomainError("ACCOUNT_STILL_IN_ROOM");
+    }
     for (const targetAccountId of targets) {
       this.deleteAccountInternal(targetAccountId);
     }
     return {
-      kind: "accounts",
+      kind: targets.length === 1 ? "account" : "accounts",
       deletedIds: targets,
-      protectedIds: [actorAccountId],
-      selfDeleted: false,
-      noOp: targets.length === 0
-    };
-  }
-
-  deleteHistoricalSeason(
-    seasonId: string,
-    actorAccountId: string
-  ): PlatformDataDeletionResult {
-    this.assertNoOpenRooms();
-    this.requireAccount(actorAccountId);
-    if (seasonId === this.currentSeason.id) {
-      throw new DomainError("CURRENT_SEASON_PROTECTED");
-    }
-    if (!this.state.seasons.some((season) => season.id === seasonId)) {
-      throw new DomainError("SEASON_NOT_FOUND");
-    }
-    this.deleteHistoricalSeasonsInternal(new Set([seasonId]));
-    return {
-      kind: "season",
-      deletedIds: [seasonId],
-      protectedIds: [this.currentSeason.id],
+      protectedIds: [],
       selfDeleted: false,
       noOp: false
     };
   }
 
-  deleteAllHistoricalSeasons(actorAccountId: string): PlatformDataDeletionResult {
+  deleteHistoricalSeasons(seasonIds: readonly string[]): PlatformDataDeletionResult {
     this.assertNoOpenRooms();
-    this.requireAccount(actorAccountId);
-    const targets = this.state.seasons
-      .filter((season) => season.status === "historical")
-      .map((season) => season.id)
-      .sort();
+    const targets = [...new Set(seasonIds)].sort();
+    if (targets.length === 0) throw new DomainError("EMPTY_SELECTION");
+    if (targets.includes(this.currentSeason.id)) {
+      throw new DomainError("CURRENT_SEASON_PROTECTED");
+    }
+    for (const seasonId of targets) {
+      if (!this.state.seasons.some((season) => season.id === seasonId)) {
+        throw new DomainError("SEASON_NOT_FOUND");
+      }
+    }
     this.deleteHistoricalSeasonsInternal(new Set(targets));
     return {
-      kind: "seasons",
+      kind: targets.length === 1 ? "season" : "seasons",
       deletedIds: targets,
       protectedIds: [this.currentSeason.id],
       selfDeleted: false,
-      noOp: targets.length === 0
+      noOp: false
     };
   }
 
@@ -1035,6 +1146,18 @@ export class PlatformDomain {
 
   validateInvariants(): void {
     normalizeDenominations(this.state.settings.poker.denominations);
+    if (!["zh-CN", "en"].includes(this.state.settings.defaultLanguage)) {
+      throw new DomainError("INVALID_LANGUAGE");
+    }
+    if (!["light", "dark"].includes(this.state.settings.defaultTheme)) {
+      throw new DomainError("INVALID_THEME");
+    }
+    this.validateRoomConfig({
+      mode: "chips-and-cards",
+      hostTransferTimeoutSeconds:
+        this.state.settings.defaultHostTransferTimeoutSeconds,
+      ...this.state.settings.poker
+    });
     const normalized = new Set<string>();
     for (const account of Object.values(this.state.accounts)) {
       if (normalized.has(account.normalizedUsername)) throw new DomainError("DUPLICATE_USERNAME");
@@ -1042,6 +1165,11 @@ export class PlatformDomain {
       if (!isSelectableAvatar(account.avatar) && account.avatar !== fallbackAvatar) {
         throw new DomainError("INVALID_AVATAR");
       }
+      this.validateAccountPreferences(
+        account.language,
+        account.theme,
+        account.volume
+      );
     }
     for (const asset of Object.values(this.state.seasonAssets)) {
       if (!Number.isInteger(asset.score) || asset.score < 0) {
@@ -1177,20 +1305,50 @@ export class PlatformDomain {
       handNumber,
       mode,
       outcome,
-      participantAccountIds: [...new Set(participantAccountIds)],
-      payouts: structuredClone(payouts),
+      participantAccountIds: [
+        ...new Set(
+          participantAccountIds.map(
+            (accountId) =>
+              this.state.retiredIdentities[accountId]?.publicId ?? accountId
+          )
+        )
+      ],
+      payouts: payouts.map((payout) => ({
+        ...structuredClone(payout),
+        accountId:
+          this.state.retiredIdentities[payout.accountId]?.publicId ??
+          payout.accountId
+      })),
       playerResults: details?.chipDeltas.map((delta) => {
-        const account = this.requireAccount(delta.accountId);
+        const account = this.state.accounts[delta.accountId];
+        const retiredIdentity = this.state.retiredIdentities[delta.accountId];
+        if (!account && !retiredIdentity) {
+          throw new DomainError("ACCOUNT_NOT_FOUND");
+        }
         return {
-          accountId: delta.accountId,
-          username: account.username,
-          avatar: account.avatar,
+          accountId: retiredIdentity?.publicId ?? delta.accountId,
+          username: account?.username ?? `Anonymous ${retiredIdentity!.anonymousNumber}`,
+          avatar: account?.avatar ?? fallbackAvatar,
           chipDelta: delta.amount,
-          endingChips: delta.endingChips
+          endingChips: delta.endingChips,
+          anonymized: account ? undefined : true,
+          anonymousNumber: account ? undefined : retiredIdentity!.anonymousNumber
         };
       }),
       showdown: details?.showdown
-        ? structuredClone(details.showdown)
+        ? {
+            communityCards: structuredClone(details.showdown.communityCards),
+            players: details.showdown.players.map((player) => {
+              const retiredIdentity =
+                this.state.retiredIdentities[player.accountId];
+              return {
+                ...structuredClone(player),
+                accountId: retiredIdentity?.publicId ?? player.accountId,
+                anonymized: retiredIdentity ? true : undefined,
+                anonymousNumber: retiredIdentity?.anonymousNumber
+              };
+            })
+          }
         : undefined,
       completedAt: this.now()
     });
@@ -1454,6 +1612,22 @@ export class PlatformDomain {
       if (!ledgerReferenced && !referencedPublicIds.has(identity.publicId)) {
         delete this.state.retiredIdentities[accountId];
       }
+    }
+  }
+
+  private validateAccountPreferences(
+    language: Language,
+    theme: ThemeMode,
+    volume: number
+  ): void {
+    if (!["zh-CN", "en"].includes(language)) {
+      throw new DomainError("INVALID_LANGUAGE");
+    }
+    if (!["light", "dark"].includes(theme)) {
+      throw new DomainError("INVALID_THEME");
+    }
+    if (!Number.isInteger(volume) || volume < 0 || volume > 100) {
+      throw new DomainError("INVALID_VOLUME");
     }
   }
 

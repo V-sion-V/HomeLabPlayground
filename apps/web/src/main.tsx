@@ -6,6 +6,7 @@ import {
   useRef,
   useState
 } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   Account,
@@ -16,10 +17,10 @@ import type {
   Language,
   LobbyProjection,
   LobbyRoomProjection,
-  PlatformDataDeletionResult,
   RoomConfig,
   RoomMode,
-  RoomProjection
+  RoomProjection,
+  ThemeMode
 } from "@party/contracts";
 import {
   fallbackAvatar,
@@ -27,18 +28,16 @@ import {
   selectableAvatars
 } from "@party/contracts";
 import { t } from "./locales";
+import { AdminApp, isAdminPath } from "./admin-ui";
+import { PlatformLeaderboard } from "./platform-ui";
 import {
-  AccountManagementDialog,
-  PlatformLeaderboard,
-  SeasonManagementDialog
-} from "./platform-ui";
-import {
+  AnchoredMenu,
+  ArrowIcon,
   CollapsibleCard,
   ConfirmDialog,
   SelectField,
   ThemeToggle,
   applyProductTheme,
-  readStoredTheme,
   type ThemeScope
 } from "./ui";
 import "./styles.css";
@@ -60,46 +59,61 @@ interface EnterData {
 function App() {
   const query = new URLSearchParams(location.search);
   const displayRoomId = query.get("display") === "1" ? query.get("roomId") : null;
-  const [language, setLanguage] = useStored<Language>("party-language", "zh-CN");
+  const [language, setLanguage] = useState<Language>("zh-CN");
+  const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
+  const [volume, setVolume] = useState(100);
+  const [loginDefaults, setLoginDefaults] = useState<{
+    language: Language;
+    theme: ThemeMode;
+  }>({ language: "zh-CN", theme: "dark" });
   const [session, setSession] = useState<Session | null>(null);
   const [lobby, setLobby] = useState<LobbyProjection | null>(null);
   const [room, setRoom] = useState<RoomProjection | null>(null);
   const [restoring, setRestoring] = useState(!displayRoomId && Boolean(readRecentAccount()));
   const [notice, setNotice] = useState("");
   const restoreStarted = useRef(false);
+  const accountPreferencesApplied = useRef(false);
   const activeRoomId = room?.id;
   const themeScope: ThemeScope = displayRoomId || room ? "poker" : "main";
 
   useLayoutEffect(() => {
-    applyProductTheme(themeScope, readStoredTheme());
-  }, [themeScope]);
+    applyProductTheme(themeScope, themeMode);
+  }, [themeMode, themeScope]);
 
   useEffect(() => {
-    if (localStorage.getItem("party-language")) return;
     void fetch("/api/state")
       .then((response) => response.json() as Promise<LobbyProjection>)
-      .then((state) => setLanguage(state.settings.defaultLanguage))
+      .then((state) => {
+        const defaults = {
+          language: state.settings.defaultLanguage,
+          theme: state.settings.defaultTheme
+        };
+        setLoginDefaults(defaults);
+        if (!accountPreferencesApplied.current) {
+          setLanguage(defaults.language);
+          setThemeMode(defaults.theme);
+          setVolume(100);
+        }
+      })
       .catch(() => {
         // The login remains usable with the bundled fallback language.
       });
-  }, [setLanguage]);
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = language;
   }, [language]);
 
-  const enter = useCallback(async (username: string, avatar: string) => {
-    const response = await fetch("/api/enter", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username, avatar })
-    });
-    const result = (await response.json()) as CommandResult<EnterData>;
-    if (!response.ok || !result.data) throw new Error(result.code || "ENTER_FAILED");
+  const acceptEntry = useCallback((result: CommandResult<EnterData>) => {
+    if (!result.data) throw new Error(result.code || "ENTER_FAILED");
     const nextSession = {
       account: result.data.account,
       connectionId: result.data.connectionId
     };
+    accountPreferencesApplied.current = true;
+    setLanguage(result.data.account.language);
+    setThemeMode(result.data.account.theme);
+    setVolume(result.data.account.volume);
     setSession(nextSession);
     setLobby({ ...result.data.lobby, version: result.version });
     setRoom(
@@ -111,6 +125,41 @@ function App() {
     setNotice("");
   }, []);
 
+  const enter = useCallback(async (username: string) => {
+    const response = await fetch("/api/enter", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ commandId: createCommandId(), username })
+    });
+    const result = (await response.json()) as CommandResult<EnterData>;
+    if (!response.ok || !result.data) throw new Error(result.code || "ENTER_FAILED");
+    acceptEntry(result);
+  }, [acceptEntry]);
+
+  const register = useCallback(
+    async (input: {
+      username: string;
+      avatar: string;
+      language: Language;
+      theme: ThemeMode;
+    }) => {
+      const response = await fetch("/api/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          commandId: createCommandId(),
+          ...input
+        })
+      });
+      const result = (await response.json()) as CommandResult<EnterData>;
+      if (!response.ok || !result.data) {
+        throw new Error(result.code || "REGISTER_FAILED");
+      }
+      acceptEntry(result);
+    },
+    [acceptEntry]
+  );
+
   useEffect(() => {
     if (displayRoomId || restoreStarted.current) return;
     const recent = readRecentAccount();
@@ -119,9 +168,10 @@ function App() {
       return;
     }
     restoreStarted.current = true;
-    void enter(recent.username, recent.avatar)
+    void enter(recent.username)
       .catch(() => {
         localStorage.removeItem("party-recent-account");
+        accountPreferencesApplied.current = false;
       })
       .finally(() => setRestoring(false));
   }, [displayRoomId, enter]);
@@ -196,6 +246,10 @@ function App() {
         }
         if (message.type === "session.replaced") {
           localStorage.removeItem("party-recent-account");
+          accountPreferencesApplied.current = false;
+          setLanguage(loginDefaults.language);
+          setThemeMode(loginDefaults.theme);
+          setVolume(100);
           setRoom(null);
           setLobby(null);
           setSession(null);
@@ -212,7 +266,7 @@ function App() {
       if (retry) clearTimeout(retry);
       socket?.close();
     };
-  }, [activeRoomId, language, refreshLobby, session]);
+  }, [activeRoomId, language, loginDefaults, refreshLobby, session]);
 
   const command = useCallback(
     async <T,>(
@@ -238,6 +292,10 @@ function App() {
       if (!response.ok || result.status === "rejected") {
         if (result.code === "STALE_CONNECTION") {
           localStorage.removeItem("party-recent-account");
+          accountPreferencesApplied.current = false;
+          setLanguage(loginDefaults.language);
+          setThemeMode(loginDefaults.theme);
+          setVolume(100);
           setRoom(null);
           setLobby(null);
           setSession(null);
@@ -247,14 +305,7 @@ function App() {
         else await refreshLobby();
         throw new Error(result.code || "COMMAND_FAILED");
       }
-      const deletion = result.data as PlatformDataDeletionResult | undefined;
-      if (deletion?.selfDeleted) {
-        localStorage.removeItem("party-recent-account");
-        setRoom(null);
-        setLobby(null);
-        setSession(null);
-        setNotice(t(language, "accountDeleted"));
-      } else if (isRoomProjection(result.data)) {
+      if (isRoomProjection(result.data)) {
         setRoom({ ...result.data, platformVersion: result.version });
       } else if (
         (result.data as { closed?: boolean; left?: boolean } | undefined)?.closed ||
@@ -267,7 +318,14 @@ function App() {
       }
       return result;
     },
-    [language, lobby?.version, refreshLobby, refreshRoom, room, session]
+    [
+      lobby?.version,
+      loginDefaults,
+      refreshLobby,
+      refreshRoom,
+      room,
+      session
+    ]
   );
 
   if (displayRoomId) {
@@ -280,8 +338,11 @@ function App() {
     return (
       <Login
         language={language}
+        defaults={loginDefaults}
         setLanguage={setLanguage}
+        setTheme={setThemeMode}
         onEnter={enter}
+        onRegister={register}
         notice={notice}
       />
     );
@@ -295,6 +356,7 @@ function App() {
         room={room}
         notice={notice}
         setNotice={setNotice}
+        volume={volume}
         command={command}
         onLobby={() => {
           setRoom(null);
@@ -309,7 +371,6 @@ function App() {
   return (
     <Lobby
       language={language}
-      setLanguage={setLanguage}
       session={session}
       setSession={setSession}
       lobby={lobby}
@@ -317,8 +378,18 @@ function App() {
       setNotice={setNotice}
       command={command}
       onRoom={setRoom}
+      onPreferences={(account) => {
+        accountPreferencesApplied.current = true;
+        setLanguage(account.language);
+        setThemeMode(account.theme);
+        setVolume(account.volume);
+      }}
       onSwitch={() => {
         localStorage.removeItem("party-recent-account");
+        accountPreferencesApplied.current = false;
+        setLanguage(loginDefaults.language);
+        setThemeMode(loginDefaults.theme);
+        setVolume(100);
         setSession(null);
         setLobby(null);
         setRoom(null);
@@ -338,21 +409,44 @@ function Loading({ language }: { language: Language }) {
 
 function Login({
   language,
+  defaults,
   setLanguage,
+  setTheme,
   onEnter,
+  onRegister,
   notice
 }: {
   language: Language;
+  defaults: { language: Language; theme: ThemeMode };
   setLanguage: (language: Language) => void;
-  onEnter: (username: string, avatar: string) => Promise<void>;
+  setTheme: (theme: ThemeMode) => void;
+  onEnter: (username: string) => Promise<void>;
+  onRegister: (input: {
+    username: string;
+    avatar: string;
+    language: Language;
+    theme: ThemeMode;
+  }) => Promise<void>;
   notice: string;
 }) {
   const [username, setUsername] = useState("");
+  const [registrationUsername, setRegistrationUsername] = useState("");
   const [avatar, setAvatar] = useState(avatars[0]!);
+  const [avatarOpen, setAvatarOpen] = useState(false);
+  const [registrationLanguage, setRegistrationLanguage] =
+    useState<Language>(defaults.language);
+  const [registrationTheme, setRegistrationTheme] =
+    useState<ThemeMode>(defaults.theme);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  useEffect(() => {
+    if (registrationUsername) return;
+    setRegistrationLanguage(defaults.language);
+    setRegistrationTheme(defaults.theme);
+  }, [defaults, registrationUsername]);
+
+  async function lookup(event: React.FormEvent) {
     event.preventDefault();
     if (!username.trim()) {
       setError(t(language, "enterName"));
@@ -360,13 +454,60 @@ function Login({
     }
     setBusy(true);
     try {
-      await onEnter(username, avatar);
+      const response = await fetch("/api/account/lookup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username })
+      });
+      const result = (await response.json()) as {
+        username?: string;
+        exists?: boolean;
+        code?: string;
+      };
+      if (!response.ok || !result.username) {
+        throw new Error(result.code || "INVALID_USERNAME");
+      }
+      if (result.exists) {
+        await onEnter(result.username);
+      } else {
+        setRegistrationUsername(result.username);
+        setRegistrationLanguage(defaults.language);
+        setRegistrationTheme(defaults.theme);
+        setLanguage(defaults.language);
+        setTheme(defaults.theme);
+        setError("");
+      }
     } catch (reason) {
       setError(errorMessage(language, reason));
     } finally {
       setBusy(false);
     }
   }
+
+  async function registerAccount(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await onRegister({
+        username: registrationUsername,
+        avatar,
+        language: registrationLanguage,
+        theme: registrationTheme
+      });
+    } catch (reason) {
+      setError(errorMessage(language, reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const back = () => {
+    setRegistrationUsername("");
+    setAvatarOpen(false);
+    setError("");
+    setLanguage(defaults.language);
+    setTheme(defaults.theme);
+  };
 
   return (
     <main className="login-shell">
@@ -377,52 +518,127 @@ function Login({
         <p className="tagline">{t(language, "tagline")}</p>
         <div className="trust-pill">● LAN · {t(language, "passwordFree")}</div>
       </section>
-      <form className="login-card" onSubmit={submit}>
-        <DeviceControls
-          language={language}
-          setLanguage={setLanguage}
-          themeScope="main"
-        />
-        <label>
-          <span>{t(language, "enterName")}</span>
-          <input
-            aria-label={t(language, "enterName")}
-            value={username}
-            maxLength={32}
-            autoComplete="username"
-            onChange={(event) => setUsername(event.target.value)}
-          />
-        </label>
-        <fieldset>
-          <legend>{t(language, "chooseAvatar")}</legend>
-          <div className="avatar-grid">
-            {avatars.map((item) => (
-              <button
-                type="button"
-                key={item}
-                aria-label={`avatar-${item}`}
-                aria-pressed={avatar === item}
-                className={avatar === item ? "avatar selected" : "avatar"}
-                onClick={() => setAvatar(item)}
-              >
-                {item}
-              </button>
-            ))}
+      {registrationUsername ? (
+        <form className="login-card registration-card" onSubmit={registerAccount}>
+          <div className="registration-header">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t(language, "backToUsername")}
+              onClick={back}
+            >
+              <ArrowIcon direction="left" />
+            </button>
+            <div>
+              <p className="eyebrow">{t(language, "newAccount")}</p>
+              <h2>{t(language, "registration")}</h2>
+            </div>
           </div>
-        </fieldset>
-        {(error || notice) && <p className="error" role="alert">{error || notice}</p>}
-        <button className="primary wide" type="submit" disabled={busy}>
-          {busy ? t(language, "loading") : t(language, "enter")}
-        </button>
-        <p className="fine-print">{t(language, "noPassword")}</p>
-      </form>
+          <label>
+            {t(language, "username")}
+            <input
+              value={registrationUsername}
+              aria-label={t(language, "username")}
+              readOnly
+            />
+          </label>
+          <div className="avatar-disclosure">
+            <span>{t(language, "chooseAvatar")}</span>
+            <button
+              type="button"
+              className="avatar-current"
+              aria-label={t(language, "chooseAvatar")}
+              aria-expanded={avatarOpen}
+              onClick={() => setAvatarOpen((current) => !current)}
+            >
+              <b aria-hidden="true">{avatar}</b>
+              <ArrowIcon direction={avatarOpen ? "down" : "right"} />
+            </button>
+          </div>
+          {avatarOpen && (
+            <div className="avatar-grid" role="listbox" aria-label={t(language, "chooseAvatar")}>
+              {avatars.map((item) => (
+                <button
+                  type="button"
+                  role="option"
+                  key={item}
+                  aria-label={`avatar-${item}`}
+                  aria-selected={avatar === item}
+                  className={avatar === item ? "avatar selected" : "avatar"}
+                  onClick={() => {
+                    setAvatar(item);
+                    setAvatarOpen(false);
+                  }}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="setting-row">
+            <span>{t(language, "accountLanguage")}</span>
+            <LanguageToggle
+              language={registrationLanguage}
+              setLanguage={(next) => {
+                setRegistrationLanguage(next);
+                setLanguage(next);
+              }}
+            />
+          </div>
+          <div className="setting-row">
+            <span>{t(language, "accountTheme")}</span>
+            <ThemeToggle
+              mode={registrationTheme}
+              onChange={(next) => {
+                setRegistrationTheme(next);
+                setTheme(next);
+              }}
+              lightLabel={t(language, "lightTheme")}
+              darkLabel={t(language, "darkTheme")}
+              groupLabel={t(language, "themeSelection")}
+            />
+          </div>
+          {(error || notice) && (
+            <p className="error" role="alert">{error || notice}</p>
+          )}
+          <button className="primary wide" type="submit" disabled={busy}>
+            {busy ? t(language, "loading") : t(language, "registerAndEnter")}
+          </button>
+        </form>
+      ) : (
+        <form className="login-card username-card" onSubmit={lookup}>
+          <label>
+            <span>{t(language, "enterName")}</span>
+            <span className="username-entry">
+              <input
+                aria-label={t(language, "enterName")}
+                value={username}
+                maxLength={32}
+                autoComplete="username"
+                onChange={(event) => setUsername(event.target.value)}
+              />
+              <button
+                className="primary username-submit"
+                type="submit"
+                aria-label={t(language, "continue")}
+                disabled={busy}
+              >
+                <ArrowIcon direction="right" />
+              </button>
+            </span>
+          </label>
+          {(error || notice) && (
+            <p className="error" role="alert">{error || notice}</p>
+          )}
+          <p className="fine-print">{t(language, "noPassword")}</p>
+        </form>
+      )}
     </main>
   );
 }
 
 function Lobby({
   language,
-  setLanguage,
   session,
   setSession,
   lobby,
@@ -430,10 +646,10 @@ function Lobby({
   setNotice,
   command,
   onRoom,
+  onPreferences,
   onSwitch
 }: {
   language: Language;
-  setLanguage: (language: Language) => void;
   session: Session;
   setSession: (session: Session) => void;
   lobby: LobbyProjection;
@@ -441,15 +657,12 @@ function Lobby({
   setNotice: (notice: string) => void;
   command: CommandFunction;
   onRoom: (room: RoomProjection) => void;
+  onPreferences: (account: Account) => void;
   onSwitch: () => void;
 }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [joinRoom, setJoinRoom] = useState<LobbyRoomProjection | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [seasonOpen, setSeasonOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [accountManagementOpen, setAccountManagementOpen] = useState(false);
-  const [seasonManagementOpen, setSeasonManagementOpen] = useState(false);
 
   async function returnToRoom(roomId: string) {
     const response = await fetch(
@@ -470,22 +683,10 @@ function Lobby({
           <h1>{t(language, "lobby")}</h1>
         </div>
         <div className="top-actions">
-          <DeviceControls
-            language={language}
-            setLanguage={setLanguage}
-            themeScope="main"
-          />
           <button className="account-chip" onClick={() => setProfileOpen(true)}>
             <span>{session.account.avatar}</span>
             {session.account.username}
             <small>{t(language, "profile")}</small>
-          </button>
-          <button
-            className="icon-button"
-            aria-label={t(language, "settings")}
-            onClick={() => setSettingsOpen(true)}
-          >
-            ⚙
           </button>
         </div>
       </header>
@@ -611,134 +812,34 @@ function Lobby({
           }}
         />
       )}
-      {settingsOpen && (
-        <SettingsModal
-          language={language}
-          setLanguage={setLanguage}
-          settings={lobby.settings}
-          onClose={() => setSettingsOpen(false)}
-          onSave={async (settings) => {
-            try {
-              await command("settings.update", { settings }, "platform");
-              setNotice(t(language, "settingsSaved"));
-              setSettingsOpen(false);
-            } catch (reason) {
-              setNotice(errorMessage(language, reason));
-            }
-          }}
-          onSeason={() => setSeasonOpen(true)}
-          onAccountManagement={() => setAccountManagementOpen(true)}
-          onSeasonManagement={() => setSeasonManagementOpen(true)}
-        />
-      )}
-      {seasonOpen && (
-        <SeasonModal
-          language={language}
-          onClose={() => setSeasonOpen(false)}
-          onConfirm={async (name, baseScore) => {
-            try {
-              await command("season.start", { name, baseScore }, "platform");
-              setNotice(t(language, "seasonStarted"));
-              setSeasonOpen(false);
-              setSettingsOpen(false);
-            } catch (reason) {
-              setNotice(errorMessage(language, reason));
-            }
-          }}
-        />
-      )}
       {profileOpen && (
         <ProfileModal
           language={language}
           account={session.account}
           onClose={() => setProfileOpen(false)}
           onSwitch={onSwitch}
-          onSave={async (username, avatar) => {
+          onSave={async (username, avatar, nextLanguage, theme, volume) => {
             try {
               const result = await command<Account>(
                 "account.profile",
-                { username, avatar },
+                {
+                  username,
+                  avatar,
+                  language: nextLanguage,
+                  theme,
+                  volume
+                },
                 "platform"
               );
               if (result.data) {
                 const next = { ...session, account: result.data };
                 setSession(next);
                 writeRecentAccount(result.data);
+                onPreferences(result.data);
               }
               setProfileOpen(false);
             } catch (reason) {
               setNotice(errorMessage(language, reason));
-            }
-          }}
-        />
-      )}
-      {accountManagementOpen && (
-        <AccountManagementDialog
-          language={language}
-          accounts={lobby.accounts}
-          currentAccountId={session.account.id}
-          onClose={() => setAccountManagementOpen(false)}
-          onDelete={async (targetAccountId) => {
-            try {
-              await command<PlatformDataDeletionResult>(
-                "account.delete",
-                { targetAccountId },
-                "platform"
-              );
-              setNotice(t(language, "accountDeleted"));
-              return true;
-            } catch (reason) {
-              setNotice(errorMessage(language, reason));
-              return false;
-            }
-          }}
-          onDeleteOthers={async () => {
-            try {
-              await command<PlatformDataDeletionResult>(
-                "account.delete-others",
-                {},
-                "platform"
-              );
-              setNotice(t(language, "accountsDeleted"));
-              return true;
-            } catch (reason) {
-              setNotice(errorMessage(language, reason));
-              return false;
-            }
-          }}
-        />
-      )}
-      {seasonManagementOpen && (
-        <SeasonManagementDialog
-          language={language}
-          lobby={lobby}
-          onClose={() => setSeasonManagementOpen(false)}
-          onDelete={async (targetSeasonId) => {
-            try {
-              await command<PlatformDataDeletionResult>(
-                "season.delete",
-                { targetSeasonId },
-                "platform"
-              );
-              setNotice(t(language, "seasonDeleted"));
-              return true;
-            } catch (reason) {
-              setNotice(errorMessage(language, reason));
-              return false;
-            }
-          }}
-          onDeleteHistory={async () => {
-            try {
-              await command<PlatformDataDeletionResult>(
-                "season.delete-history",
-                {},
-                "platform"
-              );
-              setNotice(t(language, "seasonsDeleted"));
-              return true;
-            } catch (reason) {
-              setNotice(errorMessage(language, reason));
-              return false;
             }
           }}
         />
@@ -790,8 +891,26 @@ function CreateRoomModal({
     }
   };
   return (
-    <Modal language={language} title={t(language, "createRoom")} onClose={onClose}>
-      <form className="form-stack" onSubmit={submit}>
+    <Modal
+      language={language}
+      title={t(language, "createRoom")}
+      onClose={onClose}
+      footer={
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            {t(language, "cancel")}
+          </button>
+          <button
+            className="primary"
+            disabled={busy}
+            form="create-room-form"
+          >
+            {t(language, "create")}
+          </button>
+        </div>
+      }
+    >
+      <form id="create-room-form" className="form-stack" onSubmit={submit}>
         <label>{t(language, "roomNameLabel")}
           <input value={name} onChange={(event) => setName(event.target.value)} />
         </label>
@@ -816,10 +935,6 @@ function CreateRoomModal({
           />
         </div>
         <NumberField label={t(language, "buyIn")} value={buyIn} onChange={setBuyIn} />
-        <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>{t(language, "cancel")}</button>
-          <button className="primary" disabled={busy}>{t(language, "create")}</button>
-        </div>
       </form>
     </Modal>
   );
@@ -839,8 +954,27 @@ function JoinRoomModal({
   const [buyIn, setBuyIn] = useState(room.minBuyIn);
   const [busy, setBusy] = useState(false);
   return (
-    <Modal language={language} title={t(language, "joinBuyIn")} onClose={onClose}>
+    <Modal
+      language={language}
+      title={t(language, "joinBuyIn")}
+      onClose={onClose}
+      footer={
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            {t(language, "cancel")}
+          </button>
+          <button
+            className="primary"
+            disabled={busy}
+            form="join-room-form"
+          >
+            {t(language, "join")}
+          </button>
+        </div>
+      }
+    >
       <form
+        id="join-room-form"
         className="form-stack"
         onSubmit={async (event) => {
           event.preventDefault();
@@ -854,16 +988,12 @@ function JoinRoomModal({
       >
         <p>{room.name} · {room.minBuyIn.toLocaleString()}–{room.maxBuyIn.toLocaleString()}</p>
         <NumberField label={t(language, "buyIn")} value={buyIn} onChange={setBuyIn} />
-        <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>{t(language, "cancel")}</button>
-          <button className="primary" disabled={busy}>{t(language, "join")}</button>
-        </div>
       </form>
     </Modal>
   );
 }
 
-function SettingsModal({
+export function SettingsModal({
   language,
   setLanguage,
   settings,
@@ -912,6 +1042,20 @@ function SettingsModal({
       title={t(language, "settings")}
       onClose={onClose}
       className="settings-modal"
+      footer={
+        <div className="modal-actions settings-actions">
+          <button className="danger-link compact-button" onClick={onSeason}>
+            {t(language, "newSeason")}
+          </button>
+          <button
+            className="primary settings-save"
+            disabled={busy || Boolean(denominationError)}
+            onClick={() => void save()}
+          >
+            {busy ? t(language, "loading") : t(language, "save")}
+          </button>
+        </div>
+      }
     >
       <div className="settings-scroll">
         <div className="settings-management-actions">
@@ -1060,23 +1204,11 @@ function SettingsModal({
           </fieldset>
         </CollapsibleCard>
       </div>
-      <div className="modal-actions settings-actions">
-        <button className="danger-link compact-button" onClick={onSeason}>
-          {t(language, "newSeason")}
-        </button>
-        <button
-          className="primary settings-save"
-          disabled={busy || Boolean(denominationError)}
-          onClick={() => void save()}
-        >
-          {busy ? t(language, "loading") : t(language, "save")}
-        </button>
-      </div>
     </Modal>
   );
 }
 
-function SeasonModal({
+export function SeasonModal({
   language,
   onClose,
   onConfirm
@@ -1089,7 +1221,26 @@ function SeasonModal({
   const [baseScore, setBaseScore] = useState(10_000);
   const [confirmed, setConfirmed] = useState(false);
   return (
-    <Modal language={language} title={t(language, "newSeason")} onClose={onClose} narrow>
+    <Modal
+      language={language}
+      title={t(language, "newSeason")}
+      onClose={onClose}
+      narrow
+      footer={
+        <div className="modal-actions">
+          <button className="secondary" onClick={onClose}>
+            {t(language, "cancel")}
+          </button>
+          <button
+            className="primary"
+            disabled={!confirmed}
+            onClick={() => void onConfirm(name, baseScore)}
+          >
+            {t(language, "confirm")}
+          </button>
+        </div>
+      }
+    >
       <p className="warning">{t(language, "seasonImpact")}</p>
       <div className="form-stack">
         <label>{t(language, "seasonName")}<input value={name} onChange={(event) => setName(event.target.value)} /></label>
@@ -1098,12 +1249,6 @@ function SeasonModal({
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
           {t(language, "confirm")}
         </label>
-        <div className="modal-actions">
-          <button className="secondary" onClick={onClose}>{t(language, "cancel")}</button>
-          <button className="primary" disabled={!confirmed} onClick={() => void onConfirm(name, baseScore)}>
-            {t(language, "confirm")}
-          </button>
-        </div>
       </div>
     </Modal>
   );
@@ -1120,43 +1265,136 @@ function ProfileModal({
   account: Account;
   onClose: () => void;
   onSwitch: () => void;
-  onSave: (username: string, avatar: string) => Promise<void>;
+  onSave: (
+    username: string,
+    avatar: string,
+    language: Language,
+    theme: ThemeMode,
+    volume: number
+  ) => Promise<void>;
 }) {
   const [username, setUsername] = useState(account.username);
   const [avatar, setAvatar] = useState(account.avatar);
+  const [avatarOpen, setAvatarOpen] = useState(false);
+  const [nextLanguage, setNextLanguage] = useState(account.language);
+  const [theme, setTheme] = useState(account.theme);
+  const [volume, setVolume] = useState(account.volume);
+  const [busy, setBusy] = useState(false);
   const avatarSelectable = avatars.includes(avatar);
   return (
-    <Modal language={language} title={t(language, "profile")} onClose={onClose}>
-      <div className="form-stack">
-        <label>{t(language, "username")}<input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
-        <div className="avatar-grid">
-          {avatars.map((item) => (
-            <button
-              key={item}
-              className={avatar === item ? "avatar selected" : "avatar"}
-              aria-label={`avatar-${item}`}
-              aria-pressed={avatar === item}
-              onClick={() => setAvatar(item)}
-            >
-              {item}
-            </button>
-          ))}
+    <Modal
+      language={language}
+      title={t(language, "profile")}
+      onClose={onClose}
+      className="profile-modal"
+      footer={
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={onSwitch}
+          >
+            {t(language, "switchAccount")}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!avatarSelectable || busy}
+            onClick={() => {
+              setBusy(true);
+              void onSave(
+                username,
+                avatar,
+                nextLanguage,
+                theme,
+                volume
+              ).finally(() => setBusy(false));
+            }}
+          >
+            {busy ? t(language, "loading") : t(language, "updateProfile")}
+          </button>
         </div>
+      }
+    >
+      <div className="form-stack">
+        <div className="profile-identity-fields">
+          <label>
+            {t(language, "username")}
+            <input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          </label>
+          <label>
+            {t(language, "chooseAvatar")}
+            <button
+              type="button"
+              className="avatar-current"
+              aria-label={t(language, "chooseAvatar")}
+              aria-expanded={avatarOpen}
+              onClick={() => setAvatarOpen((current) => !current)}
+            >
+              <b aria-hidden="true">{avatarSelectable ? avatar : fallbackAvatar}</b>
+              <ArrowIcon direction={avatarOpen ? "down" : "right"} />
+            </button>
+          </label>
+        </div>
+        {avatarOpen && (
+          <div className="avatar-grid" role="listbox" aria-label={t(language, "chooseAvatar")}>
+            {avatars.map((item) => (
+              <button
+                type="button"
+                role="option"
+                key={item}
+                className={avatar === item ? "avatar selected" : "avatar"}
+                aria-label={`avatar-${item}`}
+                aria-selected={avatar === item}
+                onClick={() => {
+                  setAvatar(item);
+                  setAvatarOpen(false);
+                }}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
         {!avatarSelectable && (
           <p className="warning" role="status">
             {fallbackAvatar} {t(language, "chooseReplacementAvatar")}
           </p>
         )}
-        <div className="modal-actions">
-          <button className="secondary" onClick={onSwitch}>{t(language, "switchAccount")}</button>
-          <button
-            className="primary"
-            disabled={!avatarSelectable}
-            onClick={() => void onSave(username, avatar)}
-          >
-            {t(language, "updateProfile")}
-          </button>
+        <div className="setting-row">
+          <span>{t(language, "accountLanguage")}</span>
+          <LanguageToggle
+            language={nextLanguage}
+            setLanguage={setNextLanguage}
+          />
         </div>
+        <div className="setting-row">
+          <span>{t(language, "accountTheme")}</span>
+          <ThemeToggle
+            mode={theme}
+            onChange={setTheme}
+            lightLabel={t(language, "lightTheme")}
+            darkLabel={t(language, "darkTheme")}
+            groupLabel={t(language, "themeSelection")}
+          />
+        </div>
+        <label className="volume-field">
+          <span>
+            {t(language, "volume")} <strong>{volume}</strong>
+          </span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={volume}
+            aria-valuetext={`${volume}%`}
+            onChange={(event) => setVolume(Number(event.target.value))}
+          />
+        </label>
       </div>
     </Modal>
   );
@@ -1168,6 +1406,7 @@ function RoomView({
   room,
   notice,
   setNotice,
+  volume,
   command,
   onLobby
 }: {
@@ -1176,6 +1415,7 @@ function RoomView({
   room: RoomProjection;
   notice: string;
   setNotice: (notice: string) => void;
+  volume: number;
   command: CommandFunction;
   onLobby: () => void;
 }) {
@@ -1223,6 +1463,7 @@ function RoomView({
       room={room}
       notice={notice}
       host={host}
+      volume={volume}
       run={run}
       onLobby={onLobby}
     />
@@ -1249,11 +1490,13 @@ function WaitingRoom({
   const [selectedMember, setSelectedMember] = useState<
     RoomProjection["seats"][number] | null
   >(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [confirmation, setConfirmation] = useState<
     | { kind: "kick"; member: RoomProjection["seats"][number] }
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
+  useMemberMenuValidity(room, host, selectedMember, setSelectedMember);
   const ready = new Set(room.readyAccountIds ?? []);
   const currentReady = ready.has(session.account.id);
   const eligibleReady = room.seats.filter(
@@ -1291,7 +1534,9 @@ function WaitingRoom({
     <main className="app-shell">
       <header className="topbar room-topbar">
         <div className="room-top-actions">
-          <button className="secondary" onClick={onLobby}>← {t(language, "backLobby")}</button>
+          <button className="secondary icon-label" onClick={onLobby}>
+            <ArrowIcon direction="left" /> {t(language, "backLobby")}
+          </button>
           <button
             className="secondary"
             onClick={() => setConfirmation({ kind: "leave" })}
@@ -1330,11 +1575,12 @@ function WaitingRoom({
                 aria-label={`${seat.username} ${t(language, "memberActions")}`}
                 aria-expanded={selectedMember?.accountId === seat.accountId}
                 disabled={!host || seat.accountId === session.account.id}
-                onClick={() =>
+                onClick={(event) => {
+                  setMenuAnchor(event.currentTarget);
                   setSelectedMember((current) =>
                     current?.accountId === seat.accountId ? null : seat
-                  )
-                }
+                  );
+                }}
               >
                 {seat.avatar}
               </button>
@@ -1346,36 +1592,23 @@ function WaitingRoom({
               <small className={seat.connected ? "online" : "offline"}>
                 {seat.connected ? t(language, "online") : t(language, "offline")}
               </small>
-              {selectedMember?.accountId === seat.accountId && (
-                <div className="member-menu" role="menu">
-                  <button
-                    role="menuitem"
-                    className="text-button"
-                    disabled={!seat.connected}
-                    onClick={() => {
-                      setSelectedMember(null);
-                      void run("room.transfer-host", {
-                        targetAccountId: seat.accountId
-                      });
-                    }}
-                  >
-                    {t(language, "transferHost")}
-                  </button>
-                  <button
-                    role="menuitem"
-                    className="text-button danger-text"
-                    onClick={() => {
-                      setSelectedMember(null);
-                      setConfirmation({ kind: "kick", member: seat });
-                    }}
-                  >
-                    {t(language, "removePlayer")}
-                  </button>
-                </div>
-              )}
             </article>
           ))}
         </div>
+        <MemberActionsMenu
+          language={language}
+          anchor={menuAnchor}
+          member={selectedMember}
+          onClose={() => setSelectedMember(null)}
+          onTransfer={(member) =>
+            void run("room.transfer-host", {
+              targetAccountId: member.accountId
+            })
+          }
+          onRemove={(member) =>
+            setConfirmation({ kind: "kick", member })
+          }
+        />
         <div className="room-footer-actions">
           {host && (
             <button className="primary" disabled={!canStart} onClick={start}>
@@ -1474,6 +1707,79 @@ function WaitingRoom({
   );
 }
 
+function useMemberMenuValidity(
+  room: RoomProjection,
+  host: boolean,
+  member: RoomProjection["seats"][number] | null,
+  setMember: (member: RoomProjection["seats"][number] | null) => void
+) {
+  useEffect(() => {
+    if (
+      member &&
+      (
+        !host ||
+        !room.seats.some((seat) => seat.accountId === member.accountId)
+      )
+    ) {
+      setMember(null);
+    }
+  }, [host, member, room.seats, setMember]);
+}
+
+function MemberActionsMenu({
+  language,
+  anchor,
+  member,
+  onClose,
+  onTransfer,
+  onRemove
+}: {
+  language: Language;
+  anchor: HTMLButtonElement | null;
+  member: RoomProjection["seats"][number] | null;
+  onClose: () => void;
+  onTransfer: (member: RoomProjection["seats"][number]) => void;
+  onRemove: (member: RoomProjection["seats"][number]) => void;
+}) {
+  return (
+    <AnchoredMenu
+      anchor={anchor}
+      open={Boolean(member)}
+      label={t(language, "memberActions")}
+      onClose={onClose}
+    >
+      {member && (
+        <>
+          <strong className="anchored-menu-title">
+            {member.avatar} {member.username}
+          </strong>
+          <button
+            role="menuitem"
+            className="text-button"
+            disabled={!member.connected}
+            onClick={() => {
+              onClose();
+              onTransfer(member);
+            }}
+          >
+            {t(language, "transferHost")}
+          </button>
+          <button
+            role="menuitem"
+            className="text-button danger-text"
+            onClick={() => {
+              onClose();
+              onRemove(member);
+            }}
+          >
+            {t(language, "removePlayer")}
+          </button>
+        </>
+      )}
+    </AnchoredMenu>
+  );
+}
+
 function SpectatorTable({
   language,
   session,
@@ -1494,18 +1800,20 @@ function SpectatorTable({
   const [selectedMember, setSelectedMember] = useState<
     RoomProjection["seats"][number] | null
   >(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [confirmation, setConfirmation] = useState<
     | { kind: "kick"; member: RoomProjection["seats"][number] }
     | { kind: "leave" | "close" }
     | null
   >(null);
+  useMemberMenuValidity(room, host, selectedMember, setSelectedMember);
 
   return (
     <main className={`display-shell suit-theme-${room.suitColorPreset}`}>
       <header className="display-header spectator-header">
         <div className="room-top-actions">
           <button className="secondary" onClick={onLobby}>
-            ← {t(language, "backLobby")}
+            <ArrowIcon direction="left" /> {t(language, "backLobby")}
           </button>
           <button
             className="secondary"
@@ -1535,53 +1843,30 @@ function SpectatorTable({
       <PublicTableSurface
         language={language}
         room={room}
+        activeMemberId={selectedMember?.accountId}
         onMemberClick={
           host
-            ? (member) => {
+            ? (member, anchor) => {
                 if (member.accountId !== session.account.id) {
+                  setMenuAnchor(anchor);
                   setSelectedMember(member);
                 }
               }
             : undefined
         }
       />
-      {selectedMember && (
-        <div className="member-action-popover" role="menu">
-          <strong>{selectedMember.avatar} {selectedMember.username}</strong>
-          <button
-            role="menuitem"
-            className="text-button"
-            disabled={!selectedMember.connected}
-            onClick={() => {
-              const member = selectedMember;
-              setSelectedMember(null);
-              void run("room.transfer-host", {
-                targetAccountId: member.accountId
-              });
-            }}
-          >
-            {t(language, "transferHost")}
-          </button>
-          <button
-            role="menuitem"
-            className="text-button danger-text"
-            onClick={() => {
-              const member = selectedMember;
-              setSelectedMember(null);
-              setConfirmation({ kind: "kick", member });
-            }}
-          >
-            {t(language, "removePlayer")}
-          </button>
-          <button
-            role="menuitem"
-            className="text-button"
-            onClick={() => setSelectedMember(null)}
-          >
-            {t(language, "cancel")}
-          </button>
-        </div>
-      )}
+      <MemberActionsMenu
+        language={language}
+        anchor={menuAnchor}
+        member={selectedMember}
+        onClose={() => setSelectedMember(null)}
+        onTransfer={(member) =>
+          void run("room.transfer-host", {
+            targetAccountId: member.accountId
+          })
+        }
+        onRemove={(member) => setConfirmation({ kind: "kick", member })}
+      />
       {confirmation?.kind === "kick" && (
         <ConfirmDialog
           title={t(language, "confirmRemoveTitle")}
@@ -1645,6 +1930,7 @@ function PlayerTable({
   room,
   notice,
   host,
+  volume,
   run,
   onLobby
 }: {
@@ -1653,6 +1939,7 @@ function PlayerTable({
   room: RoomProjection;
   notice: string;
   host: boolean;
+  volume: number;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
 }) {
@@ -1661,11 +1948,13 @@ function PlayerTable({
   const [selectedMember, setSelectedMember] = useState<
     RoomProjection["seats"][number] | null
   >(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [confirmation, setConfirmation] = useState<
     | { kind: "kick"; member: RoomProjection["seats"][number] }
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
+  useMemberMenuValidity(room, host, selectedMember, setSelectedMember);
   const betCacheRef = useRef<HTMLDivElement>(null);
   const chipRackRef = useRef<HTMLDivElement>(null);
   const pointerGesture = useRef<{
@@ -1763,8 +2052,8 @@ function PlayerTable({
 
   useEffect(() => {
     if (!room.phase) return;
-    playTone();
-  }, [room.phase]);
+    playTone(volume);
+  }, [room.phase, volume]);
 
   const submitAction = async (kind: string, amount?: number) => {
     await run("poker.action", {
@@ -1831,7 +2120,7 @@ function PlayerTable({
       <header className="table-topbar">
         <div className="table-top-left">
           <button className="secondary back-button" onClick={onLobby}>
-            <span aria-hidden="true">←</span>
+            <ArrowIcon direction="left" />
             <span className="back-label">{t(language, "backLobby")}</span>
           </button>
           <button
@@ -1870,11 +2159,12 @@ function PlayerTable({
                 aria-label={`${entry.username} ${t(language, "memberActions")}`}
                 aria-expanded={selectedMember?.accountId === entry.accountId}
                 disabled={!host || entry.accountId === session.account.id}
-                onClick={() =>
+                onClick={(event) => {
+                  setMenuAnchor(event.currentTarget);
                   setSelectedMember((current) =>
                     current?.accountId === entry.accountId ? null : entry
-                  )
-                }
+                  );
+                }}
               >
                 {entry.avatar}
               </button>
@@ -1896,34 +2186,6 @@ function PlayerTable({
                 <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
               )}
               {entry.folded && <em>{t(language, "fold")}</em>}
-              {selectedMember?.accountId === entry.accountId && (
-                <div className="member-menu seat-actions" role="menu">
-                  {entry.connected && (
-                    <button
-                      role="menuitem"
-                      className="text-button"
-                      onClick={() => {
-                        setSelectedMember(null);
-                        void run("room.transfer-host", {
-                          targetAccountId: entry.accountId
-                        });
-                      }}
-                    >
-                      {t(language, "transferHost")}
-                    </button>
-                  )}
-                  <button
-                    role="menuitem"
-                    className="text-button danger-text"
-                    onClick={() => {
-                      setSelectedMember(null);
-                      setConfirmation({ kind: "kick", member: entry });
-                    }}
-                  >
-                    {t(language, "removePlayer")}
-                  </button>
-                </div>
-              )}
             </article>
           ))}
         </div>
@@ -1940,47 +2202,34 @@ function PlayerTable({
                     aria-label={`${entry.username} ${t(language, "memberActions")}`}
                     aria-expanded={selectedMember?.accountId === entry.accountId}
                     disabled={!host}
-                    onClick={() =>
+                    onClick={(event) => {
+                      setMenuAnchor(event.currentTarget);
                       setSelectedMember((current) =>
                         current?.accountId === entry.accountId ? null : entry
-                      )
-                    }
+                      );
+                    }}
                   >
                     {entry.avatar}
                   </button>
                   <span>{entry.username}</span>
-                  {selectedMember?.accountId === entry.accountId && (
-                    <div className="member-menu" role="menu">
-                      {entry.connected && (
-                        <button
-                          role="menuitem"
-                          className="text-button"
-                          onClick={() => {
-                            setSelectedMember(null);
-                            void run("room.transfer-host", {
-                              targetAccountId: entry.accountId
-                            });
-                          }}
-                        >
-                          {t(language, "transferHost")}
-                        </button>
-                      )}
-                      <button
-                        role="menuitem"
-                        className="text-button danger-text"
-                        onClick={() => {
-                          setSelectedMember(null);
-                          setConfirmation({ kind: "kick", member: entry });
-                        }}
-                      >
-                        {t(language, "removePlayer")}
-                      </button>
-                    </div>
-                  )}
                 </div>
               ))}
           </div>
         )}
+        <MemberActionsMenu
+          language={language}
+          anchor={menuAnchor}
+          member={selectedMember}
+          onClose={() => setSelectedMember(null)}
+          onTransfer={(member) =>
+            void run("room.transfer-host", {
+              targetAccountId: member.accountId
+            })
+          }
+          onRemove={(member) =>
+            setConfirmation({ kind: "kick", member })
+          }
+        />
         {room.lastAction && room.lastAction.amount > 0 && (
           <div
             key={room.lastAction.version}
@@ -2380,11 +2629,16 @@ function WinnerPicker({
 function PublicTableSurface({
   language,
   room,
+  activeMemberId,
   onMemberClick
 }: {
   language: Language;
   room: RoomProjection;
-  onMemberClick?: (member: RoomProjection["seats"][number]) => void;
+  activeMemberId?: string;
+  onMemberClick?: (
+    member: RoomProjection["seats"][number],
+    anchor: HTMLButtonElement
+  ) => void;
 }) {
   const participants = room.phase
     ? room.seats.filter((seat) => seat.role === "participant")
@@ -2401,8 +2655,11 @@ function PublicTableSurface({
               type="button"
               className="member-avatar"
               aria-label={`${seat.username} ${t(language, "memberActions")}`}
+              aria-expanded={activeMemberId === seat.accountId}
               disabled={!onMemberClick}
-              onClick={() => onMemberClick?.(seat)}
+              onClick={(event) =>
+                onMemberClick?.(seat, event.currentTarget)
+              }
             >
               {seat.avatar}
             </button>
@@ -2524,6 +2781,7 @@ function Modal({
   onClose,
   narrow,
   className = "",
+  footer,
   children
 }: {
   language: Language;
@@ -2531,6 +2789,7 @@ function Modal({
   onClose: () => void;
   narrow?: boolean;
   className?: string;
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -2542,7 +2801,7 @@ function Modal({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-  return (
+  return createPortal(
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
         className={`modal ${narrow ? "narrow" : ""} ${className}`.trim()}
@@ -2555,9 +2814,13 @@ function Modal({
           <div><p className="eyebrow">HOME TABLE</p><h2>{title}</h2></div>
           <button ref={closeRef} className="icon-button" aria-label={t(language, "close")} onClick={onClose}>×</button>
         </div>
-        {children}
+        <div className="modal-scroll-region">{children}</div>
+        {footer !== undefined && (
+          <div className="modal-footer">{footer}</div>
+        )}
       </section>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -2895,8 +3158,28 @@ function TopUpModal({
 }) {
   const [amount, setAmount] = useState(Math.min(maximum, 1_000));
   return (
-    <Modal language={language} title={t(language, "topUp")} onClose={onClose} narrow>
+    <Modal
+      language={language}
+      title={t(language, "topUp")}
+      onClose={onClose}
+      narrow
+      footer={
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            {t(language, "cancel")}
+          </button>
+          <button
+            className="primary"
+            disabled={amount <= 0 || amount > maximum}
+            form="top-up-form"
+          >
+            {t(language, "confirm")}
+          </button>
+        </div>
+      }
+    >
       <form
+        id="top-up-form"
         className="form-stack"
         onSubmit={(event) => {
           event.preventDefault();
@@ -2904,10 +3187,6 @@ function TopUpModal({
         }}
       >
         <NumberField label={`${t(language, "topUp")} (≤ ${maximum.toLocaleString()})`} value={amount} onChange={setAmount} />
-        <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>{t(language, "cancel")}</button>
-          <button className="primary" disabled={amount <= 0 || amount > maximum}>{t(language, "confirm")}</button>
-        </div>
       </form>
     </Modal>
   );
@@ -2926,48 +3205,6 @@ function LanguageToggle({
       <button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")} type="button">EN</button>
     </div>
   );
-}
-
-function DeviceControls({
-  language,
-  setLanguage,
-  themeScope
-}: {
-  language: Language;
-  setLanguage: (language: Language) => void;
-  themeScope: ThemeScope;
-}) {
-  return (
-    <div className="device-controls">
-      <LanguageToggle language={language} setLanguage={setLanguage} />
-      <ThemeToggle
-        scope={themeScope}
-        groupLabel={t(language, "themeSelection")}
-        lightLabel={t(language, "lightTheme")}
-        darkLabel={t(language, "darkTheme")}
-      />
-    </div>
-  );
-}
-
-function useStored<T>(key: string, initial: T): [T, (value: T) => void] {
-  const [value, setValue] = useState<T>(() => {
-    const stored = localStorage.getItem(key);
-    if (stored === null) return initial;
-    try {
-      return JSON.parse(stored) as T;
-    } catch {
-      return initial;
-    }
-  });
-  const setStored = useCallback(
-    (next: T) => {
-      localStorage.setItem(key, JSON.stringify(next));
-      setValue(next);
-    },
-    [key]
-  );
-  return [value, setStored];
 }
 
 function readRecentAccount(): Pick<Account, "username" | "avatar"> | null {
@@ -3174,6 +3411,11 @@ function errorMessage(language: Language, reason: unknown): string {
     INVALID_ROOM_CONFIG: ["房间配置无效，请检查盲注和买入范围", "Room settings are invalid; check blinds and buy-in limits"],
     INVALID_DENOMINATIONS: ["筹码面值必须是 1–16 个不重复正整数并包含 1", "Chip values must be 1–16 unique positive whole numbers and include 1"],
     INVALID_LANGUAGE: ["不支持该界面语言", "That interface language is not supported"],
+    INVALID_THEME: ["请选择亮色或暗色主题", "Choose the light or dark theme"],
+    INVALID_VOLUME: ["音量必须是 0–100 的整数", "Volume must be a whole number from 0 to 100"],
+    INVALID_ENTER_REQUEST: ["进入请求无效，请重新输入用户名", "The enter request is invalid; enter the username again"],
+    INVALID_REGISTER_REQUEST: ["注册资料无效，请检查后重试", "Registration details are invalid; review them and try again"],
+    REGISTER_FAILED: ["暂时无法注册账户，请重试", "The account could not be registered; try again"],
     NOT_ENOUGH_PLAYERS: ["至少需要两名玩家", "At least two players are required"],
     NOT_ENOUGH_READY_PLAYERS: ["房主之外至少需要一名已准备玩家", "At least one player besides the host must be ready"],
     UNREADY_PLAYERS_REQUIRE_CONFIRMATION: ["请确认未准备成员进入观众席", "Confirm that unready members will spectate"],
@@ -3238,7 +3480,8 @@ function errorMessage(language: Language, reason: unknown): string {
   return `${friendly} · ${code}`;
 }
 
-function playTone(): void {
+function playTone(volume: number): void {
+  if (!Number.isFinite(volume) || volume <= 0) return;
   try {
     const AudioContextClass =
       window.AudioContext ??
@@ -3248,7 +3491,10 @@ function playTone(): void {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     oscillator.frequency.value = 520;
-    gain.gain.setValueAtTime(0.035, context.currentTime);
+    gain.gain.setValueAtTime(
+      0.035 * Math.min(100, volume) / 100,
+      context.currentTime
+    );
     gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.12);
     oscillator.connect(gain).connect(context.destination);
     oscillator.start();
@@ -3259,8 +3505,12 @@ function playTone(): void {
   }
 }
 
+function Root() {
+  return isAdminPath(location.pathname) ? <AdminApp /> : <App />;
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <Root />
   </StrictMode>
 );

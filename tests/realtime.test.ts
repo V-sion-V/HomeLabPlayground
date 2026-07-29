@@ -95,7 +95,7 @@ describe("role projections and realtime concurrency", () => {
       }
     );
     domain.startSeason("Next", 10_000);
-    domain.deleteAccount(alice.id, bob.id);
+    domain.deleteAccounts([alice.id]);
 
     const lobby = domain.lobbyProjection(bob.id);
     const encoded = JSON.stringify(lobby);

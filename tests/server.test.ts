@@ -1,44 +1,138 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { Card } from "@party/contracts";
-import { buildApp, dispatch } from "../apps/server/src/app";
+import { buildApp, dispatch, dispatchAdmin } from "../apps/server/src/app";
 import { initialSnapshot, PlatformDomain } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
 import { createPokerState } from "@party/poker";
 import { defaultRoomConfig, temporaryDatabase } from "@party/test-support";
 
 describe("server", () => {
-  it("starts with a temporary database and enters an account without a password", async () => {
+  it("keeps lookup read-only, registers create-only, and enters only existing accounts", async () => {
     const app = await buildApp({ databasePath: temporaryDatabase() });
     const health = await app.inject({ method: "GET", url: "/healthz" });
     expect(health.statusCode).toBe(200);
-    const response = await app.inject({
+    const lookup = await app.inject({
       method: "POST",
-      url: "/api/enter",
-      payload: { username: "小明", avatar: "🐼" }
+      url: "/api/account/lookup",
+      payload: { username: "  小明  " }
     });
+    expect(lookup.json()).toMatchObject({
+      username: "小明",
+      normalizedUsername: "小明",
+      exists: false,
+      version: 0
+    });
+    const beforeRegistration = await app.inject({
+      method: "GET",
+      url: "/api/admin/state"
+    });
+    expect(beforeRegistration.json().accounts).toEqual([]);
+
+    const response = await registerThroughApi(app, "小明", "🐼", "en", "light");
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.data.account.username).toBe("小明");
+    expect(body.data.account).toMatchObject({
+      language: "en",
+      theme: "light",
+      volume: 100
+    });
     expect(body.data.connectionId).toBeTypeOf("string");
     expect(JSON.stringify(body)).not.toContain("password");
+
+    const collision = await registerThroughApi(
+      app,
+      " 小明 ",
+      "🦊",
+      "zh-CN",
+      "dark"
+    );
+    expect(collision.statusCode).toBe(409);
+    expect(collision.json().code).toBe("USERNAME_TAKEN");
+
+    const entered = await app.inject({
+      method: "POST",
+      url: "/api/enter",
+      payload: {
+        commandId: "enter-existing-xiaoming",
+        username: "小明"
+      }
+    });
+    expect(entered.statusCode).toBe(200);
+    expect(entered.json().data.account).toMatchObject({
+      id: body.data.account.id,
+      language: "en",
+      theme: "light",
+      volume: 100
+    });
+    const invalidProfile = await sendCommand(app, {
+      commandId: "invalid-atomic-profile-save",
+      connectionId: entered.json().data.connectionId,
+      aggregateId: "platform",
+      expectedVersion: entered.json().version,
+      type: "account.profile",
+      payload: {
+        accountId: body.data.account.id,
+        username: "Renamed",
+        avatar: "🦊",
+        language: "zh-CN",
+        theme: "dark",
+        volume: 101
+      }
+    });
+    expect(invalidProfile.statusCode).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/api/account/lookup",
+          payload: { username: "Renamed" }
+        })
+      ).json().exists
+    ).toBe(false);
+    const savedProfile = await sendCommand(app, {
+      commandId: "valid-atomic-profile-save",
+      connectionId: entered.json().data.connectionId,
+      aggregateId: "platform",
+      expectedVersion: entered.json().version,
+      type: "account.profile",
+      payload: {
+        accountId: body.data.account.id,
+        username: "小明",
+        avatar: "🦊",
+        language: "zh-CN",
+        theme: "dark",
+        volume: 0
+      }
+    });
+    expect(savedProfile.statusCode).toBe(200);
+    expect(savedProfile.json().data).toMatchObject({
+      username: "小明",
+      avatar: "🦊",
+      language: "zh-CN",
+      theme: "dark",
+      volume: 0
+    });
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/enter",
+      payload: {
+        commandId: "enter-missing-account",
+        username: "不存在"
+      }
+    });
+    expect(missing.statusCode).toBe(409);
+    expect(missing.json().code).toBe("ACCOUNT_NOT_FOUND");
     await app.close();
   });
 
   it("runs validated room commands, protects private projections, and persists settlement evidence", async () => {
     const databasePath = temporaryDatabase();
     const app = await buildApp({ databasePath });
-    const aliceEnter = await app.inject({
-      method: "POST",
-      url: "/api/enter",
-      payload: { username: "Alice", avatar: "🦊" }
-    });
+    const aliceEnter = await registerThroughApi(app, "Alice", "🦊");
     const alice = aliceEnter.json().data;
-    const bobEnter = await app.inject({
-      method: "POST",
-      url: "/api/enter",
-      payload: { username: "Bob", avatar: "🐼" }
-    });
+    const bobEnter = await registerThroughApi(app, "Bob", "🐼");
     const bob = bobEnter.json().data;
     let version = bobEnter.json().version as number;
 
@@ -736,6 +830,112 @@ describe("server", () => {
     store.close();
   });
 
+  it("deletes an open-room account set atomically, transfers the selected host, and safely closes the last room", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const cara = domain.enterAccount("Cara");
+    domain.acquireLease(alice.id);
+    domain.acquireLease(bob.id);
+    domain.acquireLease(cara.id);
+    const room = domain.createRoom(alice.id, "Admin removal", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.joinRoom(room.id, cara.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    const bobCommitted = room.poker.players.find(
+      (player) => player.accountId === bob.id
+    )!.totalBet;
+    expect(bobCommitted).toBeGreaterThan(0);
+    store.save(state);
+
+    const removeBobEnvelope = {
+      commandId: "admin-remove-active-bob",
+      aggregateId: "platform",
+      expectedVersion: 0,
+      type: "admin.accounts.delete",
+      payload: { accountIds: [bob.id, bob.id] }
+    };
+    const removedBob = dispatchAdmin(store, removeBobEnvelope);
+    expect(removedBob.status).toBe("accepted");
+    expect(removedBob.data).toMatchObject({
+      deletedIds: [bob.id],
+      protectedIds: [],
+      selfDeleted: false
+    });
+    let persisted = store.load();
+    expect(persisted.accounts[bob.id]).toBeUndefined();
+    expect(persisted.leases[bob.id]).toBeUndefined();
+    expect(
+      persisted.rooms[room.id]?.seats.some(
+        (seat) => seat.accountId === bob.id
+      )
+    ).toBe(false);
+    expect(
+      persisted.rooms[room.id]?.poker?.players.find(
+        (player) => player.accountId === bob.id
+      )
+    ).toMatchObject({
+      folded: true,
+      stack: 0,
+      totalBet: bobCommitted
+    });
+    expect(dispatchAdmin(store, removeBobEnvelope).status).toBe("replayed");
+    new PlatformDomain(persisted).validateInvariants();
+
+    const removedHost = dispatchAdmin(store, {
+      commandId: "admin-remove-active-host",
+      aggregateId: "platform",
+      expectedVersion: 1,
+      type: "admin.accounts.delete",
+      payload: { accountIds: [alice.id] }
+    });
+    expect(removedHost.status).toBe("accepted");
+    persisted = store.load();
+    expect(persisted.accounts[alice.id]).toBeUndefined();
+    expect(persisted.rooms[room.id]?.hostAccountId).toBe(cara.id);
+    expect(persisted.rooms[room.id]?.seats.map((seat) => seat.accountId)).toEqual([
+      cara.id
+    ]);
+    new PlatformDomain(persisted).validateInvariants();
+
+    const removedLast = dispatchAdmin(store, {
+      commandId: "admin-remove-final-account",
+      aggregateId: "platform",
+      expectedVersion: 2,
+      type: "admin.accounts.delete",
+      payload: { accountIds: [cara.id] }
+    });
+    expect(removedLast.status).toBe("accepted");
+    persisted = store.load();
+    expect(persisted.accounts).toEqual({});
+    expect(persisted.seasonAssets).toEqual({});
+    expect(persisted.leases).toEqual({});
+    expect(persisted.rooms).toEqual({});
+    expect(
+      persisted.ledger
+        .filter((line) => line.destination === "asset-retirement")
+        .reduce((sum, line) => sum + line.amount, 0)
+    ).toBe(30_000);
+    expect(JSON.stringify(persisted.handResults)).not.toContain(`"${bob.id}"`);
+    expect(JSON.stringify(persisted.handResults)).not.toContain(`"${alice.id}"`);
+    expect(JSON.stringify(persisted.handResults)).not.toContain(`"${cara.id}"`);
+    new PlatformDomain(persisted).validateInvariants();
+    store.close();
+  });
+
   it("uses the new seat buy-in after a completed-hand player leaves and rejoins", () => {
     const store = new PlatformStore(temporaryDatabase());
     const state = initialSnapshot(1_000);
@@ -830,43 +1030,36 @@ describe("server", () => {
     store.close();
   });
 
-  it("validates and replays account deletion while invalidating the deleted lease", async () => {
+  it("validates and replays anonymous account deletion while invalidating the deleted lease", async () => {
     const databasePath = temporaryDatabase();
     const app = await buildApp({ databasePath });
-    const aliceEnter = await app.inject({
-      method: "POST",
-      url: "/api/enter",
-      payload: { username: "Alice", avatar: "🦊" }
-    });
+    const aliceEnter = await registerThroughApi(app, "Alice", "🦊");
     const alice = aliceEnter.json().data;
-    const bobEnter = await app.inject({
-      method: "POST",
-      url: "/api/enter",
-      payload: { username: "Bob", avatar: "🐼" }
-    });
+    const bobEnter = await registerThroughApi(app, "Bob", "🐼");
     const bob = bobEnter.json().data;
     const version = bobEnter.json().version as number;
     const payload = {
       commandId: "delete-account-alice",
-      connectionId: bob.connectionId,
       aggregateId: "platform",
       expectedVersion: version,
-      type: "account.delete",
+      type: "admin.accounts.delete",
       payload: {
-        accountId: bob.account.id,
-        targetAccountId: alice.account.id
+        accountIds: [alice.account.id]
       }
     };
 
-    const deleted = await sendCommand(app, payload);
+    const rejectedPlayerCommand = await sendCommand(app, payload);
+    expect(rejectedPlayerCommand.statusCode).toBe(400);
+
+    const deleted = await sendAdminCommand(app, payload);
     expect(deleted.statusCode).toBe(200);
     expect(deleted.json().data).toMatchObject({
       deletedIds: [alice.account.id],
       selfDeleted: false
     });
-    const replayed = await sendCommand(app, payload);
+    const replayed = await sendAdminCommand(app, payload);
     expect(replayed.json().status).toBe("replayed");
-    const stale = await sendCommand(app, {
+    const stale = await sendAdminCommand(app, {
       ...payload,
       commandId: "delete-account-alice-again"
     });
@@ -888,6 +1081,109 @@ describe("server", () => {
       bob.account.id
     ]);
     expect(JSON.stringify(lobby.json())).not.toContain("retiredIdentities");
+    const adminState = await app.inject({
+      method: "GET",
+      url: "/api/admin/state"
+    });
+    expect(adminState.json().accounts.map((account: { id: string }) => account.id)).toEqual([
+      bob.account.id
+    ]);
+    expect(JSON.stringify(adminState.json())).not.toContain("connectionId");
+    expect(JSON.stringify(adminState.json())).not.toContain("ledger");
+    expect(JSON.stringify(adminState.json())).not.toContain("holeCards");
+    await app.close();
+  });
+
+  it("keeps global settings and season lifecycle behind the versioned anonymous admin boundary", async () => {
+    const app = await buildApp({ databasePath: temporaryDatabase() });
+    const settingsCommand = {
+      commandId: "admin-save-global-settings",
+      aggregateId: "platform",
+      expectedVersion: 0,
+      type: "admin.settings.update",
+      payload: {
+        settings: {
+          defaultLanguage: "en",
+          defaultTheme: "light",
+          defaultHostTransferTimeoutSeconds: 45,
+          poker: {
+            smallBlind: 25,
+            bigBlind: 50,
+            minBuyIn: 1_000,
+            maxBuyIn: 12_000,
+            suitColorPreset: "high-contrast",
+            denominations: [1, 5, 25, 100]
+          }
+        }
+      }
+    };
+
+    expect((await sendCommand(app, settingsCommand)).statusCode).toBe(400);
+    const saved = await sendAdminCommand(app, settingsCommand);
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().data).toMatchObject({
+      defaultLanguage: "en",
+      defaultTheme: "light",
+      defaultHostTransferTimeoutSeconds: 45
+    });
+    expect((await sendAdminCommand(app, settingsCommand)).json().status).toBe(
+      "replayed"
+    );
+
+    const started = await sendAdminCommand(app, {
+      commandId: "admin-start-next-season",
+      aggregateId: "platform",
+      expectedVersion: 1,
+      type: "admin.season.start",
+      payload: { name: "Season 2", baseScore: 5_000 }
+    });
+    expect(started.statusCode).toBe(200);
+    const stateAfterStart = (
+      await app.inject({ method: "GET", url: "/api/admin/state" })
+    ).json();
+    expect(stateAfterStart.currentSeason).toMatchObject({
+      name: "Season 2",
+      baseScore: 5_000,
+      status: "current"
+    });
+    expect(stateAfterStart.historicalSeasons).toHaveLength(1);
+    const historicalSeasonId = stateAfterStart.historicalSeasons[0].id as string;
+
+    const currentRejected = await sendAdminCommand(app, {
+      commandId: "admin-delete-current-season",
+      aggregateId: "platform",
+      expectedVersion: 2,
+      type: "admin.seasons.delete",
+      payload: { seasonIds: [stateAfterStart.currentSeason.id] }
+    });
+    expect(currentRejected.statusCode).toBe(409);
+    expect(currentRejected.json().code).toBe("CURRENT_SEASON_PROTECTED");
+    const emptyRejected = await sendAdminCommand(app, {
+      commandId: "admin-delete-empty-seasons",
+      aggregateId: "platform",
+      expectedVersion: 2,
+      type: "admin.seasons.delete",
+      payload: { seasonIds: [] }
+    });
+    expect(emptyRejected.statusCode).toBe(400);
+
+    const deleted = await sendAdminCommand(app, {
+      commandId: "admin-delete-history",
+      aggregateId: "platform",
+      expectedVersion: 2,
+      type: "admin.seasons.delete",
+      payload: { seasonIds: [historicalSeasonId] }
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json().data).toMatchObject({
+      deletedIds: [historicalSeasonId],
+      protectedIds: [stateAfterStart.currentSeason.id]
+    });
+    const finalState = (
+      await app.inject({ method: "GET", url: "/api/admin/state" })
+    ).json();
+    expect(finalState.version).toBe(3);
+    expect(finalState.historicalSeasons).toEqual([]);
     await app.close();
   });
 
@@ -999,6 +1295,40 @@ async function sendCommand(app: FastifyInstance, payload: Record<string, unknown
     method: "POST",
     url: "/api/command",
     payload
+  });
+}
+
+async function sendAdminCommand(
+  app: FastifyInstance,
+  payload: Record<string, unknown>
+) {
+  return await app.inject({
+    method: "POST",
+    url: "/api/admin/command",
+    payload
+  });
+}
+
+let registrationSequence = 0;
+
+async function registerThroughApi(
+  app: FastifyInstance,
+  username: string,
+  avatar: string,
+  language: "zh-CN" | "en" = "zh-CN",
+  theme: "light" | "dark" = "dark"
+) {
+  registrationSequence += 1;
+  return await app.inject({
+    method: "POST",
+    url: "/api/register",
+    payload: {
+      commandId: `register-account-${registrationSequence}`,
+      username,
+      avatar,
+      language,
+      theme
+    }
   });
 }
 

@@ -4,6 +4,8 @@ export * from "./product-config";
 
 export const languages = ["zh-CN", "en"] as const;
 export type Language = (typeof languages)[number];
+export const themeModes = ["light", "dark"] as const;
+export type ThemeMode = (typeof themeModes)[number];
 export type RoomMode = "chips-only" | "chips-and-cards";
 export type SuitColorPreset = "standard" | "high-contrast";
 export type HandCategory =
@@ -34,6 +36,9 @@ export interface Account {
   username: string;
   normalizedUsername: string;
   avatar: string;
+  language: Language;
+  theme: ThemeMode;
+  volume: number;
   updatedAt: number;
 }
 
@@ -225,6 +230,13 @@ export interface AccountManagementSummary {
   avatar: string;
 }
 
+export interface UsernameLookupResult {
+  version: number;
+  normalizedUsername: string;
+  username: string;
+  exists: boolean;
+}
+
 export interface PlatformDataDeletionResult {
   kind: "account" | "accounts" | "season" | "seasons";
   deletedIds: string[];
@@ -235,11 +247,20 @@ export interface PlatformDataDeletionResult {
 
 export interface GlobalSettings {
   defaultLanguage: Language;
+  defaultTheme: ThemeMode;
   defaultHostTransferTimeoutSeconds: number;
   poker: Omit<RoomConfig, "mode" | "hostTransferTimeoutSeconds"> & {
     suitColorPreset: SuitColorPreset;
     denominations: number[];
   };
+}
+
+export interface AdminProjection {
+  version: number;
+  accounts: AccountManagementSummary[];
+  currentSeason: Season;
+  historicalSeasons: Season[];
+  settings: GlobalSettings;
 }
 
 export interface PlatformSnapshot {

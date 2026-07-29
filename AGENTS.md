@@ -33,7 +33,7 @@
 
 ## 2. 当前开发阶段
 
-阶段快照日期：`2026-07-29`。当前分支为 `main`；本快照已包含 `platform-usability-and-data-management` change-1 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
+阶段快照日期：`2026-07-30`。当前分支为 `main`；本快照已包含 `admin-account-preferences-and-ui` initial 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
 
 ### 已完成
 
@@ -45,11 +45,13 @@
 - 真实 iStoreOS 已通过新目录首次接管、受管更新、零上传 no-op 和确定健康失败自动回滚。`deployment-automation` initial 收口时服务器运行受管 Git `b9490b7f8137af2982bf494b1bc1c0005089f656` 对应服务，`home-table` running/healthy、非 root、外部 `/healthz` 200，固定卷与唯一备份安全且无部署临时状态；后续正式发布状态以最近一次自动化部署和只读检查为准。
 - `poker-room-experience-upgrade` initial 已完成并冻结：房间成员/准备、面值、头像、主题、设置和移动牌桌体验已交付，全部本地、生产浏览器、容量和远端隔离 Docker 门禁通过。
 - `platform-usability-and-data-management` initial 与 change-1 已完成并冻结：当前/未来赛季排行榜按真实参赛结果筛选，平台提供账户与历史赛季逐个/批量管理、资产退役和历史匿名化；扑克 complete 退出重进、移动下注、顶部控件、声音和友好错误体验已修复。change-1 进一步保证 complete 退出者立即从其他玩家和公共大屏的当前结算列表消失，并在牌桌/结算刷新或恢复时初始化正确扑克色板；strict red-first、lint、typecheck、platform 26/26、realtime 4/4、Chromium/WebKit 6/6、生产 build/静态资源和差异门禁通过。当前权威快照为 `docs/requirements/platform-usability-and-data-management/effective-requirements.md`。
+- `admin-account-preferences-and-ui` initial 已完成并冻结：平台新增匿名直达管理员设置、账户/历史赛季集合管理、开放房间账户安全删除、两步登录、服务器权威语言/主题/音量偏好，以及固定容器、共享 SVG 和 portal 头像菜单。lint、typecheck、platform/server 29/29、poker 15/15、realtime 4/4、Chromium/WebKit 6/6、容量 4/4、生产构建/静态资源和真实 iStoreOS 隔离容器/浏览器门禁均通过；当前权威快照为 `docs/requirements/admin-account-preferences-and-ui/effective-requirements.md`。
 
 ### 尚未完成或待执行
 
-- 当前没有待恢复的 `platform-usability-and-data-management` initial 或 change-1 任务。initial 隔离 smoke 未切换正式服务；后续曾正式发布 `6361b5844e46acf562d58859b13ae5d11952db9f`，本次 change-1 尚未自动部署。后续正式发布状态以受支持部署入口的实际结果和只读服务器检查为准。
+- 当前没有待恢复的 `platform-usability-and-data-management` initial 或 change-1 任务。2026-07-30 只读检查确认正式 `home-table` 运行 healthy 的 Git `b131a4c35ec952180beed575e274b9cb27cbccd8` 镜像；后续正式发布状态以受支持部署入口的实际结果和只读服务器检查为准。
 - 当前没有待恢复的 `deployment-automation` initial 任务。其三个 phase plan/result、完成状态、`change-0.md` 与有效需求已经冻结；未来部署自动化需求必须新建连续的 `change-N` 运行。
+- 当前没有待恢复的 `admin-account-preferences-and-ui` initial 任务。其远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，没有切换正式服务、固定卷、发布目录或唯一备份；正式发布仍需按受支持部署入口另行执行并以只读服务器事实为准。
 
 ### 工作流文档规则
 

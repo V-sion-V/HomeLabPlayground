@@ -1,29 +1,23 @@
 import {
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 import {
   productConfig,
+  type ThemeMode,
   type ThemePalette
 } from "@party/contracts";
 
-export type ThemeMode = "light" | "dark";
+export type { ThemeMode } from "@party/contracts";
 export type ThemeScope = "main" | "poker";
-
-function systemTheme(): ThemeMode {
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
-}
-
-export function readStoredTheme(): ThemeMode {
-  const stored = localStorage.getItem("party-theme");
-  return stored === "light" || stored === "dark" ? stored : systemTheme();
-}
 
 const paletteVariables: Record<keyof ThemePalette, string> = {
   canvas: "--color-canvas",
@@ -86,27 +80,18 @@ export function applyProductTheme(scope: ThemeScope, mode: ThemeMode): void {
 }
 
 export function ThemeToggle({
-  scope,
+  mode,
+  onChange,
   lightLabel,
   darkLabel,
   groupLabel
 }: {
-  scope: ThemeScope;
+  mode: ThemeMode;
+  onChange: (mode: ThemeMode) => void;
   lightLabel: string;
   darkLabel: string;
   groupLabel: string;
 }) {
-  const [mode, setMode] = useState<ThemeMode>(readStoredTheme);
-
-  useEffect(() => {
-    applyProductTheme(scope, mode);
-  }, [mode, scope]);
-
-  const select = (next: ThemeMode) => {
-    localStorage.setItem("party-theme", next);
-    setMode(next);
-  };
-
   return (
     <div className="theme-toggle" aria-label={groupLabel}>
       <button
@@ -114,7 +99,7 @@ export function ThemeToggle({
         className={mode === "light" ? "active" : ""}
         aria-label={lightLabel}
         aria-pressed={mode === "light"}
-        onClick={() => select("light")}
+        onClick={() => onChange("light")}
       >
         ☀
       </button>
@@ -123,7 +108,7 @@ export function ThemeToggle({
         className={mode === "dark" ? "active" : ""}
         aria-label={darkLabel}
         aria-pressed={mode === "dark"}
-        onClick={() => select("dark")}
+        onClick={() => onChange("dark")}
       >
         ◐
       </button>
@@ -225,7 +210,7 @@ export function SelectField({
         }}
       >
         <span id={`${id}-value`}>{options[selectedIndex]?.label}</span>
-        <span aria-hidden="true">⌄</span>
+        <ArrowIcon direction="down" />
       </button>
       {open && (
         <div
@@ -286,7 +271,7 @@ export function CollapsibleCard({
           <small>{summary}</small>
         </span>
         <span className="settings-card-indicator" aria-hidden="true">
-          {expanded ? "−" : "+"}
+          <ArrowIcon direction={expanded ? "down" : "left"} />
         </span>
       </button>
       <div id={regionId} className="settings-card-body" hidden={!expanded}>
@@ -324,7 +309,7 @@ export function ConfirmDialog({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onCancel]);
 
-  return (
+  return createPortal(
     <div className="modal-backdrop confirm-backdrop" onMouseDown={onCancel}>
       <section
         className="modal narrow confirm-dialog"
@@ -337,25 +322,207 @@ export function ConfirmDialog({
         <div className="modal-title">
           <h2 id="confirm-dialog-title">{title}</h2>
         </div>
-        <p id="confirm-dialog-description">{description}</p>
-        <div className="modal-actions">
-          <button
-            ref={cancelRef}
-            type="button"
-            className="secondary"
-            onClick={onCancel}
-          >
-            {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className={danger ? "danger" : "primary"}
-            onClick={onConfirm}
-          >
-            {confirmLabel}
-          </button>
+        <div className="modal-scroll-region">
+          <p id="confirm-dialog-description">{description}</p>
+        </div>
+        <div className="modal-footer">
+          <div className="modal-actions">
+            <button
+              ref={cancelRef}
+              type="button"
+              className="secondary"
+              onClick={onCancel}
+            >
+              {cancelLabel}
+            </button>
+            <button
+              type="button"
+              className={danger ? "danger" : "primary"}
+              onClick={onConfirm}
+            >
+              {confirmLabel}
+            </button>
+          </div>
         </div>
       </section>
-    </div>
+    </div>,
+    document.body
+  );
+}
+
+export function ArrowIcon({
+  direction,
+  className = ""
+}: {
+  direction: "left" | "down" | "right";
+  className?: string;
+}) {
+  const path =
+    direction === "left"
+      ? "M14.5 5 7.5 12l7 7"
+      : direction === "right"
+        ? "m9.5 5 7 7-7 7"
+        : "m5 9.5 7 7 7-7";
+  return (
+    <svg
+      aria-hidden="true"
+      className={`arrow-icon ${className}`.trim()}
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <path
+        d={path}
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function FixedPanel({
+  as = "section",
+  className = "",
+  header,
+  footer,
+  children,
+  ...landmarkProps
+}: {
+  as?: "main" | "section";
+  className?: string;
+  header: ReactNode;
+  footer?: ReactNode;
+  children: ReactNode;
+  role?: string;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+}) {
+  const Component = as;
+  return (
+    <Component
+      className={`fixed-panel ${className}`.trim()}
+      {...landmarkProps}
+    >
+      <div className="fixed-panel-header">{header}</div>
+      <div className="fixed-panel-scroll">{children}</div>
+      {footer !== undefined && (
+        <div className="fixed-panel-footer">{footer}</div>
+      )}
+    </Component>
+  );
+}
+
+export function AnchoredMenu({
+  anchor,
+  open,
+  label,
+  onClose,
+  children
+}: {
+  anchor: HTMLElement | null;
+  open: boolean;
+  label: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const lastAnchorRef = useRef<HTMLElement | null>(null);
+  const [style, setStyle] = useState<CSSProperties>({
+    visibility: "hidden"
+  });
+
+  const position = useCallback(() => {
+    const menu = menuRef.current;
+    if (!anchor || !menu) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const gutter = 8;
+    const width = Math.min(menuRect.width, window.innerWidth - gutter * 2);
+    const left = Math.max(
+      gutter,
+      Math.min(
+        anchorRect.left + anchorRect.width / 2 - width / 2,
+        window.innerWidth - width - gutter
+      )
+    );
+    const below = anchorRect.bottom + gutter;
+    const top =
+      below + menuRect.height <= window.innerHeight - gutter
+        ? below
+        : Math.max(gutter, anchorRect.top - menuRect.height - gutter);
+    setStyle({
+      visibility: "visible",
+      left,
+      top,
+      width,
+      maxHeight: Math.max(96, window.innerHeight - top - gutter)
+    });
+  }, [anchor]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    lastAnchorRef.current = anchor;
+    position();
+    const frame = requestAnimationFrame(() => {
+      position();
+      menuRef.current
+        ?.querySelector<HTMLButtonElement>(
+          '[role="menuitem"]:not(:disabled)'
+        )
+        ?.focus();
+    });
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [anchor, open, position]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !menuRef.current?.contains(target) &&
+        !anchor?.contains(target)
+      ) {
+        onClose();
+      }
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [anchor, onClose, open]);
+
+  useEffect(() => {
+    if (!open && lastAnchorRef.current?.isConnected) {
+      lastAnchorRef.current.focus();
+    }
+  }, [open]);
+
+  if (!open || !anchor) return null;
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="anchored-menu"
+      role="menu"
+      aria-label={label}
+      style={style}
+    >
+      {children}
+    </div>,
+    document.body
   );
 }

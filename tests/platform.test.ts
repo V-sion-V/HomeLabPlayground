@@ -6,11 +6,31 @@ import { createPokerState } from "@party/poker";
 import { command, defaultRoomConfig, temporaryDatabase } from "@party/test-support";
 
 describe("platform domain", () => {
-  it("normalizes accounts, issues the season asset once, and replaces leases", () => {
+  it("splits username lookup, existing entry, and create-only registration", () => {
     const domain = new PlatformDomain(initialSnapshot());
-    const first = domain.enterAccount("  Alice  ", "🦊");
-    const same = domain.enterAccount("alice", "🐼");
-    expect(same.id).toBe(first.id);
+    expect(domain.lookupUsername("  Alice  ")).toMatchObject({
+      username: "Alice",
+      normalizedUsername: "alice",
+      exists: false,
+      version: 0
+    });
+    expect(Object.keys(domain.state.accounts)).toHaveLength(0);
+    expect(() => domain.enterExistingAccount("Alice")).toThrowError(
+      "ACCOUNT_NOT_FOUND"
+    );
+    const first = domain.registerAccount("  Alice  ", "🦊", "en", "light");
+    expect(first).toMatchObject({
+      username: "Alice",
+      normalizedUsername: "alice",
+      language: "en",
+      theme: "light",
+      volume: 100
+    });
+    expect(domain.lookupUsername("alice").exists).toBe(true);
+    expect(domain.enterExistingAccount("ALICE").id).toBe(first.id);
+    expect(() =>
+      domain.registerAccount("alice", "🐼", "zh-CN", "dark")
+    ).toThrowError("USERNAME_TAKEN");
     expect(domain.state.seasonAssets[first.id]?.score).toBe(10_000);
     expect(domain.state.ledger).toHaveLength(1);
     const oldLease = domain.acquireLease(first.id);
@@ -124,7 +144,7 @@ describe("platform domain", () => {
       bob.id
     ]);
 
-    const result = domain.deleteAccount(alice.id, bob.id);
+    const result = domain.deleteAccounts([alice.id, alice.id]);
     expect(result).toMatchObject({
       deletedIds: [alice.id],
       selfDeleted: false,
@@ -159,13 +179,13 @@ describe("platform domain", () => {
     expect(domain.currentLeaderboard().some((entry) =>
       entry.accountId === replacement.id
     )).toBe(false);
-    expect(
-      domain.deleteOtherAccounts(bob.id)
-    ).toMatchObject({
-      protectedIds: [bob.id],
-      selfDeleted: false
+    expect(domain.deleteAccounts([replacement.id, bob.id])).toMatchObject({
+      deletedIds: [bob.id, replacement.id].sort(),
+      protectedIds: [],
+      selfDeleted: false,
+      noOp: false
     });
-    expect(Object.keys(domain.state.accounts)).toEqual([bob.id]);
+    expect(Object.keys(domain.state.accounts)).toEqual([]);
     domain.validateInvariants();
   });
 
@@ -181,9 +201,9 @@ describe("platform domain", () => {
     const currentSeasonId = domain.currentSeason.id;
 
     expect(() =>
-      domain.deleteHistoricalSeason(currentSeasonId, alice.id)
+      domain.deleteHistoricalSeasons([currentSeasonId])
     ).toThrowError("CURRENT_SEASON_PROTECTED");
-    domain.deleteHistoricalSeason(firstSeasonId, alice.id);
+    domain.deleteHistoricalSeasons([firstSeasonId]);
     expect(domain.state.seasons.some((season) => season.id === firstSeasonId)).toBe(
       false
     );
@@ -195,12 +215,40 @@ describe("platform domain", () => {
     ).toBe(false);
     expect(domain.currentSeason.id).toBe(currentSeasonId);
 
-    const deleted = domain.deleteAllHistoricalSeasons(alice.id);
+    const deleted = domain.deleteHistoricalSeasons([secondSeasonId]);
     expect(deleted.deletedIds).toEqual([secondSeasonId]);
+    expect(deleted.protectedIds).toEqual([currentSeasonId]);
     expect(domain.state.seasons).toHaveLength(1);
     expect(domain.state.historicalSeasons).toEqual([]);
-    expect(domain.deleteAllHistoricalSeasons(alice.id).noOp).toBe(true);
+    expect(() => domain.deleteHistoricalSeasons([])).toThrowError(
+      "EMPTY_SELECTION"
+    );
     domain.validateInvariants();
+  });
+
+  it("keeps account preferences out of administrative and public account summaries", () => {
+    const domain = new PlatformDomain(initialSnapshot());
+    const alice = domain.registerAccount("Alice", "🦊", "en", "light");
+    domain.updateProfile(alice.id, "Alice", "🦊", "en", "light", 37);
+
+    expect(domain.adminProjection()).toMatchObject({
+      version: 0,
+      accounts: [{ id: alice.id, username: "Alice", avatar: "🦊" }],
+      settings: {
+        defaultLanguage: "zh-CN",
+        defaultTheme: "dark"
+      }
+    });
+    expect(Object.keys(domain.adminProjection().accounts[0]!).sort()).toEqual([
+      "avatar",
+      "id",
+      "username"
+    ]);
+    expect(Object.keys(domain.lobbyProjection().accounts[0]!).sort()).toEqual([
+      "avatar",
+      "id",
+      "username"
+    ]);
   });
 
   it("transfers a disconnected host after the durable deadline and closes an empty-online room", () => {
@@ -334,6 +382,21 @@ describe("platform domain", () => {
     expect(() => domain.updateProfile(alice.id, "Alice", "🙂")).toThrowError(
       "INVALID_AVATAR"
     );
+    expect(() =>
+      domain.updateProfile(alice.id, "Alice", "🦊", "en", "light", 50.5)
+    ).toThrowError("INVALID_VOLUME");
+    expect(domain.state.accounts[alice.id]).toMatchObject({
+      username: "Alice",
+      language: "zh-CN",
+      theme: "dark",
+      volume: 100
+    });
+    domain.updateProfile(alice.id, "Alice", "🦊", "en", "light", 0);
+    expect(domain.state.accounts[alice.id]).toMatchObject({
+      language: "en",
+      theme: "light",
+      volume: 0
+    });
     const room = domain.createRoom(alice.id, "Snapshots", defaultRoomConfig);
     domain.joinRoom(room.id, alice.id, 2_000);
     domain.joinRoom(room.id, bob.id, 2_000);
@@ -562,6 +625,8 @@ describe("SQLite command boundary", () => {
     const domain = new PlatformDomain(state, () => 1_000);
     const alice = domain.enterAccount("Alice");
     const bob = domain.enterAccount("Bob");
+    const aliceLease = domain.acquireLease(alice.id);
+    domain.acquireLease(bob.id);
     const room = domain.createRoom(alice.id, "Restart", defaultRoomConfig);
     domain.joinRoom(room.id, alice.id, 2_000);
     domain.joinRoom(room.id, bob.id, 2_000);
@@ -581,6 +646,30 @@ describe("SQLite command boundary", () => {
     room.poker.advanceDeadline = 9_000;
     domain.recordHandResult(room.id, 1, "chips-only", [{ accountId: alice.id, amount: 50 }]);
     state.accounts[alice.id]!.avatar = "legacy-avatar";
+    state.accounts[bob.id]!.language = "en";
+    state.accounts[bob.id]!.theme = "light";
+    state.accounts[bob.id]!.volume = 42;
+    state.settings.defaultLanguage = "en";
+    delete (
+      state.settings as {
+        defaultTheme?: string;
+      }
+    ).defaultTheme;
+    delete (
+      state.accounts[alice.id] as {
+        language?: string;
+      }
+    ).language;
+    delete (
+      state.accounts[alice.id] as {
+        theme?: string;
+      }
+    ).theme;
+    delete (
+      state.accounts[alice.id] as {
+        volume?: number;
+      }
+    ).volume;
     state.historicalSeasons.push({
       season: {
         id: "historical-season",
@@ -653,12 +742,27 @@ describe("SQLite command boundary", () => {
     expect(recovered.version).toBe(1);
     expect(recovered.rooms[room.id]?.createdAt).toBe(0);
     expect(recovered.rooms[room.id]?.seats.every((seat) => !seat.connected)).toBe(true);
+    expect(recovered.leases).toEqual({});
+    expect(() =>
+      new PlatformDomain(recovered).assertLease(alice.id, aliceLease)
+    ).toThrowError("STALE_CONNECTION");
     expect(recovered.rooms[room.id]?.hostDisconnectDeadline).toBeTypeOf("number");
     expect(recovered.handResults[0]?.outcome).toBe("settled");
     expect(recovered.handResults[0]?.participantAccountIds).toEqual([alice.id]);
     expect(recovered.rooms[room.id]?.seats[0]?.buyIn).toBe(2_000);
     expect(recovered.rooms[room.id]?.seats[0]?.frozenLeaderboardScore).toBe(10_000);
     expect(recovered.settings.poker.suitColorPreset).toBe("standard");
+    expect(recovered.settings.defaultTheme).toBe("dark");
+    expect(recovered.accounts[alice.id]).toMatchObject({
+      language: "en",
+      theme: "dark",
+      volume: 100
+    });
+    expect(recovered.accounts[bob.id]).toMatchObject({
+      language: "en",
+      theme: "light",
+      volume: 42
+    });
     expect(recovered.settings.poker.denominations).toEqual(DEFAULT_DENOMINATIONS);
     expect(recovered.rooms[room.id]?.poker?.denominations).toEqual(
       DEFAULT_DENOMINATIONS
