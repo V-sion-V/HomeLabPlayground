@@ -3,7 +3,13 @@ import { DEFAULT_DENOMINATIONS, fallbackAvatar } from "@party/contracts";
 import { PlatformDomain, initialSnapshot } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
 import { createPokerState } from "@party/poker";
-import { command, defaultRoomConfig, temporaryDatabase } from "@party/test-support";
+import {
+  command,
+  defaultRoomConfig,
+  requirePokerProjection,
+  requirePokerRoom,
+  temporaryDatabase
+} from "@party/test-support";
 
 describe("platform domain", () => {
   it("splits username lookup, existing entry, and create-only registration", () => {
@@ -89,6 +95,84 @@ describe("platform domain", () => {
     expect(domain.currentSeason.name).toBe("Summer");
     expect(domain.state.seasonAssets[alice.id]?.score).toBe(20_000);
     expect(domain.state.historicalSeasons[0]?.entries[0]?.username).toBe("Alice");
+  });
+
+  it("supports signed season scores and poker overdraft while keeping game assets nonnegative", () => {
+    const domain = new PlatformDomain(initialSnapshot(), () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    domain.startSeason("Debt season", -100);
+    domain.recordHandResult(
+      "signed-result",
+      1,
+      "chips-only",
+      [],
+      "settled",
+      [alice.id, bob.id]
+    );
+    expect(
+      domain.currentLeaderboard().map(({ username, score }) => ({
+        username,
+        score
+      }))
+    ).toEqual([
+      { username: "Alice", score: -100 },
+      { username: "Bob", score: -100 }
+    ]);
+
+    const room = domain.createRoom(alice.id, "Overdraft", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    expect(domain.state.seasonAssets[alice.id]?.score).toBe(-2_100);
+    expect(room.seats[0]?.tableChips).toBe(2_000);
+    domain.topUp(room.id, alice.id, 1_000);
+    expect(domain.state.seasonAssets[alice.id]?.score).toBe(-3_100);
+    expect(room.seats[0]?.tableChips).toBe(3_000);
+    domain.validateInvariants();
+
+    domain.closeRoom(room.id);
+    expect(domain.state.seasonAssets[alice.id]?.score).toBe(-100);
+    domain.deleteAccounts([alice.id]);
+    expect(
+      domain.state.ledger.some(
+        (line) =>
+          line.accountId === alice.id &&
+          line.source === "liability-retirement" &&
+          line.destination === `account:${alice.id}` &&
+          line.amount === 100
+      )
+    ).toBe(true);
+    domain.validateInvariants();
+    expect(() =>
+      domain.startSeason("Unsafe", Number.MAX_SAFE_INTEGER + 1)
+    ).toThrowError("INVALID_BASE_SCORE");
+  });
+
+  it("rolls back a command whose signed aggregate would overflow the safe-integer range", () => {
+    const store = new PlatformStore(temporaryDatabase());
+    const season = store.execute(
+      command(0, "test.start-season", {}, "platform"),
+      (domain) => domain.startSeason("Maximum", Number.MAX_SAFE_INTEGER)
+    );
+    expect(season.status).toBe("accepted");
+    const first = store.execute(
+      command(season.version, "test.register-first", {}, "platform"),
+      (domain) =>
+        domain.registerAccount("Alice", "🦊", "zh-CN", "dark")
+    );
+    expect(first.status).toBe("accepted");
+    const before = structuredClone(store.load());
+    const overflow = store.execute(
+      command(first.version, "test.register-second", {}, "platform"),
+      (domain) =>
+        domain.registerAccount("Bob", "🐼", "zh-CN", "dark")
+    );
+    expect(overflow).toMatchObject({
+      status: "rejected",
+      code: "SAFE_INTEGER_OVERFLOW",
+      version: first.version
+    });
+    expect(store.load()).toEqual(before);
+    store.close();
   });
 
   it("derives current and archived leaderboards only from valid participation facts", () => {
@@ -421,15 +505,17 @@ describe("platform domain", () => {
       }
     });
     expect(domain.state.settings.poker.denominations).toEqual([1, 5, 100]);
-    expect(domain.projectRoom(room.id, { display: true }).effectiveDenominations).toEqual(
-      DEFAULT_DENOMINATIONS
-    );
+    expect(
+      requirePokerProjection(
+        domain.projectRoom(room.id, { display: true })
+      ).effectiveDenominations
+    ).toEqual(DEFAULT_DENOMINATIONS);
     room.poker.phase = "complete";
-    expect(domain.projectRoom(room.id, { display: true }).effectiveDenominations).toEqual([
-      1,
-      5,
-      100
-    ]);
+    expect(
+      requirePokerProjection(
+        domain.projectRoom(room.id, { display: true })
+      ).effectiveDenominations
+    ).toEqual([1, 5, 100]);
     expect(() =>
       domain.updateSettings({
         ...domain.state.settings,
@@ -462,7 +548,9 @@ describe("platform domain", () => {
     });
 
     domain.joinRoom(room.id, cara.id, 2_000);
-    const projection = domain.projectRoom(room.id, { accountId: cara.id });
+    const projection = requirePokerProjection(
+      domain.projectRoom(room.id, { accountId: cara.id })
+    );
     expect(projection.viewerRole).toBe("spectator");
     expect(projection.seats.find((seat) => seat.accountId === cara.id)?.role).toBe(
       "spectator"
@@ -542,7 +630,9 @@ describe("platform domain", () => {
       bob.id
     ]);
 
-    const afterLeave = domain.projectRoom(room.id, { accountId: alice.id });
+    const afterLeave = requirePokerProjection(
+      domain.projectRoom(room.id, { accountId: alice.id })
+    );
     expect(afterLeave.lastResult?.participantAccountIds).toEqual([alice.id]);
     expect(afterLeave.lastResult?.payouts.map((payout) => payout.accountId)).toEqual([
       alice.id
@@ -555,7 +645,9 @@ describe("platform domain", () => {
     ]);
 
     domain.joinRoom(room.id, bob.id, 3_000);
-    const afterRejoin = domain.projectRoom(room.id, { accountId: alice.id });
+    const afterRejoin = requirePokerProjection(
+      domain.projectRoom(room.id, { accountId: alice.id })
+    );
     expect(afterRejoin.seats.find((seat) => seat.accountId === bob.id)).toMatchObject({
       tableChips: 3_000,
       role: "member"
@@ -739,6 +831,7 @@ describe("SQLite command boundary", () => {
     store.save(state);
 
     const recovered = store.recoverAfterRestart();
+    const recoveredRoom = requirePokerRoom(recovered.rooms[room.id]);
     expect(recovered.version).toBe(1);
     expect(recovered.rooms[room.id]?.createdAt).toBe(0);
     expect(recovered.rooms[room.id]?.seats.every((seat) => !seat.connected)).toBe(true);
@@ -749,8 +842,8 @@ describe("SQLite command boundary", () => {
     expect(recovered.rooms[room.id]?.hostDisconnectDeadline).toBeTypeOf("number");
     expect(recovered.handResults[0]?.outcome).toBe("settled");
     expect(recovered.handResults[0]?.participantAccountIds).toEqual([alice.id]);
-    expect(recovered.rooms[room.id]?.seats[0]?.buyIn).toBe(2_000);
-    expect(recovered.rooms[room.id]?.seats[0]?.frozenLeaderboardScore).toBe(10_000);
+    expect(recoveredRoom.seats[0]?.buyIn).toBe(2_000);
+    expect(recoveredRoom.seats[0]?.frozenLeaderboardScore).toBe(10_000);
     expect(recovered.settings.poker.suitColorPreset).toBe("standard");
     expect(recovered.settings.defaultTheme).toBe("dark");
     expect(recovered.accounts[alice.id]).toMatchObject({
@@ -764,14 +857,14 @@ describe("SQLite command boundary", () => {
       volume: 42
     });
     expect(recovered.settings.poker.denominations).toEqual(DEFAULT_DENOMINATIONS);
-    expect(recovered.rooms[room.id]?.poker?.denominations).toEqual(
+    expect(recoveredRoom.poker?.denominations).toEqual(
       DEFAULT_DENOMINATIONS
     );
-    expect(recovered.rooms[room.id]?.poker?.departedAccountIds).toEqual([]);
+    expect(recoveredRoom.poker?.departedAccountIds).toEqual([]);
     expect(recovered.retiredIdentities).toEqual({});
     expect(recovered.rooms[room.id]?.waitingReadyAccountIds).toEqual([]);
-    expect(recovered.rooms[room.id]?.poker?.readyAccountIds).toEqual([]);
-    expect(recovered.rooms[room.id]?.poker?.advanceDeadline).toBeUndefined();
+    expect(recoveredRoom.poker?.readyAccountIds).toEqual([]);
+    expect(recoveredRoom.poker?.advanceDeadline).toBeUndefined();
     expect(recovered.accounts[alice.id]?.avatar).toBe(fallbackAvatar);
     expect(recovered.historicalSeasons[0]?.entries[0]?.avatar).toBe(
       "legacy-avatar"

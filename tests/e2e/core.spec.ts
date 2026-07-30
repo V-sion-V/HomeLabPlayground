@@ -125,7 +125,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   browser,
   page: hostPage
 }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const suffix = uniqueSuffix(testInfo.project.name);
   const hostName = `房主-${suffix}`;
   const guestName = `玩家-${suffix}`;
@@ -158,7 +158,11 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.locator("html")).toHaveAttribute("data-theme", "dark");
 
     await hostPage.getByRole("button", { name: /创建房间/ }).click();
-    const create = hostPage.getByRole("dialog", { name: "创建德州扑克房间" });
+    await hostPage
+      .getByRole("dialog", { name: "创建房间" })
+      .getByRole("button", { name: /德州扑克/ })
+      .click();
+    const create = hostPage.getByRole("dialog", { name: "创建房间 · 德州扑克" });
     await create.getByLabel("房间名称").fill(roomName);
     await selectStyledOption(create, "游戏模式", "筹码＋牌");
     await expect(create.getByLabel("房主转让时限")).toHaveValue("120");
@@ -519,6 +523,280 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   }
 });
 
+test("plays Avalon in automatic and manual modes with private roles, display isolation, signed scores, and 300px layout", async ({
+  browser,
+  page: hostPage
+}, testInfo) => {
+  test.setTimeout(240_000);
+  const suffix = uniqueSuffix(testInfo.project.name);
+  const roomName = `阿瓦隆-${suffix}`;
+  const seasonName = `负分赛季-${suffix}`;
+  const playerNames = Array.from(
+    { length: 5 },
+    (_, index) => `圆桌-${index + 1}-${suffix}`
+  );
+  const guestContexts = await Promise.all(
+    Array.from({ length: 4 }, () => browser.newContext())
+  );
+  const guestPages = await Promise.all(
+    guestContexts.map((context) => context.newPage())
+  );
+  const displayContext = await browser.newContext();
+  const displayPage = await displayContext.newPage();
+  const playerPages = [hostPage, ...guestPages];
+
+  try {
+    await Promise.all([
+      ...playerPages.map((page) => emulateLanHttp(page)),
+      emulateLanHttp(displayPage)
+    ]);
+
+    await hostPage.goto("/admin");
+    await hostPage.getByRole("button", { name: /Avalon/ }).click();
+    await expect(hostPage.locator(".avalon-admin-preset")).toHaveCount(6);
+    await selectStyledOption(hostPage, "认角色模式", "自动认角色");
+    await selectStyledOption(hostPage, "奥伯伦规则", "原版奥伯伦");
+    await hostPage.getByLabel("每人押分").fill("100");
+    await hostPage.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(hostPage.getByRole("status")).toContainText("设置已保存");
+
+    await hostPage.goto("/admin/seasons");
+    await hostPage.getByLabel("新赛季名称").fill(seasonName);
+    await hostPage.getByLabel("基础分").fill("-50");
+    await hostPage.getByRole("button", { name: "开始新赛季", exact: true }).click();
+    await hostPage
+      .getByRole("alertdialog", { name: "开始新赛季" })
+      .getByRole("button", { name: "最终确认" })
+      .click();
+    await expect(hostPage.getByRole("status")).toContainText("新赛季已开始");
+
+    await Promise.all(
+      playerPages.map((page, index) => enter(page, playerNames[index]!))
+    );
+
+    await hostPage.getByRole("button", { name: /创建房间/ }).click();
+    const chooser = hostPage.getByRole("dialog", { name: "创建房间" });
+    await chooser.getByRole("button", { name: /Avalon/ }).click();
+    const create = hostPage.getByRole("dialog", {
+      name: "创建房间 · Avalon"
+    });
+    await create.getByLabel("房间名称").fill(roomName);
+    await selectStyledOption(create, "认角色模式", "自动认角色");
+    await selectStyledOption(create, "奥伯伦规则", "原版奥伯伦");
+    await create.getByLabel("每人押分").fill("100");
+    await create.getByRole("button", { name: "创建房间" }).click();
+    await expect(
+      hostPage.getByRole("heading", { name: roomName })
+    ).toBeVisible();
+
+    const displayHref = await hostPage
+      .getByRole("link", { name: "公共大屏" })
+      .getAttribute("href");
+    expect(displayHref).toBeTruthy();
+    const roomId = new URL(
+      displayHref!,
+      "http://127.0.0.1:4173"
+    ).searchParams.get("roomId");
+    expect(roomId).toBeTruthy();
+
+    for (const guestPage of guestPages) {
+      const card = guestPage.locator(".room-card").filter({ hasText: roomName });
+      await expect(card).toContainText("自动认角色");
+      await expect(card).toContainText("原版奥伯伦");
+      await card.getByRole("button", { name: "加入牌局" }).click();
+      await guestPage
+        .getByRole("alertdialog", { name: "加入牌局" })
+        .getByRole("button", { name: "加入牌局" })
+        .click();
+      await expect(
+        guestPage.getByRole("heading", { name: roomName })
+      ).toBeVisible();
+    }
+    await expect(hostPage.locator(".avalon-member")).toHaveCount(5);
+
+    await displayPage.goto(displayHref!);
+    await expect(displayPage.getByText("匿名只读 · 不占成员名额")).toBeVisible();
+    await expect(displayPage.locator(".avalon-member")).toHaveCount(5);
+    await expect(
+      displayPage.getByRole("button", { name: /准备|开始|提交|同意|反对/ })
+    ).toHaveCount(0);
+
+    for (const guestPage of guestPages) {
+      await guestPage.getByRole("button", { name: "准备", exact: true }).click();
+    }
+    await hostPage.getByRole("button", { name: "开始游戏" }).click();
+    await expect(
+      hostPage.getByText("私密信息已遮盖", { exact: true })
+    ).toBeVisible();
+    await revealAndCoverAvalonRole(hostPage);
+    await expect(displayPage.getByText("你的角色", { exact: true })).toHaveCount(0);
+    await expect(displayPage.getByText("按住查看私密信息")).toHaveCount(0);
+
+    for (const playerPage of playerPages) {
+      await expect(
+        playerPage.getByRole("button", { name: "确认已看清角色" })
+      ).toBeVisible();
+      await playerPage
+        .getByRole("button", { name: "确认已看清角色" })
+        .click();
+    }
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await rejectCurrentAvalonProposal(
+        playerPages,
+        displayPage,
+        roomId!,
+        attempt === 0
+      );
+    }
+
+    await expect(
+      hostPage.getByRole("heading", { name: /胜方[:：]\s*邪恶方/ })
+    ).toBeVisible();
+    await expect(hostPage.locator(".avalon-result-list article")).toHaveCount(5);
+    await expect(displayPage.locator(".avalon-result-list article")).toHaveCount(5);
+    await expect(displayPage.getByText("五次否决", { exact: false })).toBeVisible();
+    const scoreDeltas = await hostPage
+      .locator(".avalon-result-list article > b")
+      .allTextContents();
+    expect(
+      scoreDeltas.reduce(
+        (sum, value) => sum + Number(value.replace(/[+,]/g, "")),
+        0
+      )
+    ).toBe(0);
+    await expect(hostPage.getByText(/结算后总分 -150/).first()).toBeVisible();
+    await hostPage.reload();
+    await expect(hostPage.locator(".avalon-result-list article")).toHaveCount(5);
+
+    const desktopViewport = hostPage.viewportSize()!;
+    await hostPage.setViewportSize({ width: 300, height: 760 });
+    expect(
+      await hostPage.evaluate(() => ({
+        viewport: innerWidth,
+        documentWidth: document.documentElement.scrollWidth
+      }))
+    ).toEqual({ viewport: 300, documentWidth: 300 });
+    await expect(hostPage.getByText("局间准备", { exact: true }).first()).toBeVisible();
+    await hostPage.setViewportSize(desktopViewport);
+
+    await selectStyledOption(hostPage, "认角色模式", "手动认角色");
+    await hostPage.getByRole("button", { name: "保存下一局设置" }).click();
+    await expect(hostPage.getByLabel("认角色模式")).toContainText("手动认角色");
+    for (const guestPage of guestPages) {
+      await guestPage.getByRole("button", { name: "准备", exact: true }).click();
+    }
+    await hostPage.getByRole("button", { name: "开始下一局" }).click();
+    await expect(
+      hostPage.getByText("私密信息已遮盖", { exact: true })
+    ).toBeVisible();
+
+    const reveal = hostPage.getByRole("button", {
+      name: "按住查看私密信息"
+    });
+    await reveal.dispatchEvent("pointerdown", { pointerType: "mouse" });
+    await expect(hostPage.locator(".avalon-secret.revealed")).toBeVisible();
+    await expect(
+      hostPage.locator(".avalon-secret").getByText(
+        /梅林可见的邪恶|派西维尔候选|邪恶同伴/
+      )
+    ).toHaveCount(0);
+    await hostPage.evaluate(() => {
+      window.dispatchEvent(new PointerEvent("pointerup"));
+    });
+
+    for (const playerPage of playerPages) {
+      await playerPage
+        .getByRole("button", { name: "确认已看清角色" })
+        .click();
+    }
+    await expect(
+      hostPage.getByRole("heading", { name: "夜间认人" })
+    ).toBeVisible();
+    await expect(
+      displayPage.getByRole("heading", { name: "夜间认人" })
+    ).toBeVisible();
+    const currentNightStep = hostPage.locator(".avalon-night-card li.current");
+    await expect(currentNightStep).toContainText("所有人闭眼");
+    await hostPage.getByRole("button", { name: "下一步" }).click();
+    await expect(currentNightStep).not.toContainText("所有人闭眼");
+    await hostPage
+      .getByRole("button", { name: "重新开始夜间流程" })
+      .click();
+    await expect(currentNightStep).toContainText("所有人闭眼");
+    for (let step = 0; step < 20; step += 1) {
+      const before = await avalonPublicProgress(displayPage, roomId!);
+      if (before.phase !== "manual-night") break;
+      await expect(
+        hostPage
+          .locator(".avalon-night-card li")
+          .nth(before.nightStepIndex ?? 0)
+      ).toHaveClass(/current/);
+      const next = hostPage.getByRole("button", { name: "下一步" });
+      if (!(await next.isVisible())) break;
+      await next.dispatchEvent("click");
+      await expect
+        .poll(
+          async () =>
+            (await avalonPublicProgress(displayPage, roomId!)).avalonVersion
+        )
+        .toBeGreaterThan(before.avalonVersion);
+    }
+    await expect
+      .poll(async () => await avalonLeaderPageIndex(playerPages))
+      .toBeGreaterThanOrEqual(0);
+    await expect(displayPage.getByText("你的角色", { exact: true })).toHaveCount(0);
+
+    for (let mission = 0; mission < 3; mission += 1) {
+      await completeSuccessfulAvalonMission(
+        playerPages,
+        displayPage,
+        roomId!,
+        mission
+      );
+    }
+    await expect
+      .poll(async () => await avalonAssassinPageIndex(playerPages))
+      .toBeGreaterThanOrEqual(0);
+    const assassinPage = playerPages[
+      await avalonAssassinPageIndex(playerPages)
+    ]!;
+    const assassination = assassinPage
+      .locator(".avalon-control-card")
+      .filter({
+        has: assassinPage.getByRole("heading", { name: "刺杀梅林" })
+      });
+    await expect(assassination.locator(".avalon-target-grid button")).toHaveCount(4);
+    await expect(assassination).not.toContainText(/善方|邪恶方/);
+    await assassination.locator(".avalon-target-grid button").first().click();
+    await assassination
+      .getByRole("button", { name: "确认刺杀" })
+      .click();
+    await expect(hostPage.locator(".avalon-result-list article")).toHaveCount(5);
+    await expect(displayPage.locator(".avalon-result-list article")).toHaveCount(5);
+    await expect(displayPage.getByText("你的角色", { exact: true })).toHaveCount(0);
+
+    await hostPage.getByRole("button", { name: "关闭房间" }).click();
+    await hostPage
+      .getByRole("alertdialog", { name: "关闭房间" })
+      .getByRole("button", { name: "关闭房间" })
+      .click();
+    await expect(
+      hostPage.getByRole("heading", { name: "聚会大厅" })
+    ).toBeVisible();
+    for (const guestPage of guestPages) {
+      await expect(
+        guestPage.getByRole("heading", { name: "聚会大厅" })
+      ).toBeVisible();
+    }
+  } finally {
+    await Promise.all([
+      ...guestContexts.map((context) => context.close()),
+      displayContext.close()
+    ]);
+  }
+});
+
 test("batch-manages accounts and historical seasons from direct admin routes", async ({
   browser,
   page
@@ -637,6 +915,296 @@ async function actingPage(first: Page, second: Page): Promise<Page> {
   if (await first.getByText("轮到你行动").isVisible()) return first;
   await expect(second.getByText("轮到你行动")).toBeVisible();
   return second;
+}
+
+async function revealAndCoverAvalonRole(page: Page): Promise<void> {
+  const reveal = page.getByRole("button", {
+    name: "按住查看私密信息"
+  });
+  await reveal.dispatchEvent("pointerdown", { pointerType: "mouse" });
+  await expect(page.locator(".avalon-secret.revealed")).toBeVisible();
+  await expect(page.locator(".avalon-secret.revealed h2")).toBeVisible();
+  await page.evaluate(() => {
+    window.dispatchEvent(new PointerEvent("pointerup"));
+  });
+  await expect(page.getByText("私密信息已遮盖", { exact: true })).toBeVisible();
+}
+
+async function avalonLeaderPageIndex(pages: Page[]): Promise<number> {
+  for (const [index, page] of pages.entries()) {
+    if (
+      await page
+        .getByRole("heading", { name: /选择任务队伍/ })
+        .isVisible()
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+async function avalonPublicProgress(
+  displayPage: Page,
+  roomId: string
+): Promise<{
+  avalonVersion: number;
+  phase: string;
+  nightStepIndex?: number;
+  voteSubmittedAccountIds: string[];
+  missionSubmittedAccountIds: string[];
+  missionHistory: unknown[];
+  voteHistory: unknown[];
+}> {
+  const response = await displayPage.request.get(
+    `/api/room/${encodeURIComponent(roomId)}?display=1`
+  );
+  expect(response.ok()).toBe(true);
+  return (await response.json()) as {
+    avalonVersion: number;
+    phase: string;
+    nightStepIndex?: number;
+    voteSubmittedAccountIds: string[];
+    missionSubmittedAccountIds: string[];
+    missionHistory: unknown[];
+    voteHistory: unknown[];
+  };
+}
+
+async function rejectCurrentAvalonProposal(
+  playerPages: Page[],
+  displayPage: Page,
+  roomId: string,
+  inspectPartialSecrecy: boolean
+): Promise<void> {
+  await expect
+    .poll(async () => await avalonLeaderPageIndex(playerPages))
+    .toBeGreaterThanOrEqual(0);
+  const leaderIndex = await avalonLeaderPageIndex(playerPages);
+  const leaderPage = playerPages[leaderIndex]!;
+  leaderPage.setDefaultTimeout(10_000);
+  const heading = leaderPage.getByRole("heading", {
+    name: /选择任务队伍/
+  });
+  const headingText = await heading.textContent();
+  const teamSize = Number(headingText?.match(/\/(\d+)/)?.[1]);
+  expect(teamSize).toBeGreaterThan(0);
+  const control = leaderPage.locator(".avalon-control-card").filter({
+    has: heading
+  });
+  const candidates = control.locator(".avalon-target-grid button");
+  await expect(candidates).toHaveCount(playerPages.length);
+  for (let index = 0; index < teamSize; index += 1) {
+    await candidates.nth(index).click();
+    await expect(candidates.nth(index)).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+  }
+  await control.getByRole("button", { name: "提交队伍" }).click();
+  await expect
+    .poll(
+      async () => (await avalonPublicProgress(displayPage, roomId)).phase
+    )
+    .toBe("team-vote");
+  for (const page of playerPages) {
+    await expect(page.getByRole("button", { name: "反对" })).toBeVisible();
+  }
+
+  const partialCount = inspectPartialSecrecy ? playerPages.length - 1 : 0;
+  for (let index = 0; index < partialCount; index += 1) {
+    await playerPages[index]!
+      .getByRole("button", { name: "反对" })
+      .click();
+    await expect
+      .poll(
+        async () =>
+          (
+            await avalonPublicProgress(displayPage, roomId)
+          ).voteSubmittedAccountIds.length
+      )
+      .toBe(index + 1);
+    await expect(playerPages[index + 1]!.locator(".avalon-public-state"))
+      .toContainText(`${index + 1}/`);
+  }
+  if (inspectPartialSecrecy) {
+    const partial = await avalonPublicProgress(displayPage, roomId);
+    expect(partial.voteSubmittedAccountIds).toHaveLength(
+      playerPages.length - 1
+    );
+    expect(partial.voteHistory).toEqual([]);
+    expect(JSON.stringify(partial)).not.toContain("roleAssignments");
+    expect(JSON.stringify(partial)).not.toContain("missionChoices");
+  }
+  for (let index = partialCount; index < playerPages.length; index += 1) {
+    await playerPages[index]!
+      .getByRole("button", { name: "反对" })
+      .click();
+    if (index < playerPages.length - 1) {
+      await expect
+        .poll(
+          async () =>
+            (
+              await avalonPublicProgress(displayPage, roomId)
+            ).voteSubmittedAccountIds.length
+        )
+        .toBe(index + 1);
+      await expect(playerPages[index + 1]!.locator(".avalon-public-state"))
+        .toContainText(`${index + 1}/`);
+    } else {
+      await expect
+        .poll(
+          async () =>
+            (await avalonPublicProgress(displayPage, roomId)).phase
+        )
+        .not.toBe("team-vote");
+    }
+  }
+}
+
+async function completeSuccessfulAvalonMission(
+  playerPages: Page[],
+  displayPage: Page,
+  roomId: string,
+  completedMissionCount: number
+): Promise<void> {
+  await expect
+    .poll(async () => await avalonLeaderPageIndex(playerPages))
+    .toBeGreaterThanOrEqual(0);
+  const leaderPage = playerPages[
+    await avalonLeaderPageIndex(playerPages)
+  ]!;
+  leaderPage.setDefaultTimeout(10_000);
+  const heading = leaderPage.getByRole("heading", {
+    name: /选择任务队伍/
+  });
+  const headingText = await heading.textContent();
+  const teamSize = Number(headingText?.match(/\/(\d+)/)?.[1]);
+  expect(teamSize).toBeGreaterThan(0);
+  const proposal = leaderPage.locator(".avalon-control-card").filter({
+    has: heading
+  });
+  const candidates = proposal.locator(".avalon-target-grid button");
+  await expect(candidates).toHaveCount(playerPages.length);
+  for (let index = 0; index < teamSize; index += 1) {
+    await candidates.nth(index).click();
+    await expect(candidates.nth(index)).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+  }
+  await proposal.getByRole("button", { name: "提交队伍" }).click();
+  await expect
+    .poll(
+      async () => (await avalonPublicProgress(displayPage, roomId)).phase
+    )
+    .toBe("team-vote");
+  for (const [index, playerPage] of playerPages.entries()) {
+    await playerPage.getByRole("button", { name: "同意" }).click();
+    if (index < playerPages.length - 1) {
+      await expect
+        .poll(
+          async () =>
+            (
+              await avalonPublicProgress(displayPage, roomId)
+            ).voteSubmittedAccountIds.length
+        )
+        .toBe(index + 1);
+      await expect(playerPages[index + 1]!.locator(".avalon-public-state"))
+        .toContainText(`${index + 1}/`);
+    } else {
+      await expect
+        .poll(
+          async () =>
+            (await avalonPublicProgress(displayPage, roomId)).phase
+        )
+        .toBe("mission");
+    }
+  }
+
+  await expect
+    .poll(async () => {
+      let count = 0;
+      for (const playerPage of playerPages) {
+        if (
+          await playerPage
+            .getByRole("button", { name: "任务成功" })
+            .isVisible()
+        ) {
+          count += 1;
+        }
+      }
+      return count;
+    })
+    .toBe(teamSize);
+  const missionPages: Page[] = [];
+  for (const playerPage of playerPages) {
+    if (
+      await playerPage
+        .getByRole("button", { name: "任务成功" })
+        .isVisible()
+    ) {
+      missionPages.push(playerPage);
+    }
+  }
+  await missionPages[0]!
+    .getByRole("button", { name: "任务成功" })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (
+          await avalonPublicProgress(displayPage, roomId)
+        ).missionSubmittedAccountIds.length
+    )
+    .toBe(1);
+  await expect(missionPages[1]!.locator(".avalon-public-state"))
+    .toContainText("1/");
+  const partial = await avalonPublicProgress(displayPage, roomId);
+  expect(partial.missionSubmittedAccountIds).toHaveLength(1);
+  expect(partial.missionHistory).toHaveLength(completedMissionCount);
+  expect(JSON.stringify(partial)).not.toContain("missionChoices");
+  for (const [offset, missionPage] of missionPages.slice(1).entries()) {
+    await missionPage
+      .getByRole("button", { name: "任务成功" })
+      .click();
+    const submittedCount = offset + 2;
+    if (submittedCount < missionPages.length) {
+      await expect
+        .poll(
+          async () =>
+            (
+              await avalonPublicProgress(displayPage, roomId)
+            ).missionSubmittedAccountIds.length
+        )
+        .toBe(submittedCount);
+      await expect(missionPages[offset + 2]!.locator(".avalon-public-state"))
+        .toContainText(`${submittedCount}/`);
+    } else {
+      await expect
+        .poll(
+          async () =>
+            (
+              await avalonPublicProgress(displayPage, roomId)
+            ).missionHistory.length
+        )
+        .toBe(completedMissionCount + 1);
+    }
+  }
+  await expect(displayPage.locator(".avalon-mission-track .mission-success"))
+    .toHaveCount(completedMissionCount + 1);
+}
+
+async function avalonAssassinPageIndex(pages: Page[]): Promise<number> {
+  for (const [index, page] of pages.entries()) {
+    if (
+      await page
+        .getByRole("button", { name: "确认刺杀" })
+        .isVisible()
+    ) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function uniqueSuffix(projectName: string): string {

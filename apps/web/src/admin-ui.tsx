@@ -7,13 +7,17 @@ import {
 } from "react";
 import type {
   AdminProjection,
+  AvalonPlayerCount,
+  AvalonRole,
   CommandResult,
   GlobalSettings,
   Language,
   PlatformDataDeletionResult,
   ThemeMode
 } from "@party/contracts";
+import { normalizeAvalonRoles } from "@party/avalon";
 import { t } from "./locales";
+import { AvalonRoleEditor, avalonText } from "./avalon-ui";
 import {
   ArrowIcon,
   CollapsibleCard,
@@ -197,6 +201,7 @@ function AdminHome({
     () => structuredClone(projection.settings)
   );
   const [pokerExpanded, setPokerExpanded] = useState(false);
+  const [avalonExpanded, setAvalonExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -209,9 +214,23 @@ function AdminHome({
   const hostTimeoutValid =
     Number.isInteger(settings.defaultHostTransferTimeoutSeconds) &&
     settings.defaultHostTransferTimeoutSeconds > 0;
+  const avalonStakeValid =
+    Number.isSafeInteger(settings.avalon.defaultStake) &&
+    settings.avalon.defaultStake >= 2;
+  const avalonPresetErrors = avalonPlayerCounts.map((playerCount) => ({
+    playerCount,
+    error: validateAvalonPreset(
+      language,
+      playerCount,
+      settings.avalon.rolePresets[playerCount]
+    )
+  }));
+  const avalonSettingsValid =
+    avalonStakeValid &&
+    avalonPresetErrors.every((entry) => entry.error === "");
 
   const save = async () => {
-    if (!hostTimeoutValid || denominationError) return;
+    if (!hostTimeoutValid || denominationError || !avalonSettingsValid) return;
     setBusy(true);
     try {
       await command("admin.settings.update", { settings });
@@ -235,7 +254,12 @@ function AdminHome({
           action={
             <button
               className="primary admin-save"
-              disabled={busy || !hostTimeoutValid || Boolean(denominationError)}
+              disabled={
+                busy ||
+                !hostTimeoutValid ||
+                Boolean(denominationError) ||
+                !avalonSettingsValid
+              }
               onClick={() => void save()}
             >
               {busy ? t(language, "loading") : t(language, "save")}
@@ -420,6 +444,123 @@ function AdminHome({
               )}
             </fieldset>
           </CollapsibleCard>
+          <CollapsibleCard
+            title="Avalon"
+            summary={
+              language === "zh-CN"
+                ? "默认流程、押分与 5–10 人角色预设"
+                : "Default flow, stake, and 5–10 player role presets"
+            }
+            expanded={avalonExpanded}
+            onToggle={() => setAvalonExpanded((current) => !current)}
+          >
+            <div className="avalon-setting-grid">
+              <SelectField
+                label={avalonText(language, "recognition")}
+                value={settings.avalon.defaultRecognitionMode}
+                options={[
+                  {
+                    value: "automatic",
+                    label: avalonText(language, "automatic")
+                  },
+                  {
+                    value: "manual",
+                    label: avalonText(language, "manual")
+                  }
+                ]}
+                onChange={(defaultRecognitionMode) =>
+                  setSettings((current) => ({
+                    ...current,
+                    avalon: {
+                      ...current.avalon,
+                      defaultRecognitionMode:
+                        defaultRecognitionMode as GlobalSettings["avalon"]["defaultRecognitionMode"]
+                    }
+                  }))
+                }
+              />
+              <SelectField
+                label={avalonText(language, "oberon")}
+                value={settings.avalon.defaultOberonRule}
+                options={[
+                  {
+                    value: "original",
+                    label: avalonText(language, "original")
+                  },
+                  {
+                    value: "dized",
+                    label: avalonText(language, "dized")
+                  }
+                ]}
+                onChange={(defaultOberonRule) =>
+                  setSettings((current) => ({
+                    ...current,
+                    avalon: {
+                      ...current.avalon,
+                      defaultOberonRule:
+                        defaultOberonRule as GlobalSettings["avalon"]["defaultOberonRule"]
+                    }
+                  }))
+                }
+              />
+              <AdminNumberField
+                label={avalonText(language, "stake")}
+                value={settings.avalon.defaultStake}
+                onChange={(defaultStake) =>
+                  setSettings((current) => ({
+                    ...current,
+                    avalon: { ...current.avalon, defaultStake }
+                  }))
+                }
+              />
+            </div>
+            {!avalonStakeValid && (
+              <p className="error" role="alert">
+                {language === "zh-CN"
+                  ? "押分必须是不小于 2 的安全整数"
+                  : "Stake must be a safe whole number of at least 2"}
+              </p>
+            )}
+            <div className="avalon-admin-presets">
+              {avalonPresetErrors.map(({ playerCount, error }) => (
+                <section
+                  className="avalon-admin-preset"
+                  key={playerCount}
+                  aria-labelledby={`avalon-preset-${playerCount}`}
+                >
+                  <div className="avalon-section-heading">
+                    <h3 id={`avalon-preset-${playerCount}`}>
+                      {playerCount}{" "}
+                      {language === "zh-CN" ? "人预设" : "player preset"}
+                    </h3>
+                    <span>
+                      {settings.avalon.rolePresets[playerCount].length}/
+                      {playerCount}
+                    </span>
+                  </div>
+                  <AvalonRoleEditor
+                    language={language}
+                    roles={settings.avalon.rolePresets[playerCount]}
+                    onChange={(roles) =>
+                      setSettings((current) => ({
+                        ...current,
+                        avalon: {
+                          ...current.avalon,
+                          rolePresets: {
+                            ...current.avalon.rolePresets,
+                            [playerCount]: roles
+                          }
+                        }
+                      }))
+                    }
+                  />
+                  {error && (
+                    <p className="error" role="alert">{error}</p>
+                  )}
+                </section>
+              ))}
+            </div>
+          </CollapsibleCard>
         </section>
       </div>
     </FixedPanel>
@@ -547,6 +688,7 @@ function AdminSeasons({
   };
 
   const startSeason = async () => {
+    if (!Number.isSafeInteger(baseScore)) return;
     setBusy(true);
     try {
       await command("admin.season.start", { name, baseScore });
@@ -612,7 +754,7 @@ function AdminSeasons({
           <p>{t(language, "seasonImpact")}</p>
           <button
             className="primary"
-            disabled={!Number.isInteger(baseScore) || baseScore < 0}
+            disabled={!Number.isSafeInteger(baseScore)}
             onClick={() => setConfirmStart(true)}
           >
             {t(language, "newSeason")}
@@ -904,6 +1046,30 @@ function validateDenominations(values: readonly number[]) {
   );
 }
 
+const avalonPlayerCounts: readonly AvalonPlayerCount[] = [
+  5,
+  6,
+  7,
+  8,
+  9,
+  10
+];
+
+function validateAvalonPreset(
+  language: Language,
+  playerCount: AvalonPlayerCount,
+  roles: readonly AvalonRole[]
+): string {
+  try {
+    normalizeAvalonRoles(playerCount, roles);
+    return "";
+  } catch {
+    return language === "zh-CN"
+      ? `角色配置必须符合 ${playerCount} 人善恶人数，并且包含唯一的梅林与刺客`
+      : `Roles must fit the ${playerCount}-player alignments and include exactly one Merlin and Assassin`;
+  }
+}
+
 function readAdminLanguage(): Language | undefined {
   const value = localStorage.getItem(adminLanguageKey);
   return value === "zh-CN" || value === "en" ? value : undefined;
@@ -925,6 +1091,8 @@ function adminErrorMessage(language: Language, reason: unknown) {
     STALE_VERSION: ["数据已更新，请检查最新内容后重试", "Data changed; review the latest state and retry"],
     INVALID_ROOM_CONFIG: ["扑克设置无效，请检查盲注和买入范围", "Poker settings are invalid"],
     INVALID_DENOMINATIONS: ["筹码面值无效", "Chip denominations are invalid"],
+    INVALID_AVALON_SETTINGS: ["阿瓦隆默认设置无效", "Avalon defaults are invalid"],
+    INVALID_AVALON_ROLE_CONFIG: ["阿瓦隆角色预设无效", "An Avalon role preset is invalid"],
     INVALID_LANGUAGE: ["默认语言无效", "The default language is invalid"],
     INVALID_THEME: ["默认主题无效", "The default theme is invalid"],
     CURRENT_SEASON_PROTECTED: ["当前赛季受保护", "The current season is protected"],

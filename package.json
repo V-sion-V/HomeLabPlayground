@@ -13,7 +13,8 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:platform": "vitest run tests/platform.test.ts tests/server.test.ts",
+    "test:platform": "vitest run tests/platform.test.ts tests/server.test.ts tests/avalon-platform.test.ts",
+    "test:avalon": "vitest run tests/avalon.test.ts",
     "test:poker": "vitest run tests/poker.test.ts",
     "test:realtime": "vitest run tests/realtime.test.ts",
     "test:e2e:core": "node scripts/run-e2e.mjs",

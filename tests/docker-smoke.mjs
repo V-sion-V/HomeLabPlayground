@@ -110,6 +110,7 @@ try {
     expectedVersion: bob.version,
     type: "room.create",
     payload: {
+      gameType: "texas-holdem",
       accountId: alice.data.account.id,
       name: "Docker recovery table",
       config: {
@@ -134,6 +135,7 @@ try {
     expectedVersion: create.version,
     type: "room.join",
     payload: {
+      gameType: "texas-holdem",
       accountId: bob.data.account.id,
       roomId,
       buyIn: 2_000
@@ -157,7 +159,11 @@ try {
     aggregateId: roomId,
     expectedVersion: ready.version,
     type: "room.start",
-    payload: { accountId: alice.data.account.id, roomId }
+    payload: {
+      gameType: "texas-holdem",
+      accountId: alice.data.account.id,
+      roomId
+    }
   });
   const action = await post(`${firstBase}/api/command`, {
     commandId: randomUUID(),
@@ -173,6 +179,272 @@ try {
     }
   });
   if (action.status !== "accepted") throw new Error("Poker action was not accepted");
+
+  const avalonSessions = [];
+  let avalonPlatformVersion = action.version;
+  for (let index = 0; index < 5; index += 1) {
+    const registered = await post(`${firstBase}/api/register`, {
+      commandId: randomUUID(),
+      username: `ava-${index + 1}-${suffix}`,
+      avatar: index % 2 === 0 ? "🦊" : "🐼",
+      language: "zh-CN",
+      theme: "dark"
+    });
+    if (registered.status !== "accepted") {
+      throw new Error(`Avalon account ${index + 1} was not registered`);
+    }
+    avalonSessions.push({
+      account: registered.data.account,
+      connectionId: registered.data.connectionId
+    });
+    avalonPlatformVersion = registered.version;
+  }
+
+  const avalonCreated = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: avalonSessions[0].connectionId,
+    aggregateId: "platform",
+    expectedVersion: avalonPlatformVersion,
+    type: "room.create",
+    payload: {
+      gameType: "avalon",
+      accountId: avalonSessions[0].account.id,
+      name: "Docker recovery Avalon",
+      config: {
+        recognitionMode: "manual",
+        oberonRule: "original",
+        stake: 20_000,
+        hostTransferTimeoutSeconds: 60,
+        roleSource: "preset"
+      }
+    }
+  });
+  const avalonRoomId = avalonCreated.data?.id;
+  if (
+    avalonCreated.status !== "accepted" ||
+    !avalonRoomId ||
+    avalonCreated.data.gameType !== "avalon"
+  ) {
+    throw new Error("Avalon room creation was not accepted");
+  }
+  avalonPlatformVersion = avalonCreated.version;
+
+  for (const session of avalonSessions.slice(1)) {
+    const joined = await post(`${firstBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: session.connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: avalonPlatformVersion,
+      type: "room.join",
+      payload: {
+        gameType: "avalon",
+        accountId: session.account.id,
+        roomId: avalonRoomId
+      }
+    });
+    if (joined.status !== "accepted") {
+      throw new Error("Avalon room join was not accepted");
+    }
+    avalonPlatformVersion = joined.version;
+    const readied = await post(`${firstBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: session.connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: avalonPlatformVersion,
+      type: "avalon.ready",
+      payload: {
+        accountId: session.account.id,
+        roomId: avalonRoomId,
+        ready: true
+      }
+    });
+    if (readied.status !== "accepted") {
+      throw new Error("Avalon ready was not accepted");
+    }
+    avalonPlatformVersion = readied.version;
+  }
+
+  let avalonProjection = (
+    await post(`${firstBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: avalonSessions[0].connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: avalonPlatformVersion,
+      type: "avalon.start",
+      payload: {
+        accountId: avalonSessions[0].account.id,
+        roomId: avalonRoomId,
+        confirmUnready: false
+      }
+    })
+  );
+  if (
+    avalonProjection.status !== "accepted" ||
+    avalonProjection.data?.phase !== "role-confirmation"
+  ) {
+    throw new Error("Avalon start was not accepted");
+  }
+  avalonPlatformVersion = avalonProjection.version;
+
+  for (const session of avalonSessions) {
+    avalonProjection = await post(`${firstBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: session.connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: avalonPlatformVersion,
+      type: "avalon.role.confirm",
+      payload: {
+        accountId: session.account.id,
+        roomId: avalonRoomId,
+        avalonVersion: avalonProjection.data.avalonVersion
+      }
+    });
+    if (avalonProjection.status !== "accepted") {
+      throw new Error("Avalon role confirmation was not accepted");
+    }
+    avalonPlatformVersion = avalonProjection.version;
+  }
+
+  let nightAdvances = 0;
+  while (avalonProjection.data.phase === "manual-night") {
+    if (nightAdvances >= 20) {
+      throw new Error("Avalon manual night did not reach team proposal");
+    }
+    avalonProjection = await post(`${firstBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: avalonSessions[0].connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: avalonPlatformVersion,
+      type: "avalon.night.advance",
+      payload: {
+        accountId: avalonSessions[0].account.id,
+        roomId: avalonRoomId,
+        avalonVersion: avalonProjection.data.avalonVersion
+      }
+    });
+    if (avalonProjection.status !== "accepted") {
+      throw new Error("Avalon night advance was not accepted");
+    }
+    avalonPlatformVersion = avalonProjection.version;
+    nightAdvances += 1;
+  }
+  if (avalonProjection.data.phase !== "team-proposal") {
+    throw new Error("Avalon did not reach team proposal");
+  }
+
+  const leaderSession = avalonSessions.find(
+    (session) =>
+      session.account.id === avalonProjection.data.currentLeaderAccountId
+  );
+  const teamSize = avalonProjection.data.currentMissionRule?.teamSize;
+  if (!leaderSession || !teamSize) {
+    throw new Error("Avalon leader or mission rule was unavailable");
+  }
+  const proposedTeamAccountIds = avalonSessions
+    .slice(0, teamSize)
+    .map((session) => session.account.id);
+  avalonProjection = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: leaderSession.connectionId,
+    aggregateId: avalonRoomId,
+    expectedVersion: avalonPlatformVersion,
+    type: "avalon.team.propose",
+    payload: {
+      accountId: leaderSession.account.id,
+      roomId: avalonRoomId,
+      avalonVersion: avalonProjection.data.avalonVersion,
+      teamAccountIds: proposedTeamAccountIds
+    }
+  });
+  if (avalonProjection.status !== "accepted") {
+    throw new Error("Avalon team proposal was not accepted");
+  }
+  avalonPlatformVersion = avalonProjection.version;
+
+  for (const session of avalonSessions) {
+    avalonProjection = await post(`${firstBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: session.connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: avalonPlatformVersion,
+      type: "avalon.vote",
+      payload: {
+        accountId: session.account.id,
+        roomId: avalonRoomId,
+        avalonVersion: avalonProjection.data.avalonVersion,
+        approve: true
+      }
+    });
+    if (avalonProjection.status !== "accepted") {
+      throw new Error("Avalon vote was not accepted");
+    }
+    avalonPlatformVersion = avalonProjection.version;
+  }
+  if (avalonProjection.data.phase !== "mission") {
+    throw new Error("Approved Avalon team did not reach mission");
+  }
+
+  const firstMissionSession = avalonSessions.find(
+    (session) =>
+      session.account.id ===
+      avalonProjection.data.proposedTeamAccountIds[0]
+  );
+  if (!firstMissionSession) {
+    throw new Error("Avalon mission member was unavailable");
+  }
+  avalonProjection = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: firstMissionSession.connectionId,
+    aggregateId: avalonRoomId,
+    expectedVersion: avalonPlatformVersion,
+    type: "avalon.mission",
+    payload: {
+      accountId: firstMissionSession.account.id,
+      roomId: avalonRoomId,
+      avalonVersion: avalonProjection.data.avalonVersion,
+      choice: "success"
+    }
+  });
+  if (
+    avalonProjection.status !== "accepted" ||
+    avalonProjection.data.phase !== "mission" ||
+    avalonProjection.data.missionSubmittedAccountIds.length !== 1
+  ) {
+    throw new Error("Partial Avalon mission was not preserved");
+  }
+  avalonPlatformVersion = avalonProjection.version;
+
+  const beforeAvalonDisplay = await get(
+    `${firstBase}/api/room/${avalonRoomId}?display=1`
+  );
+  const beforeAvalonRoles = {};
+  for (const session of avalonSessions) {
+    const privateProjection = await get(
+      `${firstBase}/api/room/${avalonRoomId}?accountId=${session.account.id}` +
+        `&connectionId=${encodeURIComponent(session.connectionId)}`
+    );
+    const role = privateProjection.ownKnowledge?.role;
+    if (!role) throw new Error("Avalon private role was unavailable");
+    beforeAvalonRoles[session.account.id] = role;
+  }
+  if (
+    JSON.stringify(beforeAvalonDisplay).includes("ownKnowledge") ||
+    JSON.stringify(beforeAvalonDisplay).includes("missionChoices") ||
+    beforeAvalonDisplay.missionSubmittedAccountIds.length !== 1
+  ) {
+    throw new Error("Avalon public projection exposed a secret");
+  }
+  const avalonAccountIds = avalonSessions.map(
+    (session) => session.account.id
+  );
+  must([
+    "exec",
+    firstContainer,
+    "node",
+    "--input-type=module",
+    "-e",
+    `import Database from 'better-sqlite3';const db=new Database('/data/platform.sqlite',{readonly:true});const row=db.prepare('SELECT state_json FROM platform_state WHERE id=1').get();const state=JSON.parse(row.state_json);const ids=${JSON.stringify(avalonAccountIds)};db.close();if(ids.some(id=>state.seasonAssets[id]?.score!==-10000))process.exit(1);`
+  ]);
   const beforeLobby = await get(`${firstBase}/api/state`);
   const beforeRoom = await get(`${firstBase}/api/room/${roomId}?display=1`);
   const beforePrivate = await get(
@@ -201,21 +473,30 @@ try {
   const afterLobby = await get(`${secondBase}/api/state`);
   const afterAdmin = await get(`${secondBase}/api/admin/state`);
   const afterRoom = await get(`${secondBase}/api/room/${roomId}?display=1`);
+  const afterAvalonDisplay = await get(
+    `${secondBase}/api/room/${avalonRoomId}?display=1`
+  );
   const staleLease = await fetch(
     `${secondBase}/api/state?accountId=${alice.data.account.id}` +
       `&connectionId=${encodeURIComponent(alice.data.connectionId)}`
   );
   if (
     !isDeepStrictEqual(durableLobby(beforeLobby), durableLobby(afterLobby)) ||
-    !isDeepStrictEqual(durableRoom(beforeRoom), durableRoom(afterRoom))
+    !isDeepStrictEqual(durableRoom(beforeRoom), durableRoom(afterRoom)) ||
+    !isDeepStrictEqual(
+      durableAvalonRoom(beforeAvalonDisplay),
+      durableAvalonRoom(afterAvalonDisplay)
+    )
   ) {
     throw new Error(
-      "Durable public state changed across legacy preference recovery: " +
+      "Durable public state changed across restart recovery: " +
         JSON.stringify({
           beforeLobby: durableLobby(beforeLobby),
           afterLobby: durableLobby(afterLobby),
           beforeRoom: durableRoom(beforeRoom),
-          afterRoom: durableRoom(afterRoom)
+          afterRoom: durableRoom(afterRoom),
+          beforeAvalon: durableAvalonRoom(beforeAvalonDisplay),
+          afterAvalon: durableAvalonRoom(afterAvalonDisplay)
         })
     );
   }
@@ -235,6 +516,15 @@ try {
   }
   if (!Array.isArray(beforePrivate.ownHoleCards)) {
     throw new Error("Private-card persistence setup did not produce a private projection");
+  }
+  for (const session of avalonSessions) {
+    const staleAvalonLease = await fetch(
+      `${secondBase}/api/room/${avalonRoomId}?accountId=${session.account.id}` +
+        `&connectionId=${encodeURIComponent(session.connectionId)}`
+    );
+    if (staleAvalonLease.status !== 403) {
+      throw new Error("A pre-restart Avalon control lease remained valid");
+    }
   }
   const aliceReentry = await post(`${secondBase}/api/enter`, {
     commandId: randomUUID(),
@@ -264,10 +554,105 @@ try {
   ) {
     throw new Error("Legacy account preference defaults were not restored");
   }
+  let secondVersion = bobReentry.version;
+  const avalonReentries = [];
+  for (const session of avalonSessions) {
+    const reentry = await post(`${secondBase}/api/enter`, {
+      commandId: randomUUID(),
+      username: session.account.username
+    });
+    if (reentry.status !== "accepted") {
+      throw new Error("Avalon participant reentry was not accepted");
+    }
+    const privateProjection = await get(
+      `${secondBase}/api/room/${avalonRoomId}?accountId=${session.account.id}` +
+        `&connectionId=${encodeURIComponent(reentry.data.connectionId)}`
+    );
+    if (
+      privateProjection.ownKnowledge?.role !==
+      beforeAvalonRoles[session.account.id]
+    ) {
+      throw new Error("Avalon private role changed across restart");
+    }
+    avalonReentries.push({
+      account: reentry.data.account,
+      connectionId: reentry.data.connectionId
+    });
+    secondVersion = reentry.version;
+  }
+
+  let recoveredAvalon = await get(
+    `${secondBase}/api/room/${avalonRoomId}?display=1`
+  );
+  for (const accountId of recoveredAvalon.proposedTeamAccountIds) {
+    if (recoveredAvalon.missionSubmittedAccountIds.includes(accountId)) {
+      continue;
+    }
+    const session = avalonReentries.find(
+      (candidate) => candidate.account.id === accountId
+    );
+    if (!session) throw new Error("Recovered mission member was unavailable");
+    const submitted = await post(`${secondBase}/api/command`, {
+      commandId: randomUUID(),
+      connectionId: session.connectionId,
+      aggregateId: avalonRoomId,
+      expectedVersion: secondVersion,
+      type: "avalon.mission",
+      payload: {
+        accountId,
+        roomId: avalonRoomId,
+        avalonVersion: recoveredAvalon.avalonVersion,
+        choice: "success"
+      }
+    });
+    if (submitted.status !== "accepted") {
+      throw new Error("Recovered Avalon mission could not continue");
+    }
+    secondVersion = submitted.version;
+    recoveredAvalon = submitted.data;
+  }
+  if (
+    recoveredAvalon.phase !== "team-proposal" ||
+    recoveredAvalon.missionHistory.length !== 1
+  ) {
+    throw new Error("Recovered Avalon mission did not settle exactly once");
+  }
+  const recoveredHost = avalonReentries.find(
+    (session) => session.account.id === avalonSessions[0].account.id
+  );
+  if (!recoveredHost) throw new Error("Recovered Avalon host was unavailable");
+  const voidedAvalon = await post(`${secondBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: recoveredHost.connectionId,
+    aggregateId: avalonRoomId,
+    expectedVersion: secondVersion,
+    type: "avalon.void",
+    payload: {
+      accountId: recoveredHost.account.id,
+      roomId: avalonRoomId,
+      avalonVersion: recoveredAvalon.avalonVersion
+    }
+  });
+  if (
+    voidedAvalon.status !== "accepted" ||
+    voidedAvalon.data.phase !== "void" ||
+    voidedAvalon.data.revealedRoles !== undefined
+  ) {
+    throw new Error("Recovered Avalon void did not preserve privacy");
+  }
+  secondVersion = voidedAvalon.version;
+  must([
+    "exec",
+    secondContainer,
+    "node",
+    "--input-type=module",
+    "-e",
+    `import Database from 'better-sqlite3';const db=new Database('/data/platform.sqlite',{readonly:true});const row=db.prepare('SELECT state_json FROM platform_state WHERE id=1').get();const state=JSON.parse(row.state_json);const ids=${JSON.stringify(avalonAccountIds)};db.close();if(ids.some(id=>state.seasonAssets[id]?.score!==10000)||state.avalonResults.at(-1)?.outcome!=='void')process.exit(1);`
+  ]);
   const deletion = await post(`${secondBase}/api/admin/command`, {
     commandId: randomUUID(),
     aggregateId: "platform",
-    expectedVersion: bobReentry.version,
+    expectedVersion: secondVersion,
     type: "admin.accounts.delete",
     payload: {
       accountIds: [bob.data.account.id]
@@ -329,7 +714,7 @@ try {
     throw new Error("Deleted identity reappeared or replacement identity changed after restart");
   }
   console.log(
-    "Docker offline startup, non-root runtime, health, legacy preference recovery, named-volume poker/private-card persistence, admin deletion, lease invalidation, username reuse and restart recovery passed."
+    "Docker offline startup, non-root runtime, health, legacy preference recovery, signed Avalon stake/private-role/vote/mission recovery and void, named-volume poker/private-card persistence, admin deletion, lease invalidation, username reuse and restart recovery passed."
   );
 } finally {
   for (const container of containers) run(["rm", "-f", container], false);
@@ -434,5 +819,28 @@ function durableRoom(room) {
     readyAccountIds: undefined,
     seats: room.seats.map((seat) => ({ ...seat, connected: undefined })),
     ownHoleCards: undefined
+  };
+}
+
+function durableAvalonRoom(room) {
+  return {
+    id: room.id,
+    gameType: room.gameType,
+    phase: room.phase,
+    avalonVersion: room.avalonVersion,
+    participantAccountIds: room.participantAccountIds,
+    roleConfirmedAccountIds: room.roleConfirmedAccountIds,
+    currentLeaderAccountId: room.currentLeaderAccountId,
+    currentMissionNumber: room.currentMissionNumber,
+    currentMissionRule: room.currentMissionRule,
+    proposedTeamAccountIds: room.proposedTeamAccountIds,
+    voteSubmittedAccountIds: room.voteSubmittedAccountIds,
+    missionSubmittedAccountIds: room.missionSubmittedAccountIds,
+    rejectionCount: room.rejectionCount,
+    voteHistory: room.voteHistory,
+    missionHistory: room.missionHistory,
+    nightSteps: room.nightSteps,
+    nightStepIndex: room.nightStepIndex,
+    outcome: room.outcome
   };
 }

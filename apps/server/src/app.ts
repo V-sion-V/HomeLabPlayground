@@ -7,9 +7,12 @@ import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { z } from "zod";
 import {
+  avalonRoles,
   commandEnvelopeSchema,
   type CommandEnvelope,
   type GlobalSettings,
+  type AvalonRoomConfig,
+  type PokerRoom,
   type Room
 } from "@party/contracts";
 import { DomainError, PlatformDomain } from "@party/domain";
@@ -55,32 +58,67 @@ const roomPayload = {
   ...accountPayload,
   roomId: z.string().min(1).max(128).optional()
 };
+const safePositiveIntegerSchema = z.number().int().safe().positive();
+const safeNonnegativeIntegerSchema = z.number().int().safe().nonnegative();
+const safeIntegerSchema = z.number().int().safe();
 const roomConfigSchema = z.object({
   mode: z.enum(["chips-only", "chips-and-cards"]),
-  smallBlind: z.number().int().positive(),
-  bigBlind: z.number().int().positive(),
-  minBuyIn: z.number().int().positive(),
-  maxBuyIn: z.number().int().positive(),
-  hostTransferTimeoutSeconds: z.number().int().positive()
+  smallBlind: safePositiveIntegerSchema,
+  bigBlind: safePositiveIntegerSchema,
+  minBuyIn: safePositiveIntegerSchema,
+  maxBuyIn: safePositiveIntegerSchema,
+  hostTransferTimeoutSeconds: safePositiveIntegerSchema
 });
+const avalonRoleSchema = z.enum(avalonRoles);
+const avalonRolePresetsSchema = z.object({
+  5: z.array(avalonRoleSchema).min(2).max(10),
+  6: z.array(avalonRoleSchema).min(2).max(10),
+  7: z.array(avalonRoleSchema).min(2).max(10),
+  8: z.array(avalonRoleSchema).min(2).max(10),
+  9: z.array(avalonRoleSchema).min(2).max(10),
+  10: z.array(avalonRoleSchema).min(2).max(10)
+});
+const avalonRoomConfigInputSchema = z.discriminatedUnion("roleSource", [
+  z.object({
+    recognitionMode: z.enum(["automatic", "manual"]),
+    oberonRule: z.enum(["original", "dized"]),
+    stake: safePositiveIntegerSchema.min(2),
+    hostTransferTimeoutSeconds: safePositiveIntegerSchema,
+    roleSource: z.literal("preset")
+  }),
+  z.object({
+    recognitionMode: z.enum(["automatic", "manual"]),
+    oberonRule: z.enum(["original", "dized"]),
+    stake: safePositiveIntegerSchema.min(2),
+    hostTransferTimeoutSeconds: safePositiveIntegerSchema,
+    roleSource: z.literal("custom"),
+    roles: z.array(avalonRoleSchema).min(2).max(10)
+  })
+]);
 const pokerActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("fold") }),
   z.object({ kind: z.literal("check") }),
   z.object({ kind: z.literal("call") }),
   z.object({ kind: z.literal("all-in") }),
-  z.object({ kind: z.literal("bet"), amount: z.number().int().positive() }),
-  z.object({ kind: z.literal("raise"), amount: z.number().int().positive() })
+  z.object({ kind: z.literal("bet"), amount: safePositiveIntegerSchema }),
+  z.object({ kind: z.literal("raise"), amount: safePositiveIntegerSchema })
 ]);
 const globalSettingsSchema = z.object({
   defaultLanguage: z.enum(["zh-CN", "en"]),
   defaultTheme: z.enum(["light", "dark"]),
-  defaultHostTransferTimeoutSeconds: z.number().int().positive(),
+  defaultHostTransferTimeoutSeconds: safePositiveIntegerSchema,
   poker: roomConfigSchema
     .omit({ mode: true, hostTransferTimeoutSeconds: true })
     .extend({
       suitColorPreset: z.enum(["standard", "high-contrast"]),
-      denominations: z.array(z.number().int().positive()).min(1).max(16)
-    })
+      denominations: z.array(safePositiveIntegerSchema).min(1).max(16)
+    }),
+  avalon: z.object({
+    defaultRecognitionMode: z.enum(["automatic", "manual"]),
+    defaultOberonRule: z.enum(["original", "dized"]),
+    defaultStake: safePositiveIntegerSchema.min(2),
+    rolePresets: avalonRolePresetsSchema
+  })
 });
 const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
   "account.profile": z.object({
@@ -89,21 +127,38 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     avatar: z.string().min(1).max(16),
     language: z.enum(["zh-CN", "en"]),
     theme: z.enum(["light", "dark"]),
-    volume: z.number().int().min(0).max(100)
+    volume: safeNonnegativeIntegerSchema.max(100)
   }),
-  "room.create": z.object({
-    ...accountPayload,
-    name: z.string().max(80),
-    config: roomConfigSchema,
-    buyIn: z.number().int().positive()
-  }),
-  "room.join": z.object({
-    ...roomPayload,
-    buyIn: z.number().int().positive()
-  }),
+  "room.create": z.discriminatedUnion("gameType", [
+    z.object({
+      ...accountPayload,
+      gameType: z.literal("texas-holdem"),
+      name: z.string().max(80),
+      config: roomConfigSchema,
+      buyIn: safePositiveIntegerSchema
+    }),
+    z.object({
+      ...accountPayload,
+      gameType: z.literal("avalon"),
+      name: z.string().max(80),
+      config: avalonRoomConfigInputSchema
+    })
+  ]),
+  "room.join": z.discriminatedUnion("gameType", [
+    z.object({
+      ...roomPayload,
+      gameType: z.literal("texas-holdem"),
+      buyIn: safePositiveIntegerSchema
+    }),
+    z.object({
+      ...roomPayload,
+      gameType: z.literal("avalon")
+    })
+  ]),
   "room.start": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative().optional(),
+    gameType: z.literal("texas-holdem"),
+    pokerVersion: safeNonnegativeIntegerSchema.optional(),
     confirmUnready: z.boolean().optional()
   }),
   "room.pause": z.object(roomPayload),
@@ -114,7 +169,7 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
   }),
   "room.top-up": z.object({
     ...roomPayload,
-    amount: z.number().int().positive()
+    amount: safePositiveIntegerSchema
   }),
   "room.leave": z.object({
     ...roomPayload,
@@ -128,26 +183,77 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
   "room.close": z.object(roomPayload),
   "poker.action": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative(),
+    pokerVersion: safeNonnegativeIntegerSchema,
     action: pokerActionSchema
   }),
   "poker.undo": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative()
+    pokerVersion: safeNonnegativeIntegerSchema
   }),
   "poker.settle": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative(),
+    pokerVersion: safeNonnegativeIntegerSchema,
     winnersByPot: z.array(z.array(z.string().min(1).max(128)).min(1)).min(1)
   }),
   "poker.undo-settlement": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative()
+    pokerVersion: safeNonnegativeIntegerSchema
   }),
   "poker.ready": z.object({
     ...roomPayload,
-    pokerVersion: z.number().int().nonnegative().optional(),
+    pokerVersion: safeNonnegativeIntegerSchema.optional(),
     ready: z.boolean().optional()
+  }),
+  "avalon.config.update": z.object({
+    ...roomPayload,
+    config: avalonRoomConfigInputSchema,
+    avalonVersion: safeNonnegativeIntegerSchema.optional()
+  }),
+  "avalon.ready": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema.optional(),
+    ready: z.boolean().optional()
+  }),
+  "avalon.start": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema.optional(),
+    confirmUnready: z.boolean().optional()
+  }),
+  "avalon.role.confirm": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema
+  }),
+  "avalon.night.advance": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema
+  }),
+  "avalon.night.restart": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema
+  }),
+  "avalon.team.propose": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema,
+    teamAccountIds: z.array(z.string().min(1).max(128)).min(1).max(5)
+  }),
+  "avalon.vote": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema,
+    approve: z.boolean()
+  }),
+  "avalon.mission": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema,
+    choice: z.enum(["success", "fail"])
+  }),
+  "avalon.assassinate": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema,
+    targetAccountId: z.string().min(1).max(128)
+  }),
+  "avalon.void": z.object({
+    ...roomPayload,
+    avalonVersion: safeNonnegativeIntegerSchema
   })
 };
 const adminCommandPayloadSchemas: Record<string, z.ZodTypeAny> = {
@@ -162,7 +268,7 @@ const adminCommandPayloadSchemas: Record<string, z.ZodTypeAny> = {
   }),
   "admin.season.start": z.object({
     name: z.string().max(80).optional(),
-    baseScore: z.number().int().nonnegative()
+    baseScore: safeIntegerSchema
   })
 };
 
@@ -272,7 +378,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     clearTimers();
     const state = store.load();
     for (const room of Object.values(state.rooms)) {
-      const deadline = room.poker?.advanceDeadline;
+      const deadline =
+        room.gameType === "texas-holdem"
+          ? room.poker?.advanceDeadline
+          : undefined;
       if (deadline) {
         const key = `poker:${room.id}:${deadline}`;
         const timer = setTimeout(() => {
@@ -650,11 +759,49 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       if (!room) throw new DomainError("ROOM_NOT_FOUND");
       return room;
     };
+    const requirePokerRoom = () => {
+      const room = requireRoom();
+      if (room.gameType !== "texas-holdem") {
+        throw new DomainError("WRONG_GAME_TYPE");
+      }
+      return room;
+    };
+    const requireAvalonRoom = () => {
+      const room = requireRoom();
+      if (room.gameType !== "avalon") {
+        throw new DomainError("WRONG_GAME_TYPE");
+      }
+      return room;
+    };
     const requireHost = () => {
       assertLease();
       const room = requireRoom();
       if (room.hostAccountId !== accountId) throw new DomainError("HOST_ONLY");
       return room;
+    };
+    const avalonConfig = (): AvalonRoomConfig => {
+      const config = payload.config as Record<string, any>;
+      const common = {
+        recognitionMode: config.recognitionMode,
+        oberonRule: config.oberonRule,
+        stake: Number(config.stake),
+        hostTransferTimeoutSeconds: Number(
+          config.hostTransferTimeoutSeconds
+        )
+      };
+      return config.roleSource === "custom"
+        ? {
+            ...common,
+            roleSource: "custom",
+            roles: [...(config.roles as string[])]
+          } as AvalonRoomConfig
+        : {
+            ...common,
+            roleSource: "preset",
+            rolePresets: structuredClone(
+              domain.state.settings.avalon.rolePresets
+            )
+          };
     };
 
     switch (envelope.type) {
@@ -671,18 +818,37 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       case "room.create":
         assertLease();
         {
-          const room = domain.createRoom(accountId, String(payload.name ?? ""), payload.config);
+          if (payload.gameType === "avalon") {
+            const room = domain.createAvalonRoom(
+              accountId,
+              String(payload.name ?? ""),
+              avalonConfig()
+            );
+            return domain.projectRoom(room.id, { accountId });
+          }
+          const room = domain.createRoom(
+            accountId,
+            String(payload.name ?? ""),
+            payload.config
+          );
           domain.joinRoom(room.id, accountId, Number(payload.buyIn));
           return domain.projectRoom(room.id, { accountId });
         }
       case "room.join":
         assertLease();
+        if (payload.gameType === "avalon") {
+          return domain.projectRoom(
+            domain.joinAvalonRoom(roomId, accountId).id,
+            { accountId }
+          );
+        }
         return domain.projectRoom(
           domain.joinRoom(roomId, accountId, Number(payload.buyIn)).id,
           { accountId }
         );
       case "room.start": {
-        requireHost();
+        assertLease();
+        requirePokerRoom();
         return startSelectedHand(domain, roomId, accountId, {
           pokerVersion:
             payload.pokerVersion === undefined
@@ -711,6 +877,18 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       case "room.leave": {
         assertLease();
         const room = requireRoom();
+        const activeAvalonParticipant =
+          room.gameType === "avalon" &&
+          Boolean(
+            room.avalon &&
+              !["complete", "void"].includes(room.avalon.phase) &&
+              room.avalon.participants.some(
+                (participant) => participant.accountId === accountId
+              )
+          );
+        if (activeAvalonParticipant && payload.confirmed !== true) {
+          throw new DomainError("AVALON_VOID_CONFIRMATION_REQUIRED");
+        }
         const leavingHost = room.hostAccountId === accountId;
         if (leavingHost) {
           const candidates = room.seats.filter(
@@ -721,6 +899,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
             return { left: true, closed: true };
           }
           if (
+            room.gameType === "texas-holdem" &&
             room.poker &&
             !["complete", "waiting", "void"].includes(room.poker.phase) &&
             room.poker.players.some((player) => player.accountId === accountId)
@@ -744,14 +923,30 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
           (seat) => seat.accountId === targetAccountId
         );
         if (!targetSeat) throw new DomainError("PLAYER_NOT_IN_ROOM");
-        const handActive = Boolean(
-          room.poker && !["complete", "waiting", "void"].includes(room.poker.phase)
-        );
-        if (
-          handActive &&
-          room.poker?.players.some((player) => player.accountId === targetAccountId)
-        ) {
-          forceFold(room.poker, targetAccountId);
+        if (room.gameType === "avalon") {
+          const activeParticipant = Boolean(
+            room.avalon &&
+              !["complete", "void"].includes(room.avalon.phase) &&
+              room.avalon.participants.some(
+                (participant) => participant.accountId === targetAccountId
+              )
+          );
+          if (activeParticipant && payload.confirmed !== true) {
+            throw new DomainError("AVALON_VOID_CONFIRMATION_REQUIRED");
+          }
+        } else {
+          const handActive = Boolean(
+            room.poker &&
+              !["complete", "waiting", "void"].includes(room.poker.phase)
+          );
+          if (
+            handActive &&
+            room.poker?.players.some(
+              (player) => player.accountId === targetAccountId
+            )
+          ) {
+            forceFold(room.poker, targetAccountId);
+          }
         }
         const remaining = domain.leaveRoom(roomId, targetAccountId, true);
         if (!remaining) return { closed: true };
@@ -763,7 +958,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         return { closed: true };
       case "poker.action": {
         assertLease();
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         const beforeStack =
@@ -784,7 +979,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       }
       case "poker.undo": {
         assertLease();
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         const actionKind = room.poker.lastAction?.kind;
         const beforeStack =
@@ -805,7 +1000,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         return domain.projectRoom(room.id, { accountId });
       }
       case "system.poker.advance": {
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         advancePhase(room.poker, Date.now(), Number(payload.pokerVersion));
         room.version += 1;
@@ -813,7 +1008,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       }
       case "poker.settle": {
         requireHost();
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         if (room.poker.phase !== "showdown") throw new DomainError("INVALID_PHASE");
         if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
@@ -832,7 +1027,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         return domain.projectRoom(room.id, { accountId });
       }
       case "system.poker.settle": {
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         const beforeStacks = pokerStacks(room);
         const startingStacks = pokerStartingStacks(room);
@@ -853,7 +1048,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         return domain.projectRoom(room.id, { display: true });
       }
       case "system.poker.await-winners": {
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         if (room.poker.phase !== "showdown" || room.config.mode !== "chips-only") {
           throw new DomainError("INVALID_PHASE");
@@ -863,7 +1058,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         return domain.projectRoom(room.id, { display: true });
       }
       case "system.poker.complete-distribution": {
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         if (
           room.poker.phase !== "distribution" ||
@@ -885,7 +1080,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       }
       case "poker.undo-settlement": {
         requireHost();
-        const room = requireRoom();
+        const room = requirePokerRoom();
         if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
         if ((room.poker.departedAccountIds?.length ?? 0) > 0) {
           throw new DomainError("SETTLEMENT_UNDO_UNAVAILABLE_AFTER_LEAVE");
@@ -917,7 +1112,7 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
       }
       case "poker.ready": {
         assertLease();
-        const room = requireRoom();
+        const room = requirePokerRoom();
         domain.setReady(
           room.id,
           accountId,
@@ -927,6 +1122,152 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
             : Number(payload.pokerVersion)
         );
         return domain.projectRoom(room.id, { accountId });
+      }
+      case "avalon.config.update": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.updateAvalonRoomConfig(
+            room.id,
+            accountId,
+            avalonConfig(),
+            payload.avalonVersion === undefined
+              ? undefined
+              : Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.ready": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.setAvalonReady(
+            room.id,
+            accountId,
+            payload.ready !== false,
+            payload.avalonVersion === undefined
+              ? undefined
+              : Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.start": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.startAvalonGame(room.id, accountId, {
+            expectedAvalonVersion:
+              payload.avalonVersion === undefined
+                ? undefined
+                : Number(payload.avalonVersion),
+            confirmUnready: payload.confirmUnready === true,
+            randomInt: (maxExclusive) => randomInt(maxExclusive)
+          }).id,
+          { accountId }
+        );
+      }
+      case "avalon.role.confirm": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.confirmAvalonRole(
+            room.id,
+            accountId,
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.night.advance": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.advanceAvalonNight(
+            room.id,
+            accountId,
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.night.restart": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.restartAvalonNight(
+            room.id,
+            accountId,
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.team.propose": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.proposeAvalonTeam(
+            room.id,
+            accountId,
+            (payload.teamAccountIds as unknown[]).map(String),
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.vote": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.castAvalonVote(
+            room.id,
+            accountId,
+            payload.approve === true,
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.mission": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.submitAvalonMission(
+            room.id,
+            accountId,
+            payload.choice,
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.assassinate": {
+        assertLease();
+        const room = requireAvalonRoom();
+        return domain.projectRoom(
+          domain.assassinateInAvalon(
+            room.id,
+            accountId,
+            String(payload.targetAccountId),
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
+      }
+      case "avalon.void": {
+        const room = requireHost();
+        if (room.gameType !== "avalon") {
+          throw new DomainError("WRONG_GAME_TYPE");
+        }
+        return domain.projectRoom(
+          domain.voidAvalonRound(
+            room.id,
+            Number(payload.avalonVersion)
+          ).id,
+          { accountId }
+        );
       }
       case "system.connection.open":
         domain.assertLease(accountId, envelope.connectionId ?? "");
@@ -1036,7 +1377,8 @@ function foldActivePlayerForRemoval(
   room: Room | undefined,
   accountId: string
 ): void {
-  const player = room?.poker?.players.find(
+  if (room?.gameType !== "texas-holdem") return;
+  const player = room.poker?.players.find(
     (candidate) => candidate.accountId === accountId
   );
   if (
@@ -1061,6 +1403,9 @@ function startSelectedHand(
 ) {
   const room = domain.state.rooms[roomId];
   if (!room) throw new DomainError("ROOM_NOT_FOUND");
+  if (room.gameType !== "texas-holdem") {
+    throw new DomainError("WRONG_GAME_TYPE");
+  }
   if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
   const waiting = room.status === "waiting";
   const complete = room.poker?.phase === "complete";
@@ -1214,27 +1559,7 @@ function recordInitialBets(
 
 function recordSettlement(
   domain: PlatformDomain,
-  room: {
-    id: string;
-    config: { mode: "chips-only" | "chips-and-cards" };
-    seats: Array<{
-      accountId: string;
-      tableChips: number;
-      currentBet: number;
-      folded: boolean;
-      allIn: boolean;
-    }>;
-    poker?: {
-      handNumber: number;
-      communityCards: NonNullable<Room["poker"]>["communityCards"];
-      holeCards: NonNullable<Room["poker"]>["holeCards"];
-      players: Array<{
-        accountId: string;
-        stack: number;
-        folded: boolean;
-      }>;
-    };
-  },
+  room: PokerRoom,
   beforeStacks: Map<string, number>,
   startingStacks: Map<string, number>
 ): void {
@@ -1309,7 +1634,7 @@ function recordSettlement(
   }
 }
 
-function beginDistribution(room: Room): void {
+function beginDistribution(room: PokerRoom): void {
   if (!room.poker) return;
   room.poker.phase = "distribution";
   room.poker.actingAccountId = null;
@@ -1324,7 +1649,13 @@ function beginDistribution(room: Room): void {
 function runScheduledPokerAction(store: PlatformStore, roomId: string, deadline: number): void {
   const state = store.load();
   const room = state.rooms[roomId];
-  if (!room?.poker || room.poker.advanceDeadline !== deadline) return;
+  if (
+    room?.gameType !== "texas-holdem" ||
+    !room.poker ||
+    room.poker.advanceDeadline !== deadline
+  ) {
+    return;
+  }
   let type = "system.poker.advance";
   if (room.poker.phase === "showdown") {
     type =

@@ -6,13 +6,13 @@
 
 ### 产品定位
 
-本项目是一个在可信家庭局域网内运行的、本地优先的双语聚会游戏平台。首个完整游戏是德州扑克，平台同时提供可供后续阿瓦隆、狼人杀等游戏复用的账户、房间、赛季、积分、排行榜、实时同步和公共大屏能力。
+本项目是一个在可信家庭局域网内运行的、本地优先的双语聚会游戏平台。当前完整游戏包括德州扑克和 5–10 人原版阿瓦隆；平台同时提供可供后续狼人杀等游戏复用的账户、房间、赛季、积分、排行榜、实时同步和公共大屏能力。
 
 核心使用流程是：
 
 1. 玩家用手机或桌面浏览器通过用户名和头像免密码进入。
-2. 玩家在大厅创建或加入房间，以积分买入牌桌筹码。
-3. 服务端权威执行房间与牌局命令，并通过 HTTP/WebSocket 向不同角色投影状态。
+2. 玩家在大厅选择游戏并创建或加入房间；扑克以积分买入筹码，阿瓦隆按配置托管押分。
+3. 服务端权威执行房间与游戏命令，并通过 HTTP/WebSocket 向不同角色投影状态。
 4. 电视或桌面显示器可以匿名打开只读公共大屏，不占玩家名额。
 5. SQLite 持久化账户、赛季、房间、牌局和资产流水；Docker 重启后恢复已确认状态。
 
@@ -33,7 +33,7 @@
 
 ## 2. 当前开发阶段
 
-阶段快照日期：`2026-07-30`。当前分支为 `main`；本快照已包含 `admin-account-preferences-and-ui` initial 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
+阶段快照日期：`2026-07-31`。当前分支为 `main`；本快照已包含 `avalon-game` initial 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
 
 ### 已完成
 
@@ -46,12 +46,14 @@
 - `poker-room-experience-upgrade` initial 已完成并冻结：房间成员/准备、面值、头像、主题、设置和移动牌桌体验已交付，全部本地、生产浏览器、容量和远端隔离 Docker 门禁通过。
 - `platform-usability-and-data-management` initial 与 change-1 已完成并冻结：当前/未来赛季排行榜按真实参赛结果筛选，平台提供账户与历史赛季逐个/批量管理、资产退役和历史匿名化；扑克 complete 退出重进、移动下注、顶部控件、声音和友好错误体验已修复。change-1 进一步保证 complete 退出者立即从其他玩家和公共大屏的当前结算列表消失，并在牌桌/结算刷新或恢复时初始化正确扑克色板；strict red-first、lint、typecheck、platform 26/26、realtime 4/4、Chromium/WebKit 6/6、生产 build/静态资源和差异门禁通过。当前权威快照为 `docs/requirements/platform-usability-and-data-management/effective-requirements.md`。
 - `admin-account-preferences-and-ui` initial 已完成并冻结：平台新增匿名直达管理员设置、账户/历史赛季集合管理、开放房间账户安全删除、两步登录、服务器权威语言/主题/音量偏好，以及固定容器、共享 SVG 和 portal 头像菜单。lint、typecheck、platform/server 29/29、poker 15/15、realtime 4/4、Chromium/WebKit 6/6、容量 4/4、生产构建/静态资源和真实 iStoreOS 隔离容器/浏览器门禁均通过；当前权威快照为 `docs/requirements/admin-account-preferences-and-ui/effective-requirements.md`。
+- `avalon-game` initial 已完成并冻结：平台新增完整 5–10 人原版阿瓦隆、自动/手动认角色、原版与 Dized 奥伯伦、秘密投票/任务、刺杀、押分结算/作废、有符号安全积分，以及玩家/管理员/匿名 display 双语响应式 UI。lint、typecheck、Avalon 8/8、platform/server 37/37、poker 15/15、realtime 5/5、Chromium/WebKit 8/8、容量 4/4、生产构建/静态资源和真实 iStoreOS 随机隔离 Docker/浏览器门禁均通过；当前权威快照为 `docs/requirements/avalon-game/effective-requirements.md`。
 
 ### 尚未完成或待执行
 
 - 当前没有待恢复的 `platform-usability-and-data-management` initial 或 change-1 任务。2026-07-30 只读检查确认正式 `home-table` 运行 healthy 的 Git `b131a4c35ec952180beed575e274b9cb27cbccd8` 镜像；后续正式发布状态以受支持部署入口的实际结果和只读服务器检查为准。
 - 当前没有待恢复的 `deployment-automation` initial 任务。其三个 phase plan/result、完成状态、`change-0.md` 与有效需求已经冻结；未来部署自动化需求必须新建连续的 `change-N` 运行。
 - 当前没有待恢复的 `admin-account-preferences-and-ui` initial 任务。其远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，没有切换正式服务、固定卷、发布目录或唯一备份；正式发布仍需按受支持部署入口另行执行并以只读服务器事实为准。
+- 当前没有待恢复的 `avalon-game` initial 任务。其远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，且已全部清理；2026-07-31 收口时正式服务仍运行 Git `67e68cea036a41c38917e19936c27e3f7cd49f19` 对应 healthy 镜像，固定卷、发布标记、唯一备份和部署锁均未改变。阿瓦隆尚未正式发布到 `home-table`。
 
 ### 工作流文档规则
 
@@ -64,24 +66,25 @@
 
 项目是 npm workspaces 管理的 TypeScript ESM 单仓库，主要数据流如下：
 
-`React Web → Fastify HTTP/WebSocket → 服务命令分发 → PlatformDomain / Poker engine → PlatformStore / SQLite`
+`React Web → Fastify HTTP/WebSocket → 服务命令分发 → PlatformDomain / Poker or Avalon engine → PlatformStore / SQLite`
 
 - `apps/web`：React 19 + Vite 客户端。包含登录、大厅、设置、排行榜、房间、牌桌和公共大屏。
 - `apps/server`：Fastify 5 服务端。提供静态资源、REST、WebSocket、角色投影、控制租约、定时推进和命令分发。
 - `packages/contracts`：前后端共享类型、Zod 命令信封、状态与投影契约，以及私牌泄漏断言。
 - `packages/domain`：平台聚合根和业务不变量，负责账户、赛季、房间、资产与命令语义。
 - `packages/poker`：纯德州扑克状态机，负责发牌、合法动作、边池、结算、撤销和牌型计算。
+- `packages/avalon`：纯阿瓦隆状态机，负责人数规则、角色与知识、夜间流程、提名、投票、任务、刺杀和终局。
 - `packages/persistence`：SQLite 存储、迁移、WAL 模式、事务与幂等命令结果。
 - `packages/test-support`：测试默认配置、命令构造器和临时数据库辅助函数，不属于生产运行时功能。
 
-TypeScript 路径别名为 `@party/contracts`、`@party/domain`、`@party/persistence`、`@party/poker` 和 `@party/test-support`，直接指向各包的 `src/index.ts`。
+TypeScript 路径别名为 `@party/contracts`、`@party/domain`、`@party/persistence`、`@party/poker`、`@party/avalon` 和 `@party/test-support`，直接指向各包的 `src/index.ts`。
 
 实现时必须保持以下不变量：
 
 - 服务端是房间、牌局、资产和权限的唯一权威；客户端动画和缓存不能决定业务状态。
-- 同一赛季内，账户积分、桌上筹码、下注和底池只允许通过已记录的原子转移改变，总量必须守恒。
+- 同一赛季内，账户积分、阿瓦隆托管押分、桌上筹码、下注和底池只允许通过已记录的原子转移改变，总量必须守恒；账户积分允许为负，游戏资产和转移金额不得为负。
 - 重复、过期或并发命令不能造成二次下注、二次兑换、负数或部分提交。
-- 进行中和非真实摊牌的私牌只能进入本人有效控制租约的投影；房主、其他玩家、观众、大屏和普通日志都不能看到。
+- 进行中和非真实摊牌的私牌，以及活动阿瓦隆的角色、知识、未公开投票、任务选择和刺杀目标，只能进入本人有效控制租约允许的投影；房主、其他玩家、观众、大屏和普通日志都不能越权看到。
 - 公共大屏保持匿名、只读、不占成员名额。
 - 已确认状态必须能从 SQLite 恢复；连接状态和准备状态等易失信息在重启后安全重建。
 - 修改共享契约时，应同时检查领域、持久化、服务投影、Web 类型使用和相关测试。

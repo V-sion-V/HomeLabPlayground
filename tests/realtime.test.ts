@@ -1,9 +1,92 @@
 import { describe, expect, it } from "vitest";
 import { PlatformDomain, initialSnapshot } from "@party/domain";
 import { act, createPokerState } from "@party/poker";
-import { defaultRoomConfig } from "@party/test-support";
+import {
+  currentAvalonLeader,
+  currentAvalonMissionRule
+} from "@party/avalon";
+import {
+  defaultAvalonRoomConfig,
+  defaultRoomConfig,
+  requireAvalonProjection,
+  requirePokerProjection
+} from "@party/test-support";
 
 describe("role projections and realtime concurrency", () => {
+  it("isolates active Avalon roles, knowledge, votes, and observers", () => {
+    const domain = new PlatformDomain(initialSnapshot());
+    const accounts = Array.from({ length: 6 }, (_, index) =>
+      domain.enterAccount(`Avalon viewer ${index + 1}`)
+    );
+    const room = domain.createAvalonRoom(
+      accounts[0]!.id,
+      "Projection Camelot",
+      defaultAvalonRoomConfig
+    );
+    for (const account of accounts.slice(1, 5)) {
+      domain.joinAvalonRoom(room.id, account.id);
+      domain.setAvalonReady(room.id, account.id, true);
+    }
+    domain.startAvalonGame(room.id, accounts[0]!.id, {
+      confirmUnready: false,
+      randomInt: () => 0
+    });
+    domain.joinAvalonRoom(room.id, accounts[5]!.id);
+
+    for (const account of accounts.slice(0, 5)) {
+      const projection = requireAvalonProjection(
+        domain.projectRoom(room.id, { accountId: account.id })
+      );
+      expect(projection.viewerRole).toBe("participant");
+      expect(projection.ownKnowledge?.role).toBe(
+        room.avalon?.roleAssignments[account.id]
+      );
+      expect(JSON.stringify(projection)).not.toContain("roleAssignments");
+    }
+    const spectator = requireAvalonProjection(
+      domain.projectRoom(room.id, { accountId: accounts[5]!.id })
+    );
+    const display = requireAvalonProjection(
+      domain.projectRoom(room.id, { display: true })
+    );
+    expect(spectator.viewerRole).toBe("spectator");
+    expect(spectator.ownKnowledge).toBeUndefined();
+    expect(display.viewerRole).toBe("display");
+    expect(display.ownKnowledge).toBeUndefined();
+    expect(display.participantAccountIds).toHaveLength(5);
+
+    for (const account of accounts.slice(0, 5)) {
+      domain.confirmAvalonRole(
+        room.id,
+        account.id,
+        room.avalon!.version
+      );
+    }
+    const state = room.avalon!;
+    const team = state.participants
+      .slice(0, currentAvalonMissionRule(state).teamSize)
+      .map((participant) => participant.accountId);
+    domain.proposeAvalonTeam(
+      room.id,
+      currentAvalonLeader(state),
+      team,
+      state.version
+    );
+    domain.castAvalonVote(
+      room.id,
+      accounts[0]!.id,
+      true,
+      room.avalon!.version
+    );
+    const partial = requireAvalonProjection(
+      domain.projectRoom(room.id, { display: true })
+    );
+    expect(partial.voteSubmittedAccountIds).toEqual([accounts[0]!.id]);
+    expect(partial.voteHistory).toEqual([]);
+    expect(JSON.stringify(partial)).not.toContain('"approve"');
+    expect(JSON.stringify(partial)).not.toContain("votes");
+  });
+
   it("sends each player only their cards and sends displays no private cards", () => {
     const domain = new PlatformDomain(initialSnapshot());
     const alice = domain.enterAccount("Alice");
@@ -26,10 +109,18 @@ describe("role projections and realtime concurrency", () => {
     });
     domain.joinRoom(room.id, cara.id, 2_000);
 
-    const aliceProjection = domain.projectRoom(room.id, { accountId: alice.id });
-    const bobProjection = domain.projectRoom(room.id, { accountId: bob.id });
-    const caraProjection = domain.projectRoom(room.id, { accountId: cara.id });
-    const displayProjection = domain.projectRoom(room.id, { display: true });
+    const aliceProjection = requirePokerProjection(
+      domain.projectRoom(room.id, { accountId: alice.id })
+    );
+    const bobProjection = requirePokerProjection(
+      domain.projectRoom(room.id, { accountId: bob.id })
+    );
+    const caraProjection = requirePokerProjection(
+      domain.projectRoom(room.id, { accountId: cara.id })
+    );
+    const displayProjection = requirePokerProjection(
+      domain.projectRoom(room.id, { display: true })
+    );
     expect(aliceProjection.viewerRole).toBe("participant");
     expect(caraProjection.viewerRole).toBe("spectator");
     expect(aliceProjection.ownHoleCards).toHaveLength(2);
@@ -60,7 +151,9 @@ describe("role projections and realtime concurrency", () => {
       bigBlind: 100,
       deck: []
     });
-    const projection = domain.projectRoom(room.id, { display: true });
+    const projection = requirePokerProjection(
+      domain.projectRoom(room.id, { display: true })
+    );
     expect(projection.communityCards).toBeUndefined();
     expect(JSON.stringify(projection)).not.toContain("hidden");
   });

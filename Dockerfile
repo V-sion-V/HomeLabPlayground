@@ -10,6 +10,7 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY packages/avalon/package.json packages/avalon/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/domain/package.json packages/domain/package.json
 COPY packages/persistence/package.json packages/persistence/package.json

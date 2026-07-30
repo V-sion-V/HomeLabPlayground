@@ -10,6 +10,8 @@ import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   Account,
+  AvalonRole,
+  AvalonRoomProjection,
   Card,
   CommandResult,
   GlobalSettings,
@@ -17,6 +19,9 @@ import type {
   Language,
   LobbyProjection,
   LobbyRoomProjection,
+  PokerLobbyRoomProjection,
+  PokerRoomProjection,
+  PublicSeatProjection,
   RoomConfig,
   RoomMode,
   RoomProjection,
@@ -30,6 +35,13 @@ import {
 import { t } from "./locales";
 import { AdminApp, isAdminPath } from "./admin-ui";
 import { PlatformLeaderboard } from "./platform-ui";
+import {
+  AvalonPublicDisplay,
+  AvalonRoleEditor,
+  AvalonRoomView,
+  avalonCompatiblePlayerCounts,
+  avalonText
+} from "./avalon-ui";
 import {
   AnchoredMenu,
   ArrowIcon,
@@ -660,7 +672,9 @@ function Lobby({
   onPreferences: (account: Account) => void;
   onSwitch: () => void;
 }) {
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createGame, setCreateGame] = useState<
+    "chooser" | "poker" | "avalon" | null
+  >(null);
   const [joinRoom, setJoinRoom] = useState<LobbyRoomProjection | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
@@ -698,13 +712,77 @@ function Lobby({
               <p className="eyebrow">{t(language, "waitingRooms")}</p>
               <h2>{t(language, "createRoom")}</h2>
             </div>
-            <button className="primary" onClick={() => setCreateOpen(true)}>
+            <button className="primary" onClick={() => setCreateGame("chooser")}>
               ＋ {t(language, "create")}
             </button>
           </div>
           <div className="room-list">
             {lobby.rooms.map((entry) => {
               const ownRoom = lobby.accountRoomId === entry.id;
+              if (entry.gameType === "avalon") {
+                return (
+                  <article className="room-card" key={entry.id}>
+                    <div className="room-identity">
+                      <span className="suit-badge suit-clubs">A</span>
+                      <div>
+                        <h3>{entry.name}</h3>
+                        <p>
+                          Avalon ·{" "}
+                          {avalonText(language, entry.recognitionMode)} ·{" "}
+                          {avalonText(language, entry.oberonRule)} ·{" "}
+                          {avalonText(language, "stake")}{" "}
+                          {entry.stake.toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="room-meta">
+                      <span className={`status-pill status-${entry.status}`}>
+                        {roomStatus(language, entry.status)}
+                      </span>
+                      <span>{entry.seatCount}/10 {t(language, "seats")}</span>
+                    </div>
+                    <div className="seats">
+                      {entry.seats.map((seat) => (
+                        <span key={seat.accountId} title={seat.username}>
+                          {seat.avatar}
+                        </span>
+                      ))}
+                      <span className="empty-seat">+{10 - entry.seatCount}</span>
+                    </div>
+                    <div className="room-actions">
+                      {ownRoom ? (
+                        <button
+                          className="primary"
+                          onClick={() => void returnToRoom(entry.id)}
+                        >
+                          {t(language, "returnRoom")}
+                        </button>
+                      ) : (
+                        <button
+                          className="primary"
+                          disabled={
+                            entry.seatCount >= entry.maxSeats ||
+                            !["waiting", "in_progress", "paused"].includes(
+                              entry.status
+                            )
+                          }
+                          onClick={() => setJoinRoom(entry)}
+                        >
+                          {t(language, "join")}
+                        </button>
+                      )}
+                      <a
+                        className="secondary"
+                        href={`/?display=1&roomId=${encodeURIComponent(entry.id)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {t(language, "openDisplay")}
+                      </a>
+                    </div>
+                  </article>
+                );
+              }
               return (
                 <article className="room-card" key={entry.id}>
                   <div className="room-identity">
@@ -772,27 +850,82 @@ function Lobby({
         </section>
         <PlatformLeaderboard language={language} lobby={lobby} />
       </div>
-      {createOpen && (
+      {createGame === "chooser" && (
+        <Modal
+          language={language}
+          title={t(language, "createRoom")}
+          onClose={() => setCreateGame(null)}
+        >
+          <div className="game-choice-grid">
+            <button
+              className="game-choice-card"
+              onClick={() => setCreateGame("poker")}
+            >
+              <span>♠</span>
+              <strong>{t(language, "poker")}</strong>
+              <small>{t(language, "chipsCards")}</small>
+            </button>
+            <button
+              className="game-choice-card"
+              onClick={() => setCreateGame("avalon")}
+            >
+              <span>◈</span>
+              <strong>Avalon</strong>
+              <small>{avalonText(language, "automatic")}</small>
+            </button>
+          </div>
+        </Modal>
+      )}
+      {createGame === "poker" && (
         <CreateRoomModal
           language={language}
           settings={lobby.settings}
-          onClose={() => setCreateOpen(false)}
+          onClose={() => setCreateGame(null)}
           onCreate={async (name, config, buyIn) => {
             try {
               const result = await command<RoomProjection>(
                 "room.create",
-                { name, config, buyIn },
+                { gameType: "texas-holdem", name, config, buyIn },
                 "platform"
               );
               if (result.data) onRoom({ ...result.data, platformVersion: result.version });
-              setCreateOpen(false);
+              setCreateGame(null);
             } catch (reason) {
               setNotice(errorMessage(language, reason));
             }
           }}
         />
       )}
-      {joinRoom && (
+      {createGame === "avalon" && (
+        <AvalonCreateRoomModal
+          language={language}
+          settings={lobby.settings}
+          onClose={() => setCreateGame(null)}
+          onCreate={async (name, config) => {
+            try {
+              const result = await command<AvalonRoomProjection>(
+                "room.create",
+                {
+                  gameType: "avalon",
+                  name,
+                  config
+                },
+                "platform"
+              );
+              if (result.data) {
+                onRoom({
+                  ...result.data,
+                  platformVersion: result.version
+                });
+              }
+              setCreateGame(null);
+            } catch (reason) {
+              setNotice(errorMessage(language, reason));
+            }
+          }}
+        />
+      )}
+      {joinRoom?.gameType === "texas-holdem" && (
         <JoinRoomModal
           language={language}
           room={joinRoom}
@@ -801,7 +934,11 @@ function Lobby({
             try {
               const result = await command<RoomProjection>(
                 "room.join",
-                { roomId: joinRoom.id, buyIn },
+                {
+                  gameType: "texas-holdem",
+                  roomId: joinRoom.id,
+                  buyIn
+                },
                 joinRoom.id
               );
               if (result.data) onRoom({ ...result.data, platformVersion: result.version });
@@ -809,6 +946,33 @@ function Lobby({
             } catch (reason) {
               setNotice(errorMessage(language, reason));
             }
+          }}
+        />
+      )}
+      {joinRoom?.gameType === "avalon" && (
+        <ConfirmDialog
+          title={t(language, "join")}
+          description={joinRoom.name}
+          confirmLabel={t(language, "join")}
+          cancelLabel={t(language, "cancel")}
+          onCancel={() => setJoinRoom(null)}
+          onConfirm={() => {
+            const selectedRoom = joinRoom;
+            void command<RoomProjection>(
+              "room.join",
+              { gameType: "avalon", roomId: selectedRoom.id },
+              selectedRoom.id
+            )
+              .then((result) => {
+                if (result.data) {
+                  onRoom({
+                    ...result.data,
+                    platformVersion: result.version
+                  });
+                }
+                setJoinRoom(null);
+              })
+              .catch((reason) => setNotice(errorMessage(language, reason)));
           }}
         />
       )}
@@ -893,7 +1057,7 @@ function CreateRoomModal({
   return (
     <Modal
       language={language}
-      title={t(language, "createRoom")}
+      title={`${t(language, "createRoom")} · ${t(language, "poker")}`}
       onClose={onClose}
       footer={
         <div className="modal-actions">
@@ -940,6 +1104,196 @@ function CreateRoomModal({
   );
 }
 
+type AvalonRoomCreateConfig =
+  | {
+      recognitionMode: GlobalSettings["avalon"]["defaultRecognitionMode"];
+      oberonRule: GlobalSettings["avalon"]["defaultOberonRule"];
+      stake: number;
+      hostTransferTimeoutSeconds: number;
+      roleSource: "preset";
+    }
+  | {
+      recognitionMode: GlobalSettings["avalon"]["defaultRecognitionMode"];
+      oberonRule: GlobalSettings["avalon"]["defaultOberonRule"];
+      stake: number;
+      hostTransferTimeoutSeconds: number;
+      roleSource: "custom";
+      roles: AvalonRole[];
+    };
+
+function AvalonCreateRoomModal({
+  language,
+  settings,
+  onClose,
+  onCreate
+}: {
+  language: Language;
+  settings: GlobalSettings;
+  onClose: () => void;
+  onCreate: (
+    name: string,
+    config: AvalonRoomCreateConfig
+  ) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [recognitionMode, setRecognitionMode] = useState(
+    settings.avalon.defaultRecognitionMode
+  );
+  const [oberonRule, setOberonRule] = useState(
+    settings.avalon.defaultOberonRule
+  );
+  const [stake, setStake] = useState(settings.avalon.defaultStake);
+  const [hostTransferTimeoutSeconds, setHostTransferTimeoutSeconds] = useState(
+    settings.defaultHostTransferTimeoutSeconds
+  );
+  const [roleSource, setRoleSource] = useState<"preset" | "custom">("preset");
+  const [roles, setRoles] = useState<AvalonRole[]>([
+    "merlin",
+    "percival",
+    "assassin",
+    "morgana"
+  ]);
+  const [busy, setBusy] = useState(false);
+  const compatiblePlayerCounts = avalonCompatiblePlayerCounts(roles);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const common = {
+        recognitionMode,
+        oberonRule,
+        stake,
+        hostTransferTimeoutSeconds
+      };
+      await onCreate(
+        name,
+        roleSource === "custom"
+          ? { ...common, roleSource, roles }
+          : { ...common, roleSource }
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      language={language}
+      title={`${t(language, "createRoom")} · Avalon`}
+      onClose={onClose}
+      className="avalon-create-modal"
+      footer={
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            {t(language, "cancel")}
+          </button>
+          <button
+            className="primary"
+            disabled={
+              busy ||
+              !Number.isSafeInteger(stake) ||
+              stake < 2 ||
+              (roleSource === "custom" &&
+                compatiblePlayerCounts.length === 0)
+            }
+            form="create-avalon-room-form"
+          >
+            {busy ? t(language, "loading") : t(language, "create")}
+          </button>
+        </div>
+      }
+    >
+      <form
+        id="create-avalon-room-form"
+        className="form-stack"
+        onSubmit={submit}
+      >
+        <label>
+          {t(language, "roomNameLabel")}
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <div className="avalon-setting-grid">
+          <SelectField
+            label={avalonText(language, "recognition")}
+            value={recognitionMode}
+            options={[
+              {
+                value: "automatic",
+                label: avalonText(language, "automatic")
+              },
+              {
+                value: "manual",
+                label: avalonText(language, "manual")
+              }
+            ]}
+            onChange={(value) =>
+              setRecognitionMode(value as typeof recognitionMode)
+            }
+          />
+          <SelectField
+            label={avalonText(language, "oberon")}
+            value={oberonRule}
+            options={[
+              {
+                value: "original",
+                label: avalonText(language, "original")
+              },
+              { value: "dized", label: avalonText(language, "dized") }
+            ]}
+            onChange={(value) => setOberonRule(value as typeof oberonRule)}
+          />
+          <SelectField
+            label={avalonText(language, "roleSource")}
+            value={roleSource}
+            options={[
+              { value: "preset", label: avalonText(language, "preset") },
+              { value: "custom", label: avalonText(language, "custom") }
+            ]}
+            onChange={(value) =>
+              setRoleSource(value as "preset" | "custom")
+            }
+          />
+          <NumberField
+            label={avalonText(language, "stake")}
+            value={stake}
+            onChange={setStake}
+          />
+          <NumberField
+            label={t(language, "hostTimeout")}
+            value={hostTransferTimeoutSeconds}
+            onChange={setHostTransferTimeoutSeconds}
+          />
+        </div>
+        {roleSource === "custom" && (
+          <>
+            <AvalonRoleEditor
+              language={language}
+              roles={roles}
+              onChange={setRoles}
+            />
+            <p
+              className={
+                compatiblePlayerCounts.length > 0
+                  ? "avalon-role-hint"
+                  : "error"
+              }
+              role={compatiblePlayerCounts.length > 0 ? "status" : "alert"}
+            >
+              {compatiblePlayerCounts.length > 0
+                ? `${avalonText(language, "compatibleCounts")}: ${compatiblePlayerCounts.join(", ")}`
+                : avalonText(language, "invalidRoleConfig")}
+            </p>
+          </>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
 function JoinRoomModal({
   language,
   room,
@@ -947,7 +1301,7 @@ function JoinRoomModal({
   onJoin
 }: {
   language: Language;
-  room: LobbyRoomProjection;
+  room: PokerLobbyRoomProjection;
   onClose: () => void;
   onJoin: (buyIn: number) => Promise<void>;
 }) {
@@ -1430,6 +1784,19 @@ function RoomView({
       return false;
     }
   };
+  if (room.gameType === "avalon") {
+    return (
+      <AvalonRoomView
+        language={language}
+        account={session.account}
+        room={room}
+        notice={notice}
+        volume={volume}
+        run={run}
+        onLobby={onLobby}
+      />
+    );
+  }
   if (room.status === "waiting") {
     return (
       <WaitingRoom
@@ -1481,18 +1848,18 @@ function WaitingRoom({
 }: {
   language: Language;
   session: Session;
-  room: RoomProjection;
+  room: PokerRoomProjection;
   notice: string;
   host: boolean;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
 }) {
   const [selectedMember, setSelectedMember] = useState<
-    RoomProjection["seats"][number] | null
+    PublicSeatProjection | null
   >(null);
   const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [confirmation, setConfirmation] = useState<
-    | { kind: "kick"; member: RoomProjection["seats"][number] }
+    | { kind: "kick"; member: PublicSeatProjection }
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
@@ -1527,7 +1894,7 @@ function WaitingRoom({
       setConfirmation({ kind: "start" });
       return;
     }
-    void run("room.start");
+    void run("room.start", { gameType: "texas-holdem" });
   };
 
   return (
@@ -1699,7 +2066,10 @@ function WaitingRoom({
           onCancel={() => setConfirmation(null)}
           onConfirm={() => {
             setConfirmation(null);
-            void run("room.start", { confirmUnready: true });
+            void run("room.start", {
+              gameType: "texas-holdem",
+              confirmUnready: true
+            });
           }}
         />
       )}
@@ -1708,10 +2078,10 @@ function WaitingRoom({
 }
 
 function useMemberMenuValidity(
-  room: RoomProjection,
+  room: PokerRoomProjection,
   host: boolean,
-  member: RoomProjection["seats"][number] | null,
-  setMember: (member: RoomProjection["seats"][number] | null) => void
+  member: PublicSeatProjection | null,
+  setMember: (member: PublicSeatProjection | null) => void
 ) {
   useEffect(() => {
     if (
@@ -1736,10 +2106,10 @@ function MemberActionsMenu({
 }: {
   language: Language;
   anchor: HTMLButtonElement | null;
-  member: RoomProjection["seats"][number] | null;
+  member: PublicSeatProjection | null;
   onClose: () => void;
-  onTransfer: (member: RoomProjection["seats"][number]) => void;
-  onRemove: (member: RoomProjection["seats"][number]) => void;
+  onTransfer: (member: PublicSeatProjection) => void;
+  onRemove: (member: PublicSeatProjection) => void;
 }) {
   return (
     <AnchoredMenu
@@ -1791,18 +2161,18 @@ function SpectatorTable({
 }: {
   language: Language;
   session: Session;
-  room: RoomProjection;
+  room: PokerRoomProjection;
   notice: string;
   host: boolean;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
 }) {
   const [selectedMember, setSelectedMember] = useState<
-    RoomProjection["seats"][number] | null
+    PublicSeatProjection | null
   >(null);
   const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [confirmation, setConfirmation] = useState<
-    | { kind: "kick"; member: RoomProjection["seats"][number] }
+    | { kind: "kick"; member: PublicSeatProjection }
     | { kind: "leave" | "close" }
     | null
   >(null);
@@ -1936,7 +2306,7 @@ function PlayerTable({
 }: {
   language: Language;
   session: Session;
-  room: RoomProjection;
+  room: PokerRoomProjection;
   notice: string;
   host: boolean;
   volume: number;
@@ -1946,11 +2316,11 @@ function PlayerTable({
   const [cache, setCache] = useState<Record<string, number>>({});
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<
-    RoomProjection["seats"][number] | null
+    PublicSeatProjection | null
   >(null);
   const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
   const [confirmation, setConfirmation] = useState<
-    | { kind: "kick"; member: RoomProjection["seats"][number] }
+    | { kind: "kick"; member: PublicSeatProjection }
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
@@ -2077,7 +2447,10 @@ function PlayerTable({
       setConfirmation({ kind: "start" });
       return;
     }
-    void run("room.start", { pokerVersion: room.pokerVersion });
+    void run("room.start", {
+      gameType: "texas-holdem",
+      pokerVersion: room.pokerVersion
+    });
   };
 
   const completePointerDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -2564,6 +2937,7 @@ function PlayerTable({
           onConfirm={() => {
             setConfirmation(null);
             void run("room.start", {
+              gameType: "texas-holdem",
               pokerVersion: room.pokerVersion,
               confirmUnready: true
             });
@@ -2580,7 +2954,7 @@ function WinnerPicker({
   run
 }: {
   language: Language;
-  room: RoomProjection;
+  room: PokerRoomProjection;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
 }) {
   const [winners, setWinners] = useState<Record<number, string[]>>({});
@@ -2633,10 +3007,10 @@ function PublicTableSurface({
   onMemberClick
 }: {
   language: Language;
-  room: RoomProjection;
+  room: PokerRoomProjection;
   activeMemberId?: string;
   onMemberClick?: (
-    member: RoomProjection["seats"][number],
+    member: PublicSeatProjection,
     anchor: HTMLButtonElement
   ) => void;
 }) {
@@ -2761,6 +3135,9 @@ function PublicDisplay({
 
   if (error) return <main className="loading-shell"><p className="error">{error}</p></main>;
   if (!room) return <Loading language={language} />;
+  if (room.gameType === "avalon") {
+    return <AvalonPublicDisplay language={language} room={room} />;
+  }
   return (
     <main className={`display-shell suit-theme-${room.suitColorPreset}`}>
       <header className="display-header">
@@ -2852,7 +3229,7 @@ function HandResultBanner({
   room
 }: {
   language: Language;
-  room: RoomProjection;
+  room: PokerRoomProjection;
 }) {
   const result = room.lastResult;
   if (!result) return null;
@@ -2895,7 +3272,7 @@ function SettlementPanel({
   display = false
 }: {
   language: Language;
-  room: RoomProjection;
+  room: PokerRoomProjection;
   currentAccountId?: string;
   currentIsHost?: boolean;
   onReady?: (ready: boolean) => void;
@@ -3343,7 +3720,10 @@ function roomStatus(language: Language, status: RoomProjection["status"]): strin
   return labels[status];
 }
 
-function phaseLabel(language: Language, phase?: RoomProjection["phase"]): string {
+function phaseLabel(
+  language: Language,
+  phase?: PokerRoomProjection["phase"]
+): string {
   const zh = {
     waiting: "等待",
     blinds: "盲注",
@@ -3409,6 +3789,31 @@ function errorMessage(language: Language, reason: unknown): string {
     INVALID_AMOUNT: ["金额必须是正整数", "The amount must be a positive whole number"],
     INVALID_BASE_SCORE: ["基础分必须是非负整数", "Base score must be a non-negative whole number"],
     INVALID_ROOM_CONFIG: ["房间配置无效，请检查盲注和买入范围", "Room settings are invalid; check blinds and buy-in limits"],
+    WRONG_GAME_TYPE: ["该操作不适用于当前游戏", "That action does not apply to this game"],
+    INVALID_AVALON_SETTINGS: ["阿瓦隆全局设置无效", "Avalon global settings are invalid"],
+    INVALID_AVALON_ROOM_CONFIG: ["阿瓦隆房间设置无效", "Avalon room settings are invalid"],
+    INVALID_AVALON_ROLE_CONFIG: ["角色配置与参赛人数或阵营规则不匹配", "Roles do not fit the player count or alignment rules"],
+    INVALID_AVALON_PLAYER_COUNT: ["阿瓦隆需要 5 到 10 名在线参赛者", "Avalon requires 5 to 10 online participants"],
+    INVALID_AVALON_STAKE: ["押分必须是不小于 2 的安全整数", "Stake must be a safe whole number of at least 2"],
+    INVALID_AVALON_PARTICIPANTS: ["本局参赛者状态无效", "The Avalon participant set is invalid"],
+    INVALID_AVALON_TEAM: ["请选择当前任务要求数量且不重复的队员", "Choose the required number of distinct mission members"],
+    INVALID_AVALON_TARGET: ["刺杀目标无效", "The assassination target is invalid"],
+    INVALID_AVALON_PHASE: ["当前阿瓦隆阶段不允许此操作", "That action is unavailable in the current Avalon phase"],
+    STALE_AVALON_VERSION: ["阿瓦隆局势已更新，请按最新状态重试", "Avalon state changed; retry from the latest state"],
+    AVALON_GAME_IN_PROGRESS: ["活动局进行中，不能修改下一局设置", "The active game must finish before changing next-game settings"],
+    AVALON_NOT_STARTED: ["阿瓦隆尚未开始", "Avalon has not started"],
+    AVALON_PARTICIPANT_ONLY: ["只有本局参赛者可以执行此操作", "Only a participant in this game can do that"],
+    AVALON_ALREADY_CONFIRMED: ["你已经确认过角色", "You already confirmed your role"],
+    AVALON_ALREADY_SUBMITTED: ["本阶段已提交，不能重复或修改", "This phase was already submitted and cannot be changed"],
+    AVALON_NIGHT_RESTART_UNAVAILABLE: ["首次组队开始后不能重启夜间流程", "Night recognition cannot restart after the first proposal begins"],
+    AVALON_LEADER_ONLY: ["只有当前队长可以提交队伍", "Only the current leader can submit the team"],
+    AVALON_MISSION_MEMBER_ONLY: ["只有任务队员可以提交任务选择", "Only mission members can submit a mission choice"],
+    AVALON_GOOD_CANNOT_FAIL: ["善方只能提交任务成功", "Good players can only submit mission success"],
+    AVALON_ASSASSIN_ONLY: ["只有刺客可以提交刺杀目标", "Only the Assassin can submit the target"],
+    AVALON_VOID_CONFIRMATION_REQUIRED: ["请确认作废活动局并退还押分", "Confirm voiding the active game and refunding stakes"],
+    AVALON_VERSION_OVERFLOW: ["阿瓦隆版本超出安全整数范围", "The Avalon version exceeded the safe integer range"],
+    SAFE_INTEGER_OVERFLOW: ["运算会超出安全整数范围，操作已回滚", "The operation would exceed the safe integer range and was rolled back"],
+    PLAYER_OFFLINE: ["该玩家当前离线", "That player is offline"],
     INVALID_DENOMINATIONS: ["筹码面值必须是 1–16 个不重复正整数并包含 1", "Chip values must be 1–16 unique positive whole numbers and include 1"],
     INVALID_LANGUAGE: ["不支持该界面语言", "That interface language is not supported"],
     INVALID_THEME: ["请选择亮色或暗色主题", "Choose the light or dark theme"],

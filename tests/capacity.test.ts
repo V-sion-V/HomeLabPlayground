@@ -5,7 +5,14 @@ import { buildApp } from "../apps/server/src/app";
 import type { RoomProjection } from "@party/contracts";
 import { initialSnapshot, PlatformDomain } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
-import { command, defaultRoomConfig, temporaryDatabase } from "@party/test-support";
+import {
+  command,
+  defaultAvalonRoomConfig,
+  defaultRoomConfig,
+  requireAvalonProjection,
+  requirePokerProjection,
+  temporaryDatabase
+} from "@party/test-support";
 
 describe("target household capacity", () => {
   it("keeps 15 accounts, two active rooms and multiple displays isolated", () => {
@@ -14,25 +21,46 @@ describe("target household capacity", () => {
       domain.enterAccount(`player-${String(index + 1).padStart(2, "0")}`, index % 2 ? "🦊" : "🐼")
     );
     const first = domain.createRoom(accounts[0]!.id, "Table A", defaultRoomConfig);
-    const second = domain.createRoom(accounts[7]!.id, "Table B", {
-      ...defaultRoomConfig,
-      mode: "chips-only"
-    });
+    const second = domain.createAvalonRoom(
+      accounts[7]!.id,
+      "Avalon B",
+      defaultAvalonRoomConfig
+    );
     accounts.slice(0, 7).forEach((account) => domain.joinRoom(first.id, account.id, 2_000));
-    accounts.slice(7, 14).forEach((account) => domain.joinRoom(second.id, account.id, 2_000));
+    accounts
+      .slice(8, 14)
+      .forEach((account) => domain.joinAvalonRoom(second.id, account.id));
+    accounts
+      .slice(8, 14)
+      .forEach((account) =>
+        domain.setAvalonReady(second.id, account.id, true)
+      );
     domain.startRoom(first.id, accounts[0]!.id);
-    domain.startRoom(second.id, accounts[7]!.id);
+    domain.startAvalonGame(second.id, accounts[7]!.id, {
+      confirmUnready: false,
+      randomInt: () => 0
+    });
 
-    const firstDisplay = domain.projectRoom(first.id, { display: true });
-    const firstDisplayTwo = domain.projectRoom(first.id, { display: true });
-    const secondDisplay = domain.projectRoom(second.id, { display: true });
+    const firstDisplay = requirePokerProjection(
+      domain.projectRoom(first.id, { display: true })
+    );
+    const firstDisplayTwo = requirePokerProjection(
+      domain.projectRoom(first.id, { display: true })
+    );
+    const secondDisplay = requireAvalonProjection(
+      domain.projectRoom(second.id, { display: true })
+    );
     const firstIds = new Set(firstDisplay.seats.map((seat) => seat.accountId));
     const secondIds = new Set(secondDisplay.seats.map((seat) => seat.accountId));
     expect(firstDisplayTwo).toEqual(firstDisplay);
     expect([...firstIds].some((id) => secondIds.has(id))).toBe(false);
     expect(firstDisplay.communityCards).toBeDefined();
-    expect(secondDisplay.communityCards).toBeUndefined();
-    expect(JSON.stringify([firstDisplay, secondDisplay])).not.toContain("holeCards");
+    expect(secondDisplay.phase).toBe("role-confirmation");
+    expect(JSON.stringify([firstDisplay, secondDisplay])).not.toContain(
+      "holeCards"
+    );
+    expect(JSON.stringify(secondDisplay)).not.toContain("roleAssignments");
+    expect(JSON.stringify(secondDisplay)).not.toContain("ownKnowledge");
     expect(Object.keys(domain.state.accounts)).toHaveLength(15);
     domain.validateInvariants();
   });
@@ -124,6 +152,7 @@ describe("target household capacity", () => {
         type: "room.create",
         payload: {
           accountId: entered[0]!.data.account.id,
+          gameType: "texas-holdem",
           name: "Live A",
           config: defaultRoomConfig,
           buyIn: 2_000
@@ -139,6 +168,7 @@ describe("target household capacity", () => {
           type: "room.join",
           payload: {
             accountId: entered[index]!.data.account.id,
+            gameType: "texas-holdem",
             roomId: roomA.data.id,
             buyIn: 2_000
           }
@@ -154,9 +184,15 @@ describe("target household capacity", () => {
         type: "room.create",
         payload: {
           accountId: entered[7]!.data.account.id,
-          name: "Live B",
-          config: { ...defaultRoomConfig, mode: "chips-only" },
-          buyIn: 2_000
+          gameType: "avalon",
+          name: "Avalon B",
+          config: {
+            recognitionMode: "automatic",
+            oberonRule: "original",
+            stake: 100,
+            hostTransferTimeoutSeconds: 60,
+            roleSource: "preset"
+          }
         }
       });
       version = roomB.version;
@@ -169,8 +205,8 @@ describe("target household capacity", () => {
           type: "room.join",
           payload: {
             accountId: entered[index]!.data.account.id,
-            roomId: roomB.data.id,
-            buyIn: 2_000
+            gameType: "avalon",
+            roomId: roomB.data.id
           }
         });
         version = joined.version;
@@ -197,7 +233,7 @@ describe("target household capacity", () => {
           connectionId: entered[index]!.data.connectionId,
           aggregateId: roomB.data.id,
           expectedVersion: version,
-          type: "poker.ready",
+          type: "avalon.ready",
           payload: {
             accountId: entered[index]!.data.account.id,
             roomId: roomB.data.id,
@@ -213,17 +249,27 @@ describe("target household capacity", () => {
         aggregateId: roomA.data.id,
         expectedVersion: version,
         type: "room.start",
-        payload: { accountId: entered[0]!.data.account.id, roomId: roomA.data.id }
+        payload: {
+          accountId: entered[0]!.data.account.id,
+          gameType: "texas-holdem",
+          roomId: roomA.data.id
+        }
       });
+      const startedAProjection = requirePokerProjection(startedA.data);
       version = startedA.version;
       const startedB = await postJson<RoomProjection>(`${baseUrl}/api/command`, {
         commandId: randomUUID(),
         connectionId: entered[7]!.data.connectionId,
         aggregateId: roomB.data.id,
         expectedVersion: version,
-        type: "room.start",
-        payload: { accountId: entered[7]!.data.account.id, roomId: roomB.data.id }
+        type: "avalon.start",
+        payload: {
+          accountId: entered[7]!.data.account.id,
+          roomId: roomB.data.id,
+          confirmUnready: false
+        }
       });
+      requireAvalonProjection(startedB.data);
       version = startedB.version;
 
       browser = await chromium.launch();
@@ -271,7 +317,8 @@ describe("target household capacity", () => {
       );
 
       const actorIndex = entered.findIndex(
-        (entry) => entry.data.account.id === startedA.data.actingAccountId
+        (entry) =>
+          entry.data.account.id === startedAProjection.actingAccountId
       );
       expect(actorIndex).toBeGreaterThanOrEqual(0);
       const action = await postJson<RoomProjection>(`${baseUrl}/api/command`, {
@@ -283,11 +330,11 @@ describe("target household capacity", () => {
         payload: {
           accountId: entered[actorIndex]!.data.account.id,
           roomId: roomA.data.id,
-          pokerVersion: startedA.data.pokerVersion,
+          pokerVersion: startedAProjection.pokerVersion,
           action: { kind: "call" }
         }
       });
-      expect(action.data.potTotal).toBe(250);
+      expect(requirePokerProjection(action.data).potTotal).toBe(250);
 
       await Promise.all(
         [...accountPages, ...displayPages].map((page) =>
@@ -304,9 +351,10 @@ describe("target household capacity", () => {
 
       for (const page of accountPages.slice(0, 7)) {
         const messages = await capacityMessages(page);
-        const projection = messages.find(
-          (message) => message.type === "projection"
-        )?.data as RoomProjection;
+        const projection = requirePokerProjection(
+          messages.find((message) => message.type === "projection")
+            ?.data as RoomProjection
+        );
         expect(projection.id).toBe(roomA.data.id);
         expect(projection.potTotal).toBe(250);
         expect(projection.ownHoleCards).toHaveLength(2);
@@ -314,11 +362,14 @@ describe("target household capacity", () => {
       }
       for (const page of accountPages.slice(7, 14)) {
         const messages = await capacityMessages(page);
-        expect(
-          messages
-            .filter((message) => message.type === "projection")
-            .every((message) => (message.data as RoomProjection).id === roomB.data.id)
-        ).toBe(true);
+        const projection = requireAvalonProjection(
+          messages.find((message) => message.type === "projection")
+            ?.data as RoomProjection
+        );
+        expect(projection.id).toBe(roomB.data.id);
+        expect(projection.phase).toBe("role-confirmation");
+        expect(projection.ownKnowledge).toBeDefined();
+        expect(JSON.stringify(projection)).not.toContain("roleAssignments");
       }
       expect(
         (await capacityMessages(accountPages[14]!)).some(
@@ -326,12 +377,19 @@ describe("target household capacity", () => {
         )
       ).toBe(true);
       for (const [index, page] of displayPages.entries()) {
-        const projection = (await capacityMessages(page)).find(
+        const data = (await capacityMessages(page)).find(
           (message) => message.type === "projection"
         )?.data as RoomProjection;
-        expect(projection.id).toBe(index < 2 ? roomA.data.id : roomB.data.id);
-        expect(projection.ownHoleCards).toBeUndefined();
-        expect(JSON.stringify(projection)).not.toContain("holeCards");
+        expect(data.id).toBe(index < 2 ? roomA.data.id : roomB.data.id);
+        if (index < 2) {
+          const projection = requirePokerProjection(data);
+          expect(projection.ownHoleCards).toBeUndefined();
+          expect(JSON.stringify(projection)).not.toContain("holeCards");
+        } else {
+          const projection = requireAvalonProjection(data);
+          expect(projection.ownKnowledge).toBeUndefined();
+          expect(JSON.stringify(projection)).not.toContain("roleAssignments");
+        }
       }
     } finally {
       await browser?.close();

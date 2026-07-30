@@ -5,7 +5,12 @@ import { buildApp, dispatch, dispatchAdmin } from "../apps/server/src/app";
 import { initialSnapshot, PlatformDomain } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
 import { createPokerState } from "@party/poker";
-import { defaultRoomConfig, temporaryDatabase } from "@party/test-support";
+import { DEFAULT_AVALON_ROLE_PRESETS } from "@party/avalon";
+import {
+  defaultRoomConfig,
+  requirePokerRoom,
+  temporaryDatabase
+} from "@party/test-support";
 
 describe("server", () => {
   it("keeps lookup read-only, registers create-only, and enters only existing accounts", async () => {
@@ -143,6 +148,7 @@ describe("server", () => {
       expectedVersion: version,
       type: "room.create",
       payload: {
+        gameType: "texas-holdem",
         accountId: alice.account.id,
         name: "Private table",
         config: defaultRoomConfig,
@@ -165,7 +171,12 @@ describe("server", () => {
       aggregateId: roomId,
       expectedVersion: version,
       type: "room.join",
-      payload: { accountId: bob.account.id, roomId, buyIn: 2_000 }
+      payload: {
+        gameType: "texas-holdem",
+        accountId: bob.account.id,
+        roomId,
+        buyIn: 2_000
+      }
     });
     expect(join.statusCode).toBe(200);
     version = join.json().version;
@@ -191,7 +202,11 @@ describe("server", () => {
       aggregateId: roomId,
       expectedVersion: version,
       type: "room.start",
-      payload: { accountId: alice.account.id, roomId }
+      payload: {
+        gameType: "texas-holdem",
+        accountId: alice.account.id,
+        roomId
+      }
     });
     expect(start.statusCode).toBe(200);
     version = start.json().version;
@@ -202,7 +217,11 @@ describe("server", () => {
       aggregateId: roomId,
       expectedVersion: version,
       type: "room.start",
-      payload: { accountId: alice.account.id, roomId }
+      payload: {
+        gameType: "texas-holdem",
+        accountId: alice.account.id,
+        roomId
+      }
     });
     expect(duplicateStart.statusCode).toBe(409);
     expect(duplicateStart.json().code).toBe("HAND_IN_PROGRESS");
@@ -319,7 +338,9 @@ describe("server", () => {
 
     const reopened = new PlatformStore(databasePath);
     const state = reopened.load();
-    expect(state.rooms[roomId]?.poker?.phase).toBe("complete");
+    expect(requirePokerRoom(state.rooms[roomId]).poker?.phase).toBe(
+      "complete"
+    );
     expect(state.handResults).toHaveLength(1);
     expect(state.handResults[0]?.participantAccountIds).toEqual(
       expect.arrayContaining([alice.account.id, bob.account.id])
@@ -391,7 +412,9 @@ describe("server", () => {
       }
     });
     expect(bobReady.status).toBe("accepted");
-    expect(store.load().rooms[room.id]?.poker?.phase).toBe("complete");
+    expect(
+      requirePokerRoom(store.load().rooms[room.id]).poker?.phase
+    ).toBe("complete");
 
     const topUpSittingOutPlayer = dispatch(store, {
       commandId: "top-up-zero-stack-player",
@@ -417,7 +440,9 @@ describe("server", () => {
       }
     });
     expect(caraReady.status).toBe("accepted");
-    expect(store.load().rooms[room.id]?.poker?.phase).toBe("complete");
+    expect(
+      requirePokerRoom(store.load().rooms[room.id]).poker?.phase
+    ).toBe("complete");
 
     const started = dispatch(store, {
       commandId: "host-starts-next-hand",
@@ -432,7 +457,7 @@ describe("server", () => {
       }
     });
     expect(started.status).toBe("accepted");
-    const persistedRoom = store.load().rooms[room.id]!;
+    const persistedRoom = requirePokerRoom(store.load().rooms[room.id]);
     expect(persistedRoom.seats).toHaveLength(3);
     expect(persistedRoom.poker?.players.map((player) => player.accountId)).toEqual([
       alice.id,
@@ -538,7 +563,9 @@ describe("server", () => {
     });
     expect(started.status).toBe("accepted");
     expect(
-      store.load().rooms[room.id]?.poker?.players.map((player) => player.accountId)
+      requirePokerRoom(store.load().rooms[room.id]).poker?.players.map(
+        (player) => player.accountId
+      )
     ).toEqual([alice.id, bob.id]);
 
     const joined = dispatch(store, {
@@ -560,7 +587,7 @@ describe("server", () => {
     expect((joined.data as { ownHoleCards?: Card[] }).ownHoleCards).toBeUndefined();
     const persisted = store.load();
     expect(
-      persisted.rooms[room.id]?.poker?.players.some(
+      requirePokerRoom(persisted.rooms[room.id]).poker?.players.some(
         (player) => player.accountId === dave.id
       )
     ).toBe(false);
@@ -615,7 +642,9 @@ describe("server", () => {
     expect(
       persisted.rooms[room.id]?.seats.some((seat) => seat.accountId === alice.id)
     ).toBe(false);
-    expect(persisted.rooms[room.id]?.poker?.phase).toBe("showdown");
+    expect(requirePokerRoom(persisted.rooms[room.id]).poker?.phase).toBe(
+      "showdown"
+    );
     expect(persisted.seasonAssets[alice.id]?.score).toBe(9_950);
     new PlatformDomain(persisted).validateInvariants();
     store.close();
@@ -824,7 +853,9 @@ describe("server", () => {
     expect(persisted.rooms[room.id]?.seats.some((seat) => seat.accountId === alice.id)).toBe(
       false
     );
-    expect(persisted.rooms[room.id]?.poker?.actingAccountId).toBe(bob.id);
+    expect(
+      requirePokerRoom(persisted.rooms[room.id]).poker?.actingAccountId
+    ).toBe(bob.id);
     expect(persisted.seasonAssets[alice.id]?.score).toBe(10_000);
     new PlatformDomain(persisted).validateInvariants();
     store.close();
@@ -884,7 +915,7 @@ describe("server", () => {
       )
     ).toBe(false);
     expect(
-      persisted.rooms[room.id]?.poker?.players.find(
+      requirePokerRoom(persisted.rooms[room.id]).poker?.players.find(
         (player) => player.accountId === bob.id
       )
     ).toMatchObject({
@@ -1022,7 +1053,9 @@ describe("server", () => {
     });
     expect(started.status).toBe("accepted");
     const persisted = store.load();
-    const bobPlayer = persisted.rooms[room.id]?.poker?.players.find(
+    const bobPlayer = requirePokerRoom(
+      persisted.rooms[room.id]
+    ).poker?.players.find(
       (player) => player.accountId === bob.id
     );
     expect((bobPlayer?.stack ?? 0) + (bobPlayer?.totalBet ?? 0)).toBe(3_000);
@@ -1113,6 +1146,12 @@ describe("server", () => {
             maxBuyIn: 12_000,
             suitColorPreset: "high-contrast",
             denominations: [1, 5, 25, 100]
+          },
+          avalon: {
+            defaultRecognitionMode: "automatic",
+            defaultOberonRule: "original",
+            defaultStake: 100,
+            rolePresets: DEFAULT_AVALON_ROLE_PRESETS
           }
         }
       }
@@ -1135,7 +1174,7 @@ describe("server", () => {
       aggregateId: "platform",
       expectedVersion: 1,
       type: "admin.season.start",
-      payload: { name: "Season 2", baseScore: 5_000 }
+      payload: { name: "Season 2", baseScore: -5_000 }
     });
     expect(started.statusCode).toBe(200);
     const stateAfterStart = (
@@ -1143,7 +1182,7 @@ describe("server", () => {
     ).json();
     expect(stateAfterStart.currentSeason).toMatchObject({
       name: "Season 2",
-      baseScore: 5_000,
+      baseScore: -5_000,
       status: "current"
     });
     expect(stateAfterStart.historicalSeasons).toHaveLength(1);
@@ -1235,7 +1274,10 @@ describe("server", () => {
     expect((settled.data as { phase: string }).phase).toBe("distribution");
 
     const distributing = store.load();
-    distributing.rooms[room.id]!.poker!.advanceDeadline = Date.now() - 1;
+    const distributingRoom = requirePokerRoom(
+      distributing.rooms[room.id]
+    );
+    distributingRoom.poker!.advanceDeadline = Date.now() - 1;
     store.save(distributing);
     const completed = dispatch(store, {
       commandId: "complete-distribution",
@@ -1244,7 +1286,7 @@ describe("server", () => {
       type: "system.poker.complete-distribution",
       payload: {
         roomId: room.id,
-        pokerVersion: distributing.rooms[room.id]!.poker!.version
+        pokerVersion: distributingRoom.poker!.version
       }
     });
     expect(completed.status).toBe("accepted");
@@ -1277,7 +1319,9 @@ describe("server", () => {
     });
     expect(undone.status).toBe("accepted");
     const restored = store.load();
-    expect(restored.rooms[room.id]?.poker?.phase).toBe("showdown");
+    expect(requirePokerRoom(restored.rooms[room.id]).poker?.phase).toBe(
+      "showdown"
+    );
     expect(restored.handResults[0]?.reversedAt).toBeTypeOf("number");
     const reversalLines = restored.ledger.filter(
       (line) => line.reason === "settlement-undo"

@@ -3,6 +3,12 @@ import type {
   Account,
   AdminProjection,
   AssetLine,
+  AvalonMissionChoice,
+  AvalonResultSummary,
+  AvalonRole,
+  AvalonRoom,
+  AvalonRoomConfig,
+  AvalonRoomProjection,
   Card,
   GlobalSettings,
   HandCategory,
@@ -12,20 +18,43 @@ import type {
   PlatformDataDeletionResult,
   PlatformParticipationFact,
   PlatformSnapshot,
+  PokerRoom,
+  PokerRoomProjection,
   Room,
   RoomConfig,
+  RoomMode,
   RoomProjection,
   SeasonAsset,
   ThemeMode,
   UsernameLookupResult
 } from "@party/contracts";
 import {
+  assertNoAvalonSecrets,
   assertNoPrivateCards,
   DEFAULT_DENOMINATIONS,
   fallbackAvatar,
   isSelectableAvatar,
   selectableAvatars
 } from "@party/contracts";
+import {
+  DEFAULT_AVALON_ROLE_PRESETS,
+  AvalonRuleError,
+  advanceAvalonNight as advanceAvalonNightState,
+  assassinateInAvalon as assassinateInAvalonState,
+  avalonAlignmentForRole,
+  avalonKnowledgeFor,
+  castAvalonVote as castAvalonVoteState,
+  confirmAvalonRole as confirmAvalonRoleState,
+  createAvalonGame,
+  currentAvalonLeader,
+  currentAvalonMissionRule,
+  normalizeAvalonRoles,
+  proposeAvalonTeam as proposeAvalonTeamState,
+  restartAvalonNight as restartAvalonNightState,
+  submitAvalonMission as submitAvalonMissionState,
+  voidAvalonGame as voidAvalonGameState,
+  type AvalonRandomInt
+} from "@party/avalon";
 
 export class DomainError extends Error {
   constructor(public readonly code: string, message = code) {
@@ -54,6 +83,48 @@ export function normalizeDenominations(input: readonly number[]): number[] {
   return [...input].sort((left, right) => left - right);
 }
 
+function checkedAdd(left: number, right: number): number {
+  const result = left + right;
+  if (
+    !Number.isSafeInteger(left) ||
+    !Number.isSafeInteger(right) ||
+    !Number.isSafeInteger(result)
+  ) {
+    throw new DomainError("SAFE_INTEGER_OVERFLOW");
+  }
+  return result;
+}
+
+function checkedSubtract(left: number, right: number): number {
+  const result = left - right;
+  if (
+    !Number.isSafeInteger(left) ||
+    !Number.isSafeInteger(right) ||
+    !Number.isSafeInteger(result)
+  ) {
+    throw new DomainError("SAFE_INTEGER_OVERFLOW");
+  }
+  return result;
+}
+
+function checkedMultiply(left: number, right: number): number {
+  const result = left * right;
+  if (
+    !Number.isSafeInteger(left) ||
+    !Number.isSafeInteger(right) ||
+    !Number.isSafeInteger(result)
+  ) {
+    throw new DomainError("SAFE_INTEGER_OVERFLOW");
+  }
+  return result;
+}
+
+function checkedSum(values: Iterable<number>): number {
+  let total = 0;
+  for (const value of values) total = checkedAdd(total, value);
+  return total;
+}
+
 export function initialSnapshot(now = Date.now()): PlatformSnapshot {
   return {
     version: 0,
@@ -73,6 +144,7 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
     leases: {},
     ledger: [],
     handResults: [],
+    avalonResults: [],
     retiredIdentities: {},
     settings: {
       defaultLanguage: "zh-CN",
@@ -85,6 +157,12 @@ export function initialSnapshot(now = Date.now()): PlatformSnapshot {
         maxBuyIn: 20_000,
         suitColorPreset: "standard",
         denominations: [...DEFAULT_DENOMINATIONS]
+      },
+      avalon: {
+        defaultRecognitionMode: "automatic",
+        defaultOberonRule: "original",
+        defaultStake: 100,
+        rolePresets: structuredClone(DEFAULT_AVALON_ROLE_PRESETS)
       }
     }
   };
@@ -128,6 +206,18 @@ export class PlatformDomain {
         this.normalizedPersistedState = true;
       }
     }
+    const legacySettingsWithAvalon = state.settings as GlobalSettings & {
+      avalon?: GlobalSettings["avalon"];
+    };
+    if (!legacySettingsWithAvalon.avalon) {
+      legacySettingsWithAvalon.avalon = {
+        defaultRecognitionMode: "automatic",
+        defaultOberonRule: "original",
+        defaultStake: 100,
+        rolePresets: structuredClone(DEFAULT_AVALON_ROLE_PRESETS)
+      };
+      this.normalizedPersistedState = true;
+    }
     for (const account of Object.values(state.accounts)) {
       const legacyAccount = account as Account & {
         language?: Language;
@@ -160,6 +250,13 @@ export class PlatformDomain {
       state.handResults = [];
       this.normalizedPersistedState = true;
     }
+    const legacyStateWithAvalon = state as PlatformSnapshot & {
+      avalonResults?: AvalonResultSummary[];
+    };
+    if (!Array.isArray(legacyStateWithAvalon.avalonResults)) {
+      legacyStateWithAvalon.avalonResults = [];
+      this.normalizedPersistedState = true;
+    }
     if (!state.retiredIdentities || typeof state.retiredIdentities !== "object") {
       state.retiredIdentities = {};
       this.normalizedPersistedState = true;
@@ -183,25 +280,34 @@ export class PlatformDomain {
       }
     }
     for (const room of Object.values(state.rooms)) {
+      const legacyTypedRoom = room as unknown as {
+        gameType?: "texas-holdem" | "avalon";
+      };
+      if (!legacyTypedRoom.gameType) {
+        legacyTypedRoom.gameType = "texas-holdem";
+        this.normalizedPersistedState = true;
+      }
       if (!Number.isFinite(room.createdAt)) {
         room.createdAt = 0;
         this.normalizedPersistedState = true;
       }
-      for (const seat of room.seats) {
-        const legacySeat = seat as typeof seat & {
-          buyIn?: number;
-          frozenLeaderboardScore?: number;
-        };
-        if (!Number.isFinite(legacySeat.buyIn)) {
-          legacySeat.buyIn = seat.tableChips;
-          this.normalizedPersistedState = true;
-        }
-        if (!Number.isFinite(legacySeat.frozenLeaderboardScore)) {
-          legacySeat.frozenLeaderboardScore =
-            state.seasonAssets[seat.accountId]?.frozenScore ??
-            state.seasonAssets[seat.accountId]?.score ??
-            0;
-          this.normalizedPersistedState = true;
+      if (room.gameType === "texas-holdem") {
+        for (const seat of room.seats) {
+          const legacySeat = seat as typeof seat & {
+            buyIn?: number;
+            frozenLeaderboardScore?: number;
+          };
+          if (!Number.isFinite(legacySeat.buyIn)) {
+            legacySeat.buyIn = seat.tableChips;
+            this.normalizedPersistedState = true;
+          }
+          if (!Number.isFinite(legacySeat.frozenLeaderboardScore)) {
+            legacySeat.frozenLeaderboardScore =
+              state.seasonAssets[seat.accountId]?.frozenScore ??
+              state.seasonAssets[seat.accountId]?.score ??
+              0;
+            this.normalizedPersistedState = true;
+          }
         }
       }
       const legacyRoom = room as typeof room & {
@@ -211,18 +317,30 @@ export class PlatformDomain {
         legacyRoom.waitingReadyAccountIds = [];
         this.normalizedPersistedState = true;
       }
-      if (room.poker && !Array.isArray(room.poker.raiseLockedAccountIds)) {
+      if (
+        room.gameType === "texas-holdem" &&
+        room.poker &&
+        !Array.isArray(room.poker.raiseLockedAccountIds)
+      ) {
         room.poker.raiseLockedAccountIds = [];
         this.normalizedPersistedState = true;
       }
-      if (room.poker && !Array.isArray(room.poker.readyAccountIds)) {
+      if (
+        room.gameType === "texas-holdem" &&
+        room.poker &&
+        !Array.isArray(room.poker.readyAccountIds)
+      ) {
         room.poker.readyAccountIds = [];
         this.normalizedPersistedState = true;
       }
-      if (room.poker && !Array.isArray(room.poker.denominations)) {
+      if (
+        room.gameType === "texas-holdem" &&
+        room.poker &&
+        !Array.isArray(room.poker.denominations)
+      ) {
         room.poker.denominations = [...DEFAULT_DENOMINATIONS];
         this.normalizedPersistedState = true;
-      } else if (room.poker) {
+      } else if (room.gameType === "texas-holdem" && room.poker) {
         const normalizedDenominations = normalizeDenominations(
           room.poker.denominations
         );
@@ -235,11 +353,19 @@ export class PlatformDomain {
           this.normalizedPersistedState = true;
         }
       }
-      if (room.poker && !Array.isArray(room.poker.departedAccountIds)) {
+      if (
+        room.gameType === "texas-holdem" &&
+        room.poker &&
+        !Array.isArray(room.poker.departedAccountIds)
+      ) {
         room.poker.departedAccountIds = [];
         this.normalizedPersistedState = true;
       }
-      if (room.poker?.phase === "complete" && room.poker.advanceDeadline !== undefined) {
+      if (
+        room.gameType === "texas-holdem" &&
+        room.poker?.phase === "complete" &&
+        room.poker.advanceDeadline !== undefined
+      ) {
         delete room.poker.advanceDeadline;
         delete room.poker.pausedAdvanceRemainingMs;
         this.normalizedPersistedState = true;
@@ -392,12 +518,14 @@ export class PlatformDomain {
       hostTransferTimeoutSeconds: settings.defaultHostTransferTimeoutSeconds,
       ...settings.poker
     });
+    const avalon = this.normalizeAvalonSettings(settings.avalon);
     this.state.settings = structuredClone({
       ...settings,
       poker: {
         ...settings.poker,
         denominations: normalizeDenominations(settings.poker.denominations)
-      }
+      },
+      avalon
     });
     return this.state.settings;
   }
@@ -408,9 +536,35 @@ export class PlatformDomain {
       rooms: Object.values(this.state.rooms)
         .map((room) => {
           const projection = this.projectRoom(room.id, { display: true });
+          if (
+            room.gameType === "avalon" &&
+            projection.gameType === "avalon"
+          ) {
+            return {
+              id: room.id,
+              name: room.name,
+              gameType: "avalon" as const,
+              status: room.status,
+              hostAccountId: room.hostAccountId,
+              seatCount: room.seats.length,
+              maxSeats: 10,
+              recognitionMode: room.config.recognitionMode,
+              oberonRule: room.config.oberonRule,
+              stake: room.config.stake,
+              createdAt: room.createdAt,
+              seats: projection.seats
+            };
+          }
+          if (
+            room.gameType !== "texas-holdem" ||
+            projection.gameType !== "texas-holdem"
+          ) {
+            throw new DomainError("ROOM_GAME_TYPE_MISMATCH");
+          }
           return {
             id: room.id,
             name: room.name,
+            gameType: "texas-holdem" as const,
             mode: room.config.mode,
             status: room.status,
             hostAccountId: room.hostAccountId,
@@ -451,11 +605,11 @@ export class PlatformDomain {
     };
   }
 
-  createRoom(accountId: string, name: string, config: RoomConfig): Room {
+  createRoom(accountId: string, name: string, config: RoomConfig): PokerRoom {
     this.requireAccount(accountId);
     if (this.roomForAccount(accountId)) throw new DomainError("ALREADY_IN_ROOM");
     this.validateRoomConfig(config);
-    const room: Room = {
+    const room: PokerRoom = {
       id: this.id(),
       name: name.trim() || "Texas Hold'em",
       gameType: "texas-holdem",
@@ -471,18 +625,51 @@ export class PlatformDomain {
     return room;
   }
 
-  joinRoom(roomId: string, accountId: string, buyIn: number): Room {
-    const room = this.requireRoom(roomId);
+  createAvalonRoom(
+    accountId: string,
+    name: string,
+    config: AvalonRoomConfig
+  ): AvalonRoom {
+    this.requireAccount(accountId);
+    if (this.roomForAccount(accountId)) throw new DomainError("ALREADY_IN_ROOM");
+    const normalizedConfig = this.normalizeAvalonRoomConfig(config);
+    const room: AvalonRoom = {
+      id: this.id(),
+      name: name.trim() || "Avalon",
+      gameType: "avalon",
+      status: "waiting",
+      hostAccountId: accountId,
+      config: normalizedConfig,
+      seats: [
+        {
+          accountId,
+          position: 0,
+          connected: true
+        }
+      ],
+      waitingReadyAccountIds: [],
+      version: 0,
+      createdAt: this.now()
+    };
+    this.state.rooms[room.id] = room;
+    return room;
+  }
+
+  joinRoom(roomId: string, accountId: string, buyIn: number): PokerRoom {
+    const room = this.requirePokerRoom(roomId);
     if (!["waiting", "in_progress", "paused"].includes(room.status)) {
       throw new DomainError("ROOM_NOT_JOINABLE");
     }
     if (room.seats.length >= 10) throw new DomainError("ROOM_FULL");
     if (this.roomForAccount(accountId)) throw new DomainError("ALREADY_IN_ROOM");
-    if (!Number.isInteger(buyIn) || buyIn < room.config.minBuyIn || buyIn > room.config.maxBuyIn) {
+    if (
+      !Number.isSafeInteger(buyIn) ||
+      buyIn < room.config.minBuyIn ||
+      buyIn > room.config.maxBuyIn
+    ) {
       throw new DomainError("INVALID_BUY_IN");
     }
     const asset = this.requireAsset(accountId);
-    if (asset.score < buyIn) throw new DomainError("INSUFFICIENT_SCORE");
     const occupiedPositions = new Set(room.seats.map((seat) => seat.position));
     const position = Array.from({ length: 10 }, (_, index) => index).find(
       (candidate) => !occupiedPositions.has(candidate)
@@ -506,8 +693,26 @@ export class PlatformDomain {
     return room;
   }
 
-  startRoom(roomId: string, hostAccountId: string): Room {
-    const room = this.requireRoom(roomId);
+  joinAvalonRoom(roomId: string, accountId: string): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    if (!["waiting", "in_progress", "paused"].includes(room.status)) {
+      throw new DomainError("ROOM_NOT_JOINABLE");
+    }
+    if (room.seats.length >= 10) throw new DomainError("ROOM_FULL");
+    if (this.roomForAccount(accountId)) throw new DomainError("ALREADY_IN_ROOM");
+    this.requireAccount(accountId);
+    const occupiedPositions = new Set(room.seats.map((seat) => seat.position));
+    const position = Array.from({ length: 10 }, (_, index) => index).find(
+      (candidate) => !occupiedPositions.has(candidate)
+    );
+    if (position === undefined) throw new DomainError("ROOM_FULL");
+    room.seats.push({ accountId, position, connected: true });
+    room.version += 1;
+    return room;
+  }
+
+  startRoom(roomId: string, hostAccountId: string): PokerRoom {
+    const room = this.requirePokerRoom(roomId);
     if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
     if (room.status !== "waiting") throw new DomainError("ROOM_ALREADY_STARTED");
     if (room.seats.length < 2) throw new DomainError("NOT_ENOUGH_PLAYERS");
@@ -521,8 +726,8 @@ export class PlatformDomain {
     accountId: string,
     ready: boolean,
     expectedPokerVersion?: number
-  ): Room {
-    const room = this.requireRoom(roomId);
+  ): PokerRoom {
+    const room = this.requirePokerRoom(roomId);
     const seat = room.seats.find((candidate) => candidate.accountId === accountId);
     if (!seat) throw new DomainError("PLAYER_NOT_IN_ROOM");
     if (room.hostAccountId === accountId) {
@@ -556,13 +761,276 @@ export class PlatformDomain {
     return room;
   }
 
+  updateAvalonRoomConfig(
+    roomId: string,
+    hostAccountId: string,
+    config: AvalonRoomConfig,
+    expectedAvalonVersion?: number
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    this.assertAvalonIntermission(room, expectedAvalonVersion);
+    room.config = this.normalizeAvalonRoomConfig(config);
+    room.waitingReadyAccountIds = [];
+    room.version += 1;
+    return room;
+  }
+
+  setAvalonReady(
+    roomId: string,
+    accountId: string,
+    ready: boolean,
+    expectedAvalonVersion?: number
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    const seat = room.seats.find((candidate) => candidate.accountId === accountId);
+    if (!seat) throw new DomainError("PLAYER_NOT_IN_ROOM");
+    if (room.hostAccountId === accountId) {
+      throw new DomainError("HOST_READY_IMPLICIT");
+    }
+    this.assertAvalonIntermission(room, expectedAvalonVersion);
+    if (!seat.connected) throw new DomainError("PLAYER_OFFLINE");
+    const contains = room.waitingReadyAccountIds.includes(accountId);
+    if (contains === ready) return room;
+    room.waitingReadyAccountIds = ready
+      ? [...room.waitingReadyAccountIds, accountId]
+      : room.waitingReadyAccountIds.filter(
+          (candidate) => candidate !== accountId
+        );
+    room.version += 1;
+    return room;
+  }
+
+  startAvalonGame(
+    roomId: string,
+    hostAccountId: string,
+    options: {
+      expectedAvalonVersion?: number;
+      confirmUnready: boolean;
+      randomInt: AvalonRandomInt;
+    }
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    this.assertAvalonIntermission(room, options.expectedAvalonVersion);
+    if (room.status === "paused") throw new DomainError("ROOM_PAUSED");
+    const hostSeat = room.seats.find(
+      (seat) => seat.accountId === hostAccountId
+    );
+    if (!hostSeat) throw new DomainError("PLAYER_NOT_IN_ROOM");
+    if (!hostSeat.connected) throw new DomainError("PLAYER_OFFLINE");
+
+    const ready = new Set(room.waitingReadyAccountIds);
+    const selected = room.seats
+      .filter(
+        (seat) =>
+          seat.accountId === hostAccountId ||
+          (seat.connected && ready.has(seat.accountId))
+      )
+      .sort((left, right) => left.position - right.position);
+    if (selected.length < 5 || selected.length > 10) {
+      throw new DomainError("INVALID_AVALON_PLAYER_COUNT");
+    }
+    const selectedIds = new Set(selected.map((seat) => seat.accountId));
+    const unreadyMembers = room.seats.filter(
+      (seat) => !selectedIds.has(seat.accountId)
+    );
+    if (unreadyMembers.length > 0 && !options.confirmUnready) {
+      throw new DomainError("UNREADY_PLAYERS_REQUIRE_CONFIRMATION");
+    }
+
+    const configuredRoles =
+      room.config.roleSource === "preset"
+        ? room.config.rolePresets[
+            selected.length as keyof typeof room.config.rolePresets
+          ]
+        : room.config.roles;
+    if (!configuredRoles) throw new DomainError("INVALID_AVALON_ROLE_CONFIG");
+    for (const seat of selected) {
+      checkedSubtract(this.requireAsset(seat.accountId).score, room.config.stake);
+    }
+
+    const previousGameNumber = room.avalon?.gameNumber ?? 0;
+    const game = this.translateAvalonError(() =>
+      createAvalonGame({
+        gameNumber: checkedAdd(previousGameNumber, 1),
+        participants: selected.map((seat) => ({
+          accountId: seat.accountId,
+          position: seat.position
+        })),
+        recognitionMode: room.config.recognitionMode,
+        oberonRule: room.config.oberonRule,
+        roles: configuredRoles,
+        stake: room.config.stake,
+        randomInt: options.randomInt
+      })
+    );
+    for (const seat of selected) {
+      const asset = this.requireAsset(seat.accountId);
+      asset.inGame = true;
+      asset.frozenScore = asset.score;
+      this.transfer(
+        seat.accountId,
+        room.id,
+        room.config.stake,
+        "avalon-stake"
+      );
+    }
+    room.avalon = game;
+    room.waitingReadyAccountIds = [];
+    room.status = "in_progress";
+    room.version += 1;
+    return room;
+  }
+
+  confirmAvalonRole(
+    roomId: string,
+    accountId: string,
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    return this.applyAvalonTransition(roomId, (state) =>
+      confirmAvalonRoleState(state, accountId, expectedAvalonVersion)
+    );
+  }
+
+  advanceAvalonNight(
+    roomId: string,
+    hostAccountId: string,
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    return this.applyAvalonTransition(roomId, (state) =>
+      advanceAvalonNightState(state, expectedAvalonVersion)
+    );
+  }
+
+  restartAvalonNight(
+    roomId: string,
+    hostAccountId: string,
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
+    return this.applyAvalonTransition(roomId, (state) =>
+      restartAvalonNightState(state, expectedAvalonVersion)
+    );
+  }
+
+  proposeAvalonTeam(
+    roomId: string,
+    accountId: string,
+    teamAccountIds: readonly string[],
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    return this.applyAvalonTransition(roomId, (state) =>
+      proposeAvalonTeamState(
+        state,
+        accountId,
+        teamAccountIds,
+        expectedAvalonVersion
+      )
+    );
+  }
+
+  castAvalonVote(
+    roomId: string,
+    accountId: string,
+    approve: boolean,
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    return this.applyAvalonTransition(roomId, (state) =>
+      castAvalonVoteState(state, accountId, approve, expectedAvalonVersion)
+    );
+  }
+
+  submitAvalonMission(
+    roomId: string,
+    accountId: string,
+    choice: AvalonMissionChoice,
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    return this.applyAvalonTransition(roomId, (state) =>
+      submitAvalonMissionState(
+        state,
+        accountId,
+        choice,
+        expectedAvalonVersion
+      )
+    );
+  }
+
+  assassinateInAvalon(
+    roomId: string,
+    accountId: string,
+    targetAccountId: string,
+    expectedAvalonVersion: number
+  ): AvalonRoom {
+    return this.applyAvalonTransition(roomId, (state) =>
+      assassinateInAvalonState(
+        state,
+        accountId,
+        targetAccountId,
+        expectedAvalonVersion
+      )
+    );
+  }
+
+  voidAvalonRound(
+    roomId: string,
+    expectedAvalonVersion?: number
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    const state = room.avalon;
+    if (!state || ["complete", "void"].includes(state.phase)) return room;
+    if (
+      expectedAvalonVersion !== undefined &&
+      state.version !== expectedAvalonVersion
+    ) {
+      throw new DomainError("STALE_AVALON_VERSION");
+    }
+    const next = this.translateAvalonError(() =>
+      voidAvalonGameState(state, state.version)
+    );
+    for (const participant of next.participants) {
+      this.transfer(
+        room.id,
+        participant.accountId,
+        next.config.stake,
+        "avalon-void-refund"
+      );
+      const asset = this.requireAsset(participant.accountId);
+      asset.inGame = false;
+      asset.frozenScore = null;
+    }
+    room.avalon = next;
+    this.recordAvalonResult(room);
+    room.waitingReadyAccountIds = [];
+    room.version += 1;
+    return room;
+  }
+
   readyAccountIdsForRoom(room: Room): string[] {
+    if (room.gameType === "avalon") {
+      if (
+        room.status === "waiting" ||
+        ["complete", "void"].includes(room.avalon?.phase ?? "void")
+      ) {
+        return [
+          room.hostAccountId,
+          ...room.waitingReadyAccountIds.filter(
+            (accountId) => accountId !== room.hostAccountId
+          )
+        ];
+      }
+      return [];
+    }
     if (room.status === "waiting") return [...room.waitingReadyAccountIds];
     if (room.poker?.phase === "complete") return [...room.poker.readyAccountIds];
     return [];
   }
 
-  roomMemberStack(room: Room, accountId: string): number {
+  roomMemberStack(room: PokerRoom, accountId: string): number {
     const seat = room.seats.find((candidate) => candidate.accountId === accountId);
     if (!seat) return 0;
     if (
@@ -578,7 +1046,7 @@ export class PlatformDomain {
     return seat.tableChips;
   }
 
-  effectiveDenominations(room: Room): number[] {
+  effectiveDenominations(room: PokerRoom): number[] {
     const handActive = Boolean(
       room.poker && !["waiting", "complete", "void"].includes(room.poker.phase)
     );
@@ -593,7 +1061,10 @@ export class PlatformDomain {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
     if (room.status !== "in_progress") throw new DomainError("ROOM_NOT_IN_PROGRESS");
-    if (room.poker?.advanceDeadline !== undefined) {
+    if (
+      room.gameType === "texas-holdem" &&
+      room.poker?.advanceDeadline !== undefined
+    ) {
       room.poker.pausedAdvanceRemainingMs = Math.max(
         0,
         room.poker.advanceDeadline - this.now()
@@ -609,7 +1080,10 @@ export class PlatformDomain {
     const room = this.requireRoom(roomId);
     if (room.hostAccountId !== hostAccountId) throw new DomainError("HOST_ONLY");
     if (room.status !== "paused") throw new DomainError("ROOM_NOT_PAUSED");
-    if (room.poker?.pausedAdvanceRemainingMs !== undefined) {
+    if (
+      room.gameType === "texas-holdem" &&
+      room.poker?.pausedAdvanceRemainingMs !== undefined
+    ) {
       room.poker.advanceDeadline = this.now() + room.poker.pausedAdvanceRemainingMs;
       delete room.poker.pausedAdvanceRemainingMs;
     }
@@ -632,25 +1106,27 @@ export class PlatformDomain {
     return room;
   }
 
-  topUp(roomId: string, accountId: string, amount: number): Room {
-    const room = this.requireRoom(roomId);
+  topUp(roomId: string, accountId: string, amount: number): PokerRoom {
+    const room = this.requirePokerRoom(roomId);
     const seat = room.seats.find((candidate) => candidate.accountId === accountId);
     if (!seat) throw new DomainError("PLAYER_NOT_IN_ROOM");
     if (room.poker && !["complete", "waiting", "void"].includes(room.poker.phase)) {
       throw new DomainError("HAND_IN_PROGRESS");
     }
-    if (!Number.isInteger(amount) || amount <= 0) throw new DomainError("INVALID_AMOUNT");
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new DomainError("INVALID_AMOUNT");
+    }
     const currentStack = this.roomMemberStack(room, accountId);
-    if (currentStack + amount > room.config.maxBuyIn) throw new DomainError("BUY_IN_LIMIT");
-    if (this.requireAsset(accountId).score < amount) throw new DomainError("INSUFFICIENT_SCORE");
+    const nextStack = checkedAdd(currentStack, amount);
+    if (nextStack > room.config.maxBuyIn) throw new DomainError("BUY_IN_LIMIT");
     this.transfer(accountId, room.id, amount, "top-up");
-    seat.buyIn += amount;
-    seat.tableChips = currentStack + amount;
+    seat.buyIn = checkedAdd(seat.buyIn, amount);
+    seat.tableChips = nextStack;
     const pokerPlayer =
       room.poker && !room.poker.departedAccountIds?.includes(accountId)
         ? room.poker.players.find((player) => player.accountId === accountId)
         : undefined;
-    if (pokerPlayer) pokerPlayer.stack += amount;
+    if (pokerPlayer) pokerPlayer.stack = checkedAdd(pokerPlayer.stack, amount);
     room.version += 1;
     return room;
   }
@@ -674,6 +1150,37 @@ export class PlatformDomain {
       );
       if (!nextHost) throw new DomainError("PLAYER_NOT_IN_ROOM");
       if (!nextHost.connected) throw new DomainError("TARGET_OFFLINE");
+    }
+    if (room.gameType === "avalon") {
+      const activeParticipant = Boolean(
+        room.avalon &&
+          !["complete", "void"].includes(room.avalon.phase) &&
+          room.avalon.participants.some(
+            (participant) => participant.accountId === accountId
+          )
+      );
+      if (activeParticipant) this.voidAvalonRound(room.id);
+      room.waitingReadyAccountIds = room.waitingReadyAccountIds.filter(
+        (candidate) => candidate !== accountId
+      );
+      room.seats.splice(seatIndex, 1);
+      const asset = this.state.seasonAssets[accountId];
+      if (asset) {
+        asset.inGame = false;
+        asset.frozenScore = null;
+      }
+      if (room.seats.length === 0) {
+        delete this.state.rooms[roomId];
+        return undefined;
+      }
+      if (leavingHost) {
+        const nextHost =
+          room.seats.find((seat) => seat.accountId === nextHostAccountId) ??
+          room.seats[0]!;
+        room.hostAccountId = nextHost.accountId;
+      }
+      room.version += 1;
+      return room;
     }
     const pokerPlayer = room.poker?.players.find((player) => player.accountId === accountId);
     const handActive =
@@ -724,7 +1231,10 @@ export class PlatformDomain {
     const seat = room.seats.find((candidate) => candidate.accountId === accountId);
     if (!seat || !seat.connected) return;
     seat.connected = false;
-    if (room.poker?.readyAccountIds.includes(accountId)) {
+    if (
+      room.gameType === "texas-holdem" &&
+      room.poker?.readyAccountIds.includes(accountId)
+    ) {
       room.poker.readyAccountIds = room.poker.readyAccountIds.filter(
         (candidate) => candidate !== accountId
       );
@@ -774,6 +1284,7 @@ export class PlatformDomain {
 
   recoverAfterRestart(): boolean {
     let changed = this.normalizedPersistedState;
+    this.normalizedPersistedState = false;
     if (Object.keys(this.state.leases).length > 0) {
       this.state.leases = {};
       changed = true;
@@ -784,7 +1295,11 @@ export class PlatformDomain {
         room.waitingReadyAccountIds = [];
         roomChanged = true;
       }
-      if (room.poker && room.poker.readyAccountIds.length > 0) {
+      if (
+        room.gameType === "texas-holdem" &&
+        room.poker &&
+        room.poker.readyAccountIds.length > 0
+      ) {
         room.poker.readyAccountIds = [];
         room.poker.version += 1;
         roomChanged = true;
@@ -813,6 +1328,25 @@ export class PlatformDomain {
 
   closeRoom(roomId: string): void {
     const room = this.requireRoom(roomId);
+    if (room.gameType === "avalon") {
+      if (
+        room.avalon &&
+        !["complete", "void"].includes(room.avalon.phase)
+      ) {
+        this.voidAvalonRound(room.id);
+      }
+      for (const seat of room.seats) {
+        const asset = this.state.seasonAssets[seat.accountId];
+        if (asset) {
+          asset.inGame = false;
+          asset.frozenScore = null;
+        }
+      }
+      room.status = "closed";
+      room.version += 1;
+      delete this.state.rooms[roomId];
+      return;
+    }
     const departedAccountIds = new Set(room.poker?.departedAccountIds ?? []);
     const pokerPlayers = new Map(
       room.poker?.players
@@ -882,7 +1416,7 @@ export class PlatformDomain {
 
   startSeason(name: string | undefined, baseScore: number): void {
     if (Object.keys(this.state.rooms).length > 0) throw new DomainError("ROOMS_MUST_CLOSE");
-    if (!Number.isInteger(baseScore) || baseScore < 0) throw new DomainError("INVALID_BASE_SCORE");
+    if (!Number.isSafeInteger(baseScore)) throw new DomainError("INVALID_BASE_SCORE");
     const previous = this.currentSeason;
     const entries = this.currentLeaderboard();
     previous.status = "historical";
@@ -933,19 +1467,35 @@ export class PlatformDomain {
           rank: 0
         };
       })
-      .sort((left, right) => right.score - left.score || left.username.localeCompare(right.username))
+      .sort((left, right) =>
+        left.score === right.score
+          ? left.username.localeCompare(right.username)
+          : left.score > right.score
+            ? -1
+            : 1
+      )
       .map((entry, index) => ({ ...entry, rank: index + 1 }));
   }
 
   participationFacts(): PlatformParticipationFact[] {
-    return this.state.handResults.map((result) => ({
-      resultId: result.id,
-      gameType: "texas-holdem",
-      seasonId: result.seasonId,
-      participantAccountIds: [...result.participantAccountIds],
-      valid: result.outcome !== "void",
-      reversed: result.reversedAt !== undefined
-    }));
+    return [
+      ...this.state.handResults.map((result) => ({
+        resultId: result.id,
+        gameType: "texas-holdem",
+        seasonId: result.seasonId,
+        participantAccountIds: [...result.participantAccountIds],
+        valid: result.outcome !== "void",
+        reversed: result.reversedAt !== undefined
+      })),
+      ...this.state.avalonResults.map((result) => ({
+        resultId: result.id,
+        gameType: "avalon",
+        seasonId: result.seasonId,
+        participantAccountIds: [...result.participantAccountIds],
+        valid: result.outcome === "settled",
+        reversed: result.reversedAt !== undefined
+      }))
+    ];
   }
 
   validateAccountDeletionTargets(accountIds: readonly string[]): string[] {
@@ -1000,6 +1550,15 @@ export class PlatformDomain {
 
   projectRoom(roomId: string, viewer?: { accountId?: string; display?: boolean }): RoomProjection {
     const room = this.requireRoom(roomId);
+    return room.gameType === "avalon"
+      ? this.projectAvalonRoom(room, viewer)
+      : this.projectPokerRoom(room, viewer);
+  }
+
+  private projectPokerRoom(
+    room: PokerRoom,
+    viewer?: { accountId?: string; display?: boolean }
+  ): PokerRoomProjection {
     const departedAccountIds = new Set(room.poker?.departedAccountIds ?? []);
     const pokerPlayers = new Map(
       room.poker?.players.map((player) => [player.accountId, player]) ?? []
@@ -1020,10 +1579,11 @@ export class PlatformDomain {
           ? "participant"
           : "spectator"
         : "member";
-    const projection: RoomProjection = {
+    const projection: PokerRoomProjection = {
       platformVersion: this.state.version,
       id: room.id,
       name: room.name,
+      gameType: "texas-holdem",
       mode: room.config.mode,
       status: room.status,
       hostAccountId: room.hostAccountId,
@@ -1144,6 +1704,168 @@ export class PlatformDomain {
     return projection;
   }
 
+  private projectAvalonRoom(
+    room: AvalonRoom,
+    viewer?: { accountId?: string; display?: boolean }
+  ): AvalonRoomProjection {
+    const state = room.avalon;
+    const viewerSeat = viewer?.accountId
+      ? room.seats.find((seat) => seat.accountId === viewer.accountId)
+      : undefined;
+    if (!viewer?.display && viewer?.accountId && !viewerSeat) {
+      throw new DomainError("PLAYER_NOT_IN_ROOM");
+    }
+    const participantIds = new Set(
+      state?.participants.map((participant) => participant.accountId) ?? []
+    );
+    const roundPubliclyActive = Boolean(state && state.phase !== "void");
+    const viewerRole = viewer?.display
+      ? "display"
+      : viewer?.accountId && roundPubliclyActive
+        ? participantIds.has(viewer.accountId)
+          ? "participant"
+          : "spectator"
+        : "member";
+    const projection: AvalonRoomProjection = {
+      platformVersion: this.state.version,
+      id: room.id,
+      name: room.name,
+      gameType: "avalon",
+      status: room.status,
+      hostAccountId: room.hostAccountId,
+      config: structuredClone(room.config),
+      version: room.version,
+      createdAt: room.createdAt,
+      seats: [...room.seats]
+        .sort((left, right) => left.position - right.position)
+        .map((seat) => {
+          const account = this.requireAccount(seat.accountId);
+          return {
+            accountId: seat.accountId,
+            username: account.username,
+            avatar: account.avatar,
+            position: seat.position,
+            connected: seat.connected,
+            role: state && state.phase !== "void"
+              ? participantIds.has(seat.accountId)
+                ? "participant" as const
+                : "spectator" as const
+              : "member" as const
+          };
+        }),
+      viewerRole,
+      readyAccountIds: this.readyAccountIdsForRoom(room),
+      participantAccountIds:
+        state && state.phase !== "void"
+          ? state.participants.map((participant) => participant.accountId)
+          : [],
+      roleConfirmedAccountIds:
+        state && state.phase !== "void"
+          ? [...state.roleConfirmedAccountIds]
+          : [],
+      proposedTeamAccountIds:
+        state && !["complete", "void"].includes(state.phase)
+          ? [...state.proposedTeamAccountIds]
+          : [],
+      voteSubmittedAccountIds:
+        state && state.phase === "team-vote"
+          ? state.participants
+              .map((participant) => participant.accountId)
+              .filter((accountId) => Object.hasOwn(state.votes, accountId))
+          : [],
+      missionSubmittedAccountIds:
+        state && state.phase === "mission"
+          ? state.proposedTeamAccountIds.filter((accountId) =>
+              Object.hasOwn(state.missionChoices, accountId)
+            )
+          : [],
+      rejectionCount: state?.rejectionCount ?? 0,
+      voteHistory: structuredClone(state?.voteHistory ?? []),
+      missionHistory: structuredClone(state?.missionHistory ?? []),
+      nightSteps:
+        state?.config.recognitionMode === "manual"
+          ? structuredClone(state.nightSteps)
+          : []
+    };
+    if (state) {
+      projection.avalonVersion = state.version;
+      projection.gameNumber = state.gameNumber;
+      projection.phase = state.phase;
+      projection.nightStepIndex =
+        state.phase === "manual-night" ? state.nightStepIndex : undefined;
+      projection.outcome = state.outcome
+        ? structuredClone(state.outcome)
+        : undefined;
+      if (!["complete", "void"].includes(state.phase)) {
+        projection.currentLeaderAccountId = currentAvalonLeader(state);
+        projection.currentMissionNumber = state.missionIndex + 1;
+        projection.currentMissionRule = structuredClone(
+          currentAvalonMissionRule(state)
+        );
+      }
+      if (
+        !viewer?.display &&
+        viewer?.accountId &&
+        participantIds.has(viewer.accountId) &&
+        !["complete", "void"].includes(state.phase)
+      ) {
+        projection.ownKnowledge = this.translateAvalonError(() =>
+          avalonKnowledgeFor(state, viewer.accountId!)
+        );
+        projection.ownRoleConfirmed =
+          state.roleConfirmedAccountIds.includes(viewer.accountId);
+        projection.ownVoteSubmitted = Object.hasOwn(
+          state.votes,
+          viewer.accountId
+        );
+        projection.ownMissionSubmitted = Object.hasOwn(
+          state.missionChoices,
+          viewer.accountId
+        );
+        if (
+          state.phase === "assassination" &&
+          state.roleAssignments[viewer.accountId] === "assassin"
+        ) {
+          projection.assassinationCandidates = projection.seats.filter(
+            (seat) =>
+              participantIds.has(seat.accountId) &&
+              seat.accountId !== viewer.accountId
+          );
+        }
+      }
+      projection.lastResult = [...this.state.avalonResults]
+        .reverse()
+        .find(
+          (result) =>
+            result.roomId === room.id &&
+            result.gameNumber === state.gameNumber &&
+            result.reversedAt === undefined
+        );
+      if (projection.lastResult) {
+        projection.lastResult = structuredClone(projection.lastResult);
+      }
+      if (state.phase === "complete") {
+        projection.revealedRoles =
+          projection.lastResult?.outcome === "settled"
+            ? projection.lastResult.playerResults.map((player) => ({
+                accountId: player.accountId,
+                role: player.role,
+                alignment: player.alignment
+              }))
+            : state.participants.map((participant) => {
+                const role = state.roleAssignments[participant.accountId]!;
+                return {
+                  accountId: participant.accountId,
+                  role,
+                  alignment: avalonAlignmentForRole(role)
+                };
+              });
+      }
+    }
+    assertNoAvalonSecrets(projection);
+    return projection;
+  }
+
   validateInvariants(): void {
     normalizeDenominations(this.state.settings.poker.denominations);
     if (!["zh-CN", "en"].includes(this.state.settings.defaultLanguage)) {
@@ -1158,6 +1880,7 @@ export class PlatformDomain {
         this.state.settings.defaultHostTransferTimeoutSeconds,
       ...this.state.settings.poker
     });
+    this.normalizeAvalonSettings(this.state.settings.avalon);
     const normalized = new Set<string>();
     for (const account of Object.values(this.state.accounts)) {
       if (normalized.has(account.normalizedUsername)) throw new DomainError("DUPLICATE_USERNAME");
@@ -1171,9 +1894,25 @@ export class PlatformDomain {
         account.volume
       );
     }
+    for (const season of this.state.seasons) {
+      if (!Number.isSafeInteger(season.baseScore)) {
+        throw new DomainError("INVALID_BASE_SCORE");
+      }
+    }
+    for (const historical of this.state.historicalSeasons) {
+      for (const entry of historical.entries) {
+        if (!Number.isSafeInteger(entry.score)) {
+          throw new DomainError("INVALID_SCORE");
+        }
+      }
+    }
     for (const asset of Object.values(this.state.seasonAssets)) {
-      if (!Number.isInteger(asset.score) || asset.score < 0) {
-        throw new DomainError("NEGATIVE_ASSET");
+      if (
+        !Number.isSafeInteger(asset.score) ||
+        (asset.frozenScore !== null &&
+          !Number.isSafeInteger(asset.frozenScore))
+      ) {
+        throw new DomainError("INVALID_SCORE");
       }
       if (!this.state.accounts[asset.accountId]) {
         throw new DomainError("ORPHANED_ASSET");
@@ -1188,40 +1927,157 @@ export class PlatformDomain {
       if (
         room.waitingReadyAccountIds.some(
           (accountId) => !memberIds.has(accountId)
-        ) ||
-        room.poker?.readyAccountIds.some(
-          (accountId) => !memberIds.has(accountId)
         )
       ) {
         throw new DomainError("READY_PLAYER_NOT_IN_ROOM");
       }
-      if (room.poker) normalizeDenominations(room.poker.denominations);
       for (const seat of room.seats) {
-        if (occupancy.has(seat.accountId)) throw new DomainError("MULTIPLE_ROOM_OCCUPANCY");
+        if (!this.state.accounts[seat.accountId]) {
+          throw new DomainError("ACCOUNT_NOT_FOUND");
+        }
+        if (
+          !Number.isSafeInteger(seat.position) ||
+          seat.position < 0 ||
+          occupancy.has(seat.accountId)
+        ) {
+          throw new DomainError(
+            occupancy.has(seat.accountId)
+              ? "MULTIPLE_ROOM_OCCUPANCY"
+              : "INVALID_SEAT"
+          );
+        }
         occupancy.add(seat.accountId);
-        if (seat.tableChips < 0 || seat.currentBet < 0) throw new DomainError("NEGATIVE_ASSET");
+      }
+      if (room.gameType === "texas-holdem") {
+        if (
+          room.poker?.readyAccountIds.some(
+            (accountId) => !memberIds.has(accountId)
+          )
+        ) {
+          throw new DomainError("READY_PLAYER_NOT_IN_ROOM");
+        }
+        this.validateRoomConfig(room.config);
+        if (room.poker) normalizeDenominations(room.poker.denominations);
+        if (room.poker) {
+        const nonnegativePokerValues = [
+          room.poker.currentBet,
+          room.poker.minimumRaise,
+          room.poker.smallBlind,
+          room.poker.bigBlind,
+          ...room.poker.pots.map((pot) => pot.amount),
+          ...room.poker.players.flatMap((player) => [
+            player.stack,
+            player.roundBet,
+            player.totalBet
+          ])
+        ];
+        if (
+          nonnegativePokerValues.some(
+            (value) => !Number.isSafeInteger(value) || value < 0
+          )
+        ) {
+          throw new DomainError("NEGATIVE_ASSET");
+        }
+        }
+        for (const seat of room.seats) {
+        if (
+          !Number.isSafeInteger(seat.buyIn) ||
+          seat.buyIn < 0 ||
+          !Number.isSafeInteger(seat.frozenLeaderboardScore) ||
+          !Number.isSafeInteger(seat.tableChips) ||
+          seat.tableChips < 0 ||
+          !Number.isSafeInteger(seat.currentBet) ||
+          seat.currentBet < 0
+        ) {
+          throw new DomainError("NEGATIVE_ASSET");
+        }
+        }
+        continue;
+      }
+
+      this.normalizeAvalonRoomConfig(room.config);
+      const state = room.avalon;
+      if (!state) continue;
+      const participantIds = state.participants.map(
+        (participant) => participant.accountId
+      );
+      const activeRound = !["complete", "void"].includes(state.phase);
+      if (
+        (activeRound &&
+          participantIds.some((accountId) => !memberIds.has(accountId))) ||
+        new Set(participantIds).size !== participantIds.length ||
+        Object.keys(state.roleAssignments).length !== participantIds.length ||
+        participantIds.some(
+          (accountId) => state.roleAssignments[accountId] === undefined
+        ) ||
+        !Number.isSafeInteger(state.version) ||
+        state.version < 0 ||
+        !Number.isSafeInteger(state.gameNumber) ||
+        state.gameNumber <= 0 ||
+        !Number.isSafeInteger(state.config.stake) ||
+        state.config.stake < 2
+      ) {
+        throw new DomainError("INVALID_AVALON_STATE");
+      }
+      this.translateAvalonError(() =>
+        normalizeAvalonRoles(participantIds.length, state.config.roles)
+      );
+      if (
+        Object.keys(state.votes).some(
+          (accountId) => !participantIds.includes(accountId)
+        ) ||
+        Object.keys(state.missionChoices).some(
+          (accountId) => !state.proposedTeamAccountIds.includes(accountId)
+        )
+      ) {
+        throw new DomainError("INVALID_AVALON_STATE");
       }
     }
-    const issued = this.state.ledger
-      .filter(
-        (line) =>
-          line.seasonId === this.currentSeason.id && line.source === "season-issuance"
+    if (
+      this.state.ledger.some(
+        (line) => !Number.isSafeInteger(line.amount) || line.amount < 0
       )
-      .reduce((sum, line) => sum + line.amount, 0);
-    const retired = this.state.ledger
-      .filter(
-        (line) =>
-          line.seasonId === this.currentSeason.id &&
-          line.destination === "asset-retirement"
-      )
-      .reduce((sum, line) => sum + line.amount, 0);
-    const accountTotal = Object.values(this.state.seasonAssets).reduce(
-      (sum, asset) => sum + asset.score,
-      0
+    ) {
+      throw new DomainError("INVALID_LEDGER_AMOUNT");
+    }
+    const currentLedger = this.state.ledger.filter(
+      (line) => line.seasonId === this.currentSeason.id
     );
-    const tableTotal = Object.values(this.state.rooms).reduce((sum, room) => {
+    const issuedAssets = checkedSum(
+      currentLedger
+        .filter((line) => line.source === "season-issuance")
+        .map((line) => line.amount)
+    );
+    const issuedLiabilities = checkedSum(
+      currentLedger
+        .filter((line) => line.destination === "season-liability-issuance")
+        .map((line) => line.amount)
+    );
+    const retiredAssets = checkedSum(
+      currentLedger
+        .filter((line) => line.destination === "asset-retirement")
+        .map((line) => line.amount)
+    );
+    const retiredLiabilities = checkedSum(
+      currentLedger
+        .filter((line) => line.source === "liability-retirement")
+        .map((line) => line.amount)
+    );
+    const accountTotal = checkedSum(
+      Object.values(this.state.seasonAssets).map((asset) => asset.score)
+    );
+    const tableTotal = checkedSum(Object.values(this.state.rooms).map((room) => {
+      if (room.gameType === "avalon") {
+        return room.avalon &&
+          !["complete", "void"].includes(room.avalon.phase)
+          ? checkedMultiply(
+              room.avalon.config.stake,
+              room.avalon.participants.length
+            )
+          : 0;
+      }
       if (!room.poker) {
-        return sum + room.seats.reduce((roomSum, seat) => roomSum + seat.tableChips, 0);
+        return checkedSum(room.seats.map((seat) => seat.tableChips));
       }
       const participatingAccountIds = new Set(
         room.poker.players
@@ -1231,21 +2087,27 @@ export class PlatformDomain {
           )
           .map((player) => player.accountId)
       );
-      return (
-        sum +
-        room.poker.players.reduce(
-          (roomSum, player) => roomSum + player.stack + player.totalBet,
-          0
-        ) +
-        room.seats
-          .filter((seat) => !participatingAccountIds.has(seat.accountId))
-          .reduce(
-            (roomSum, seat) => roomSum + seat.tableChips + seat.currentBet,
-            0
+      return checkedAdd(
+        checkedSum(
+          room.poker.players.map((player) =>
+            checkedAdd(player.stack, player.totalBet)
+          )
+        ),
+        checkedSum(
+          room.seats
+            .filter((seat) => !participatingAccountIds.has(seat.accountId))
+            .map((seat) => checkedAdd(seat.tableChips, seat.currentBet))
         )
       );
-    }, 0);
-    if (accountTotal + tableTotal !== issued - retired) {
+    }));
+    const expectedManagedTotal = checkedAdd(
+      checkedSubtract(
+        checkedSubtract(issuedAssets, issuedLiabilities),
+        retiredAssets
+      ),
+      retiredLiabilities
+    );
+    if (checkedAdd(accountTotal, tableTotal) !== expectedManagedTotal) {
       throw new DomainError("ASSET_CONSERVATION_FAILED");
     }
   }
@@ -1259,7 +2121,7 @@ export class PlatformDomain {
     handNumber: number,
     reversesReason?: string
   ): void {
-    if (!Number.isInteger(amount) || amount <= 0) return;
+    if (!Number.isSafeInteger(amount) || amount <= 0) return;
     const table = `table:${roomId}:${accountId}`;
     const pot = `pot:${roomId}:${handNumber}`;
     this.recordMovementPair({
@@ -1277,7 +2139,7 @@ export class PlatformDomain {
   recordHandResult(
     roomId: string,
     handNumber: number,
-    mode: Room["config"]["mode"],
+    mode: RoomMode,
     payouts: Array<{ accountId: string; amount: number }>,
     outcome: "settled" | "void" = "settled",
     participantAccountIds: string[] = payouts.map((payout) => payout.accountId),
@@ -1368,14 +2230,22 @@ export class PlatformDomain {
   }
 
   private issue(accountId: string, amount: number, reason: string): void {
+    if (!Number.isSafeInteger(amount)) {
+      throw new DomainError("INVALID_AMOUNT");
+    }
+    if (amount === 0) return;
+    const absoluteAmount = Math.abs(amount);
     const line: AssetLine = {
       id: this.id(),
       groupId: this.id(),
       seasonId: this.currentSeason.id,
       accountId,
-      source: "season-issuance",
-      destination: `account:${accountId}`,
-      amount,
+      source: amount > 0 ? "season-issuance" : `account:${accountId}`,
+      destination:
+        amount > 0
+          ? `account:${accountId}`
+          : "season-liability-issuance",
+      amount: absoluteAmount,
       reason,
       createdAt: this.now()
     };
@@ -1383,10 +2253,28 @@ export class PlatformDomain {
   }
 
   private transfer(source: string, destination: string, amount: number, reason: string): void {
-    if (!Number.isInteger(amount) || amount < 0) throw new DomainError("INVALID_AMOUNT");
+    if (!Number.isSafeInteger(amount) || amount < 0) {
+      throw new DomainError("INVALID_AMOUNT");
+    }
+    const sourceAsset = this.state.accounts[source]
+      ? this.requireAsset(source)
+      : undefined;
+    const destinationAsset = this.state.accounts[destination]
+      ? this.requireAsset(destination)
+      : undefined;
+    const nextSourceScore = sourceAsset
+      ? checkedSubtract(sourceAsset.score, amount)
+      : undefined;
+    const nextDestinationScore = destinationAsset
+      ? checkedAdd(destinationAsset.score, amount)
+      : undefined;
     const groupId = this.id();
-    if (this.state.accounts[source]) this.requireAsset(source).score -= amount;
-    if (this.state.accounts[destination]) this.requireAsset(destination).score += amount;
+    if (sourceAsset && nextSourceScore !== undefined) {
+      sourceAsset.score = nextSourceScore;
+    }
+    if (destinationAsset && nextDestinationScore !== undefined) {
+      destinationAsset.score = nextDestinationScore;
+    }
     const common = {
       groupId,
       seasonId: this.currentSeason.id,
@@ -1481,6 +2369,314 @@ export class PlatformDomain {
     );
   }
 
+  private normalizeAvalonSettings(
+    settings: GlobalSettings["avalon"]
+  ): GlobalSettings["avalon"] {
+    if (
+      !settings ||
+      !["automatic", "manual"].includes(settings.defaultRecognitionMode) ||
+      !["original", "dized"].includes(settings.defaultOberonRule) ||
+      !Number.isSafeInteger(settings.defaultStake) ||
+      settings.defaultStake < 2
+    ) {
+      throw new DomainError("INVALID_AVALON_SETTINGS");
+    }
+    const rolePresets = {
+      5: this.normalizeAvalonPreset(5, settings.rolePresets?.[5]),
+      6: this.normalizeAvalonPreset(6, settings.rolePresets?.[6]),
+      7: this.normalizeAvalonPreset(7, settings.rolePresets?.[7]),
+      8: this.normalizeAvalonPreset(8, settings.rolePresets?.[8]),
+      9: this.normalizeAvalonPreset(9, settings.rolePresets?.[9]),
+      10: this.normalizeAvalonPreset(10, settings.rolePresets?.[10])
+    };
+    return {
+      defaultRecognitionMode: settings.defaultRecognitionMode,
+      defaultOberonRule: settings.defaultOberonRule,
+      defaultStake: settings.defaultStake,
+      rolePresets
+    };
+  }
+
+  private normalizeAvalonPreset(
+    playerCount: 5 | 6 | 7 | 8 | 9 | 10,
+    roles: readonly AvalonRole[] | undefined
+  ): AvalonRole[] {
+    if (!Array.isArray(roles)) {
+      throw new DomainError("INVALID_AVALON_ROLE_CONFIG");
+    }
+    return this.translateAvalonError(() =>
+      normalizeAvalonRoles(playerCount, roles)
+    );
+  }
+
+  private normalizeAvalonRoomConfig(
+    config: AvalonRoomConfig
+  ): AvalonRoomConfig {
+    if (
+      !["automatic", "manual"].includes(config.recognitionMode) ||
+      !["original", "dized"].includes(config.oberonRule) ||
+      !Number.isSafeInteger(config.stake) ||
+      config.stake < 2 ||
+      !Number.isSafeInteger(config.hostTransferTimeoutSeconds) ||
+      config.hostTransferTimeoutSeconds <= 0
+    ) {
+      throw new DomainError("INVALID_AVALON_ROOM_CONFIG");
+    }
+    if (config.roleSource === "preset") {
+      return {
+        recognitionMode: config.recognitionMode,
+        oberonRule: config.oberonRule,
+        stake: config.stake,
+        hostTransferTimeoutSeconds: config.hostTransferTimeoutSeconds,
+        roleSource: "preset",
+        rolePresets: {
+          5: this.normalizeAvalonPreset(5, config.rolePresets?.[5]),
+          6: this.normalizeAvalonPreset(6, config.rolePresets?.[6]),
+          7: this.normalizeAvalonPreset(7, config.rolePresets?.[7]),
+          8: this.normalizeAvalonPreset(8, config.rolePresets?.[8]),
+          9: this.normalizeAvalonPreset(9, config.rolePresets?.[9]),
+          10: this.normalizeAvalonPreset(10, config.rolePresets?.[10])
+        }
+      };
+    }
+    if (config.roleSource !== "custom" || !Array.isArray(config.roles)) {
+      throw new DomainError("INVALID_AVALON_ROOM_CONFIG");
+    }
+    const validForSomePlayerCount = [5, 6, 7, 8, 9, 10].some(
+      (playerCount) => {
+        try {
+          normalizeAvalonRoles(playerCount, config.roles);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    );
+    if (!validForSomePlayerCount) {
+      throw new DomainError("INVALID_AVALON_ROLE_CONFIG");
+    }
+    return {
+      recognitionMode: config.recognitionMode,
+      oberonRule: config.oberonRule,
+      stake: config.stake,
+      hostTransferTimeoutSeconds: config.hostTransferTimeoutSeconds,
+      roleSource: "custom",
+      roles: [...config.roles]
+    };
+  }
+
+  private assertAvalonIntermission(
+    room: AvalonRoom,
+    expectedAvalonVersion?: number
+  ): void {
+    const firstGame = room.status === "waiting" && !room.avalon;
+    const completedGame = Boolean(
+      room.avalon && ["complete", "void"].includes(room.avalon.phase)
+    );
+    if (!firstGame && !completedGame) {
+      throw new DomainError("AVALON_GAME_IN_PROGRESS");
+    }
+    if (
+      room.avalon &&
+      (
+        expectedAvalonVersion === undefined ||
+        room.avalon.version !== expectedAvalonVersion
+      )
+    ) {
+      throw new DomainError("STALE_AVALON_VERSION");
+    }
+  }
+
+  private applyAvalonTransition(
+    roomId: string,
+    transitionState: (
+      state: NonNullable<AvalonRoom["avalon"]>
+    ) => NonNullable<AvalonRoom["avalon"]>
+  ): AvalonRoom {
+    const room = this.requireAvalonRoom(roomId);
+    if (room.status === "paused") throw new DomainError("ROOM_PAUSED");
+    if (room.status !== "in_progress" || !room.avalon) {
+      throw new DomainError("AVALON_NOT_STARTED");
+    }
+    const wasComplete = room.avalon.phase === "complete";
+    const next = this.translateAvalonError(() =>
+      transitionState(room.avalon!)
+    );
+    room.avalon = next;
+    if (!wasComplete && next.phase === "complete") {
+      this.settleAvalonGame(room);
+    }
+    room.version += 1;
+    return room;
+  }
+
+  private settleAvalonGame(room: AvalonRoom): void {
+    const state = room.avalon;
+    if (
+      !state ||
+      state.phase !== "complete" ||
+      state.outcome?.status !== "settled"
+    ) {
+      throw new DomainError("INVALID_AVALON_STATE");
+    }
+    if (
+      this.state.avalonResults.some(
+        (result) =>
+          result.roomId === room.id &&
+          result.gameNumber === state.gameNumber &&
+          result.reversedAt === undefined
+      )
+    ) {
+      throw new DomainError("AVALON_RESULT_ALREADY_RECORDED");
+    }
+    const deltas = this.avalonSettlementDeltas(state);
+    const payouts = state.participants
+      .map((participant) => {
+        const delta = deltas.get(participant.accountId)!;
+        return {
+          accountId: participant.accountId,
+          amount:
+            delta > 0
+              ? checkedAdd(state.config.stake, delta)
+              : 0
+        };
+      })
+      .filter((payout) => payout.amount > 0);
+    const escrowTotal = checkedMultiply(
+      state.config.stake,
+      state.participants.length
+    );
+    if (checkedSum(payouts.map((payout) => payout.amount)) !== escrowTotal) {
+      throw new DomainError("ASSET_CONSERVATION_FAILED");
+    }
+    for (const payout of payouts) {
+      checkedAdd(this.requireAsset(payout.accountId).score, payout.amount);
+    }
+    for (const payout of payouts) {
+      this.transfer(
+        room.id,
+        payout.accountId,
+        payout.amount,
+        "avalon-settlement"
+      );
+    }
+    for (const participant of state.participants) {
+      const asset = this.requireAsset(participant.accountId);
+      asset.inGame = false;
+      asset.frozenScore = null;
+    }
+    this.recordAvalonResult(room, deltas);
+  }
+
+  private avalonSettlementDeltas(
+    state: NonNullable<AvalonRoom["avalon"]>
+  ): Map<string, number> {
+    const outcome = state.outcome;
+    if (outcome?.status !== "settled") {
+      throw new DomainError("INVALID_AVALON_STATE");
+    }
+    const winners = state.participants.filter((participant) => {
+      const role = state.roleAssignments[participant.accountId];
+      return (
+        role !== undefined &&
+        avalonAlignmentForRole(role) === outcome.winningAlignment
+      );
+    });
+    const losers = state.participants.filter(
+      (participant) => !winners.includes(participant)
+    );
+    if (winners.length === 0 || losers.length === 0) {
+      throw new DomainError("INVALID_AVALON_STATE");
+    }
+    const loserPool = checkedMultiply(state.config.stake, losers.length);
+    const share = Math.floor(loserPool / winners.length);
+    const remainder = loserPool % winners.length;
+    const deltas = new Map<string, number>();
+    losers.forEach((participant) =>
+      deltas.set(participant.accountId, -state.config.stake)
+    );
+    winners.forEach((participant, index) =>
+      deltas.set(
+        participant.accountId,
+        checkedAdd(share, index < remainder ? 1 : 0)
+      )
+    );
+    if (checkedSum(deltas.values()) !== 0) {
+      throw new DomainError("ASSET_CONSERVATION_FAILED");
+    }
+    return deltas;
+  }
+
+  private recordAvalonResult(
+    room: AvalonRoom,
+    deltas?: Map<string, number>
+  ): void {
+    const state = room.avalon;
+    if (!state?.outcome) throw new DomainError("INVALID_AVALON_STATE");
+    if (
+      this.state.avalonResults.some(
+        (result) =>
+          result.roomId === room.id &&
+          result.gameNumber === state.gameNumber &&
+          result.reversedAt === undefined
+      )
+    ) {
+      throw new DomainError("AVALON_RESULT_ALREADY_RECORDED");
+    }
+    const common = {
+      id: this.id(),
+      seasonId: this.currentSeason.id,
+      roomId: room.id,
+      gameNumber: state.gameNumber,
+      participantAccountIds: state.participants.map(
+        (participant) => participant.accountId
+      ),
+      voteHistory: structuredClone(state.voteHistory),
+      missionHistory: structuredClone(state.missionHistory),
+      completedAt: this.now()
+    };
+    if (state.outcome.status === "void") {
+      this.state.avalonResults.push({
+        ...common,
+        outcome: "void"
+      });
+      return;
+    }
+    if (!deltas) throw new DomainError("INVALID_AVALON_STATE");
+    this.state.avalonResults.push({
+      ...common,
+      outcome: "settled",
+      winningAlignment: state.outcome.winningAlignment,
+      reason: state.outcome.reason,
+      assassinationTargetAccountId:
+        state.outcome.assassinationTargetAccountId,
+      playerResults: state.participants.map((participant) => {
+        const account = this.requireAccount(participant.accountId);
+        const role = state.roleAssignments[participant.accountId]!;
+        return {
+          accountId: participant.accountId,
+          username: account.username,
+          avatar: account.avatar,
+          role,
+          alignment: avalonAlignmentForRole(role),
+          scoreDelta: deltas.get(participant.accountId)!,
+          endingScore: this.requireAsset(participant.accountId).score
+        };
+      })
+    });
+  }
+
+  private translateAvalonError<T>(operation: () => T): T {
+    try {
+      return operation();
+    } catch (error) {
+      if (error instanceof AvalonRuleError) {
+        throw new DomainError(error.code);
+      }
+      throw error;
+    }
+  }
+
   private assertNoOpenRooms(): void {
     if (Object.keys(this.state.rooms).length > 0) {
       throw new DomainError("ROOMS_MUST_CLOSE");
@@ -1503,16 +2699,22 @@ export class PlatformDomain {
       retiredAt: this.now()
     };
     this.state.retiredIdentities[accountId] = identity;
-    if (asset.score > 0) {
+    if (asset.score !== 0) {
       const lineId = this.id();
       this.state.ledger.push({
         id: lineId,
         groupId: lineId,
         seasonId: this.currentSeason.id,
         accountId,
-        source: `account:${accountId}`,
-        destination: "asset-retirement",
-        amount: asset.score,
+        source:
+          asset.score > 0
+            ? `account:${accountId}`
+            : "liability-retirement",
+        destination:
+          asset.score > 0
+            ? "asset-retirement"
+            : `account:${accountId}`,
+        amount: Math.abs(asset.score),
         reason: "account-retired",
         createdAt: this.now()
       });
@@ -1564,6 +2766,54 @@ export class PlatformDomain {
           }
         : undefined;
     }
+    for (const result of this.state.avalonResults) {
+      result.participantAccountIds = result.participantAccountIds.map(
+        (candidate) =>
+          candidate === accountId ? identity.publicId : candidate
+      );
+      if (result.outcome === "settled") {
+        result.playerResults = result.playerResults.map((player) =>
+          player.accountId === accountId
+            ? {
+                ...player,
+                accountId: identity.publicId,
+                username: `Deleted player ${anonymousNumber}`,
+                avatar: fallbackAvatar,
+                anonymized: true,
+                anonymousNumber
+              }
+            : player
+        );
+        if (result.assassinationTargetAccountId === accountId) {
+          result.assassinationTargetAccountId = identity.publicId;
+        }
+      }
+      result.voteHistory = result.voteHistory.map((vote) => ({
+        ...vote,
+        leaderAccountId:
+          vote.leaderAccountId === accountId
+            ? identity.publicId
+            : vote.leaderAccountId,
+        teamAccountIds: vote.teamAccountIds.map((candidate) =>
+          candidate === accountId ? identity.publicId : candidate
+        ),
+        votes: vote.votes.map((entry) => ({
+          ...entry,
+          accountId:
+            entry.accountId === accountId ? identity.publicId : entry.accountId
+        }))
+      }));
+      result.missionHistory = result.missionHistory.map((mission) => ({
+        ...mission,
+        leaderAccountId:
+          mission.leaderAccountId === accountId
+            ? identity.publicId
+            : mission.leaderAccountId,
+        teamAccountIds: mission.teamAccountIds.map((candidate) =>
+          candidate === accountId ? identity.publicId : candidate
+        )
+      }));
+    }
     delete this.state.leases[accountId];
     delete this.state.seasonAssets[accountId];
     delete this.state.accounts[accountId];
@@ -1578,6 +2828,9 @@ export class PlatformDomain {
       (historical) => !seasonIds.has(historical.season.id)
     );
     this.state.handResults = this.state.handResults.filter(
+      (result) => !seasonIds.has(result.seasonId)
+    );
+    this.state.avalonResults = this.state.avalonResults.filter(
       (result) => !seasonIds.has(result.seasonId)
     );
     this.state.ledger = this.state.ledger.filter(
@@ -1602,6 +2855,34 @@ export class PlatformDomain {
       result.showdown?.players.forEach((player) =>
         referencedPublicIds.add(player.accountId)
       );
+    }
+    for (const result of this.state.avalonResults) {
+      result.participantAccountIds.forEach((accountId) =>
+        referencedPublicIds.add(accountId)
+      );
+      result.voteHistory.forEach((vote) => {
+        referencedPublicIds.add(vote.leaderAccountId);
+        vote.teamAccountIds.forEach((accountId) =>
+          referencedPublicIds.add(accountId)
+        );
+        vote.votes.forEach((entry) =>
+          referencedPublicIds.add(entry.accountId)
+        );
+      });
+      result.missionHistory.forEach((mission) => {
+        referencedPublicIds.add(mission.leaderAccountId);
+        mission.teamAccountIds.forEach((accountId) =>
+          referencedPublicIds.add(accountId)
+        );
+      });
+      if (result.outcome === "settled") {
+        result.playerResults.forEach((player) =>
+          referencedPublicIds.add(player.accountId)
+        );
+        if (result.assassinationTargetAccountId) {
+          referencedPublicIds.add(result.assassinationTargetAccountId);
+        }
+      }
     }
     for (const [accountId, identity] of Object.entries(
       this.state.retiredIdentities
@@ -1639,7 +2920,7 @@ export class PlatformDomain {
       config.maxBuyIn,
       config.hostTransferTimeoutSeconds
     ];
-    if (integers.some((value) => !Number.isInteger(value) || value <= 0)) {
+    if (integers.some((value) => !Number.isSafeInteger(value) || value <= 0)) {
       throw new DomainError("INVALID_ROOM_CONFIG");
     }
     if (config.smallBlind >= config.bigBlind || config.minBuyIn > config.maxBuyIn) {
@@ -1656,6 +2937,22 @@ export class PlatformDomain {
   private requireRoom(roomId: string): Room {
     const room = this.state.rooms[roomId];
     if (!room) throw new DomainError("ROOM_NOT_FOUND");
+    return room;
+  }
+
+  private requirePokerRoom(roomId: string): PokerRoom {
+    const room = this.requireRoom(roomId);
+    if (room.gameType !== "texas-holdem") {
+      throw new DomainError("WRONG_GAME_TYPE");
+    }
+    return room;
+  }
+
+  private requireAvalonRoom(roomId: string): AvalonRoom {
+    const room = this.requireRoom(roomId);
+    if (room.gameType !== "avalon") {
+      throw new DomainError("WRONG_GAME_TYPE");
+    }
     return room;
   }
 
