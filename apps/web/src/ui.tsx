@@ -17,7 +17,7 @@ import {
 } from "@party/contracts";
 
 export type { ThemeMode } from "@party/contracts";
-export type ThemeScope = "main" | "poker";
+export type ThemeScope = "main" | "poker" | "avalon";
 
 const paletteVariables: Record<keyof ThemePalette, string> = {
   canvas: "--color-canvas",

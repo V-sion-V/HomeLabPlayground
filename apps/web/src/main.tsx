@@ -10,6 +10,7 @@ import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   Account,
+  AvalonLobbyRoomProjection,
   AvalonRole,
   AvalonRoomProjection,
   Card,
@@ -86,7 +87,12 @@ function App() {
   const restoreStarted = useRef(false);
   const accountPreferencesApplied = useRef(false);
   const activeRoomId = room?.id;
-  const themeScope: ThemeScope = displayRoomId || room ? "poker" : "main";
+  const themeScope: ThemeScope =
+    room?.gameType === "avalon"
+      ? "avalon"
+      : displayRoomId || room
+        ? "poker"
+        : "main";
 
   useLayoutEffect(() => {
     applyProductTheme(themeScope, themeMode);
@@ -341,7 +347,13 @@ function App() {
   );
 
   if (displayRoomId) {
-    return <PublicDisplay language={language} roomId={displayRoomId} />;
+    return (
+      <PublicDisplay
+        language={language}
+        roomId={displayRoomId}
+        themeMode={themeMode}
+      />
+    );
   }
 
   if (restoring) return <Loading language={language} />;
@@ -727,7 +739,7 @@ function Lobby({
                       <div>
                         <h3>{entry.name}</h3>
                         <p>
-                          Avalon ·{" "}
+                          {t(language, "avalon")} ·{" "}
                           {avalonText(language, entry.recognitionMode)} ·{" "}
                           {avalonText(language, entry.oberonRule)} ·{" "}
                           {avalonText(language, "stake")}{" "}
@@ -863,15 +875,13 @@ function Lobby({
             >
               <span>♠</span>
               <strong>{t(language, "poker")}</strong>
-              <small>{t(language, "chipsCards")}</small>
             </button>
             <button
               className="game-choice-card"
               onClick={() => setCreateGame("avalon")}
             >
               <span>◈</span>
-              <strong>Avalon</strong>
-              <small>{avalonText(language, "automatic")}</small>
+              <strong>{t(language, "avalon")}</strong>
             </button>
           </div>
         </Modal>
@@ -950,29 +960,28 @@ function Lobby({
         />
       )}
       {joinRoom?.gameType === "avalon" && (
-        <ConfirmDialog
-          title={t(language, "join")}
-          description={joinRoom.name}
-          confirmLabel={t(language, "join")}
-          cancelLabel={t(language, "cancel")}
-          onCancel={() => setJoinRoom(null)}
-          onConfirm={() => {
+        <AvalonJoinRoomModal
+          language={language}
+          room={joinRoom}
+          onClose={() => setJoinRoom(null)}
+          onJoin={async () => {
             const selectedRoom = joinRoom;
-            void command<RoomProjection>(
-              "room.join",
-              { gameType: "avalon", roomId: selectedRoom.id },
-              selectedRoom.id
-            )
-              .then((result) => {
-                if (result.data) {
-                  onRoom({
-                    ...result.data,
-                    platformVersion: result.version
-                  });
-                }
-                setJoinRoom(null);
-              })
-              .catch((reason) => setNotice(errorMessage(language, reason)));
+            try {
+              const result = await command<RoomProjection>(
+                "room.join",
+                { gameType: "avalon", roomId: selectedRoom.id },
+                selectedRoom.id
+              );
+              if (result.data) {
+                onRoom({
+                  ...result.data,
+                  platformVersion: result.version
+                });
+              }
+              setJoinRoom(null);
+            } catch (reason) {
+              setNotice(errorMessage(language, reason));
+            }
           }}
         />
       )}
@@ -1180,7 +1189,7 @@ function AvalonCreateRoomModal({
   return (
     <Modal
       language={language}
-      title={`${t(language, "createRoom")} · Avalon`}
+      title={`${t(language, "createRoom")} · ${t(language, "avalon")}`}
       onClose={onClose}
       className="avalon-create-modal"
       footer={
@@ -1340,10 +1349,96 @@ function JoinRoomModal({
           }
         }}
       >
-        <p>{room.name} · {room.minBuyIn.toLocaleString()}–{room.maxBuyIn.toLocaleString()}</p>
+        <JoinRoomSummary
+          language={language}
+          roomName={room.name}
+          gameName={t(language, "poker")}
+          seatCount={room.seatCount}
+          maxSeats={room.maxSeats}
+          detail={`${room.minBuyIn.toLocaleString()}–${room.maxBuyIn.toLocaleString()}`}
+        />
         <NumberField label={t(language, "buyIn")} value={buyIn} onChange={setBuyIn} />
       </form>
     </Modal>
+  );
+}
+
+function AvalonJoinRoomModal({
+  language,
+  room,
+  onClose,
+  onJoin
+}: {
+  language: Language;
+  room: AvalonLobbyRoomProjection;
+  onClose: () => void;
+  onJoin: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal
+      language={language}
+      title={t(language, "join")}
+      onClose={onClose}
+      narrow
+      footer={
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            {t(language, "cancel")}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onJoin();
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? t(language, "loading") : t(language, "join")}
+          </button>
+        </div>
+      }
+    >
+      <JoinRoomSummary
+        language={language}
+        roomName={room.name}
+        gameName={t(language, "avalon")}
+        seatCount={room.seatCount}
+        maxSeats={room.maxSeats}
+      />
+    </Modal>
+  );
+}
+
+function JoinRoomSummary({
+  language,
+  roomName,
+  gameName,
+  seatCount,
+  maxSeats,
+  detail
+}: {
+  language: Language;
+  roomName: string;
+  gameName: string;
+  seatCount: number;
+  maxSeats: number;
+  detail?: string;
+}) {
+  return (
+    <section className="join-room-summary">
+      <h3>{roomName}</h3>
+      <p>{gameName}</p>
+      <strong>
+        {t(language, "currentPlayers")} {seatCount}/{maxSeats}
+      </strong>
+      {detail && <small>{detail}</small>}
+    </section>
   );
 }
 
@@ -3093,13 +3188,22 @@ function PublicTableSurface({
 
 function PublicDisplay({
   language,
-  roomId
+  roomId,
+  themeMode
 }: {
   language: Language;
   roomId: string;
+  themeMode: ThemeMode;
 }) {
   const [room, setRoom] = useState<RoomProjection | null>(null);
   const [error, setError] = useState("");
+
+  useLayoutEffect(() => {
+    applyProductTheme(
+      room?.gameType === "avalon" ? "avalon" : "poker",
+      themeMode
+    );
+  }, [room?.gameType, themeMode]);
 
   useEffect(() => {
     let socket: WebSocket | undefined;

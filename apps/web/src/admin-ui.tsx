@@ -445,7 +445,7 @@ function AdminHome({
             </fieldset>
           </CollapsibleCard>
           <CollapsibleCard
-            title="Avalon"
+            title={t(language, "avalon")}
             summary={
               language === "zh-CN"
                 ? "默认流程、押分与 5–10 人角色预设"

@@ -48,6 +48,10 @@ export interface ProductConfig {
       light: ThemePalette;
       dark: ThemePalette;
     };
+    avalon: {
+      light: ThemePalette;
+      dark: ThemePalette;
+    };
   };
   suits: {
     standard: Record<"clubs" | "diamonds" | "hearts" | "spades", string>;
@@ -199,6 +203,56 @@ const productConfigValue = {
         tableRail: "#38271d",
         tableText: "#fff5cf"
       }
+    },
+    avalon: {
+      light: {
+        canvas: "#eef2fb",
+        surface: "#f8f9ff",
+        surfaceRaised: "#ffffff",
+        surfaceMuted: "#e3eaf7",
+        text: "#1c2744",
+        textMuted: "#5c6987",
+        border: "#c4cfe3",
+        accent: "#126f6a",
+        accentHover: "#16857d",
+        accentPressed: "#0b5955",
+        accentText: "#ffffff",
+        danger: "#b63f55",
+        dangerHover: "#c94d63",
+        dangerPressed: "#982f45",
+        dangerText: "#ffffff",
+        success: "#23765f",
+        warning: "#9a6200",
+        focus: "#265fa9",
+        shadow: "rgba(35, 50, 88, 0.18)",
+        table: "#dce5f5",
+        tableRail: "#aab9d5",
+        tableText: "#1c2744"
+      },
+      dark: {
+        canvas: "#090f1f",
+        surface: "#111b31",
+        surfaceRaised: "#192744",
+        surfaceMuted: "#223353",
+        text: "#f3f5ff",
+        textMuted: "#b7c2df",
+        border: "#3a4c72",
+        accent: "#65d7cd",
+        accentHover: "#7be4dc",
+        accentPressed: "#4cc0b5",
+        accentText: "#082725",
+        danger: "#f08498",
+        dangerHover: "#ff9bae",
+        dangerPressed: "#d96f84",
+        dangerText: "#351018",
+        success: "#75d5ae",
+        warning: "#f0b95f",
+        focus: "#91b9ff",
+        shadow: "rgba(0, 0, 0, 0.52)",
+        table: "#0d1730",
+        tableRail: "#263b64",
+        tableText: "#f3f5ff"
+      }
     }
   },
   suits: {
@@ -254,7 +308,9 @@ function assertProductConfig(config: ProductConfig): void {
     config.themes.main.light,
     config.themes.main.dark,
     config.themes.poker.light,
-    config.themes.poker.dark
+    config.themes.poker.dark,
+    config.themes.avalon.light,
+    config.themes.avalon.dark
   ];
   if (
     palettes.some((palette) =>
