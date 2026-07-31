@@ -236,18 +236,50 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await create.getByLabel("买入筹码").fill("2000");
     await create.getByRole("button", { name: "创建房间" }).click();
     await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
-    const waitingPanelBorder = await hostPage
-      .locator(".waiting-panel")
-      .evaluate((panel) => {
-        const style = getComputedStyle(panel);
-        return [
-          style.borderTopWidth,
-          style.borderRightWidth,
-          style.borderBottomWidth,
-          style.borderLeftWidth
-        ];
+    const readWaitingGeometry = () => hostPage
+      .locator(".poker-waiting-shell")
+      .evaluate((shell) => {
+        const shellRect = shell.getBoundingClientRect();
+        const header = shell.querySelector<HTMLElement>(".shared-room-header")!;
+        const panel = shell.querySelector<HTMLElement>(".waiting-panel")!;
+        const avatar = panel.querySelector<HTMLElement>(".member-avatar")!;
+        const headerRect = header.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const avatarRect = avatar.getBoundingClientRect();
+        const panelStyle = getComputedStyle(panel);
+        const avatarStyle = getComputedStyle(avatar);
+        return {
+          viewportWidth: innerWidth,
+          viewportHeight: innerHeight,
+          shellLeft: shellRect.left,
+          shellRight: shellRect.right,
+          headerLeft: headerRect.left,
+          headerRight: headerRect.right,
+          panelLeft: panelRect.left,
+          panelRight: panelRect.right,
+          panelTop: panelRect.top,
+          panelBottom: panelRect.bottom,
+          headerBottom: headerRect.bottom,
+          panelMargins: [
+            panelStyle.marginTop,
+            panelStyle.marginRight,
+            panelStyle.marginBottom,
+            panelStyle.marginLeft
+          ],
+          panelBorders: [
+            panelStyle.borderTopWidth,
+            panelStyle.borderRightWidth,
+            panelStyle.borderBottomWidth,
+            panelStyle.borderLeftWidth
+          ],
+          panelRadius: panelStyle.borderRadius,
+          panelShadow: panelStyle.boxShadow,
+          avatarWidth: avatarRect.width,
+          avatarHeight: avatarRect.height,
+          avatarRadius: Number.parseFloat(avatarStyle.borderRadius)
+        };
       });
-    expect(waitingPanelBorder).toEqual(["0px", "0px", "0px", "0px"]);
+    const desktopWaitingGeometry = await readWaitingGeometry();
     const waitingViewport = hostPage.viewportSize()!;
     await hostPage.setViewportSize({ width: 300, height: 760 });
     const waitingHeader = await hostPage.locator(".shared-room-header").evaluate((header) => {
@@ -281,6 +313,23 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     )
       .toBe(true);
     expect(waitingHeader.documentWidth).toBe(waitingHeader.viewport);
+    const mobileWaitingGeometry = await readWaitingGeometry();
+    for (const geometry of [desktopWaitingGeometry, mobileWaitingGeometry]) {
+      expect(Math.abs(geometry.shellLeft)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.shellRight - geometry.viewportWidth)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.headerLeft)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.headerRight - geometry.viewportWidth)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.panelLeft)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.panelRight - geometry.viewportWidth)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.panelTop - geometry.headerBottom)).toBeLessThanOrEqual(1);
+      expect(geometry.panelBottom).toBeGreaterThanOrEqual(geometry.viewportHeight - 1);
+      expect(geometry.panelMargins).toEqual(["0px", "0px", "0px", "0px"]);
+      expect(geometry.panelBorders).toEqual(["0px", "0px", "0px", "0px"]);
+      expect(geometry.panelRadius).toBe("0px");
+      expect(geometry.panelShadow).toBe("none");
+      expect(Math.abs(geometry.avatarWidth - geometry.avatarHeight)).toBeLessThanOrEqual(1);
+      expect(geometry.avatarRadius).toBeGreaterThanOrEqual(geometry.avatarWidth / 2 - 1);
+    }
     await hostPage.setViewportSize(waitingViewport);
     await expect(
       hostPage.getByRole("link", { name: "打开公共大屏" })
@@ -529,6 +578,9 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     }))).toEqual({ viewport: 300, documentWidth: 300 });
     const mobileSeatGeometry = await hostPage.locator(".table-seats").evaluate((track) => {
       const trackRect = track.getBoundingClientRect();
+      const felt = track.closest<HTMLElement>(".poker-felt")!;
+      const feltRect = felt.getBoundingClientRect();
+      const board = felt.querySelector<HTMLElement>(".board")!;
       const cards = Array.from(
         track.querySelectorAll<HTMLElement>(".player-seat")
       );
@@ -536,18 +588,33 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       const dealer = track.querySelector<HTMLElement>(".dealer-marker");
       const dealerRect = dealer?.getBoundingClientRect();
       return {
-        topGap: Math.min(...cardRects.map((rect) => rect.top - trackRect.top)),
-        bottomGap: Math.min(...cardRects.map((rect) => trackRect.bottom - rect.bottom)),
+        visibleTopGap: Math.min(...cardRects.map((rect) => rect.top - feltRect.top)),
+        horizontalGap: cardRects.length > 1
+          ? cardRects[1]!.left - cardRects[0]!.right
+          : 0,
+        trackTopSafety: Math.min(...cardRects.map((rect) => rect.top - trackRect.top)),
+        trackBottomSafety: Math.min(...cardRects.map((rect) => trackRect.bottom - rect.bottom)),
+        trackZIndex: Number.parseInt(getComputedStyle(track).zIndex, 10),
+        boardZIndex: Number.parseInt(getComputedStyle(board).zIndex, 10),
         shadows: cards.map((card) => getComputedStyle(card).boxShadow),
         dealerWithinTrack: Boolean(dealerRect) &&
           dealerRect!.top >= trackRect.top &&
-          dealerRect!.bottom <= trackRect.bottom
+          dealerRect!.bottom <= trackRect.bottom,
+        dealerWithinFelt: Boolean(dealerRect) &&
+          dealerRect!.top >= feltRect.top &&
+          dealerRect!.bottom <= feltRect.bottom
       };
     });
-    expect(mobileSeatGeometry.topGap).toBeGreaterThanOrEqual(27);
-    expect(mobileSeatGeometry.bottomGap).toBeGreaterThanOrEqual(32);
+    expect(mobileSeatGeometry.visibleTopGap).toBeGreaterThanOrEqual(14);
+    expect(mobileSeatGeometry.visibleTopGap).toBeLessThanOrEqual(17);
+    expect(mobileSeatGeometry.horizontalGap).toBeGreaterThanOrEqual(4);
+    expect(mobileSeatGeometry.horizontalGap).toBeLessThanOrEqual(8);
+    expect(mobileSeatGeometry.trackTopSafety).toBeGreaterThanOrEqual(14);
+    expect(mobileSeatGeometry.trackBottomSafety).toBeGreaterThanOrEqual(20);
+    expect(mobileSeatGeometry.trackZIndex).toBeGreaterThan(mobileSeatGeometry.boardZIndex);
     expect(mobileSeatGeometry.shadows.every((shadow) => shadow !== "none")).toBe(true);
     expect(mobileSeatGeometry.dealerWithinTrack).toBe(true);
+    expect(mobileSeatGeometry.dealerWithinFelt).toBe(true);
     const focusableSeat = hostPage.locator('.player-seat[tabindex="0"]').first();
     await hostPage.evaluate(() => {
       (document.activeElement as HTMLElement | null)?.blur();
@@ -562,6 +629,28 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     expect(
       await focusableSeat.evaluate((card) => getComputedStyle(card).outlineStyle)
     ).not.toBe("none");
+    const focusedSeatSafety = await focusableSeat.evaluate((card) => {
+      const track = card.closest<HTMLElement>(".table-seats")!;
+      const felt = card.closest<HTMLElement>(".poker-felt")!;
+      const cardRect = card.getBoundingClientRect();
+      const trackRect = track.getBoundingClientRect();
+      const feltRect = felt.getBoundingClientRect();
+      const style = getComputedStyle(card);
+      const outlineExtent = Number.parseFloat(style.outlineWidth) +
+        Number.parseFloat(style.outlineOffset);
+      return {
+        topInsideTrack: cardRect.top - outlineExtent >= trackRect.top - 1,
+        bottomInsideTrack: cardRect.bottom + outlineExtent <= trackRect.bottom + 1,
+        topInsideFelt: cardRect.top - outlineExtent >= feltRect.top - 1,
+        bottomInsideFelt: cardRect.bottom + outlineExtent <= feltRect.bottom + 1
+      };
+    });
+    expect(focusedSeatSafety).toEqual({
+      topInsideTrack: true,
+      bottomInsideTrack: true,
+      topInsideFelt: true,
+      bottomInsideFelt: true
+    });
     await expect(hostPage.locator(".player-seat .seat-values").first()).toContainText(
       "剩余筹码"
     );
@@ -628,6 +717,37 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await cachedOne.press("Enter");
     await expect(cachedOne).toHaveCount(0);
 
+    for (let value = 1; value <= 3; value += 1) {
+      await chipRack
+        .getByRole("button", { name: String(value), exact: true })
+        .click();
+    }
+    await expect(betCache.locator(".cache-chip-slot")).toHaveCount(3);
+    const naturalCacheGeometry = await betCache.evaluate((cache) => {
+      const track = cache.querySelector<HTMLElement>(".cache-chips")!;
+      const chips = Array.from(track.querySelectorAll<HTMLElement>(".poker-chip"));
+      const trackRect = track.getBoundingClientRect();
+      const chipRects = chips.map((chip) => chip.getBoundingClientRect());
+      const centers = chipRects.map((rect) => rect.left + rect.width / 2);
+      const steps = centers.slice(1).map((center, index) => center - centers[index]!);
+      const firstSlot = track.querySelector<HTMLElement>(".cache-chip-slot");
+      const naturalStep = firstSlot
+        ? Number.parseFloat(getComputedStyle(firstSlot).maxWidth)
+        : chipRects[0]!.width;
+      return {
+        firstLeftOffset: chipRects[0]!.left - trackRect.left,
+        naturalStep,
+        stepDeltas: steps.map((step) => Math.abs(step - naturalStep)),
+        unusedRightSpace: trackRect.right - chipRects.at(-1)!.right
+      };
+    });
+    expect(Math.abs(naturalCacheGeometry.firstLeftOffset)).toBeLessThanOrEqual(1);
+    expect(naturalCacheGeometry.stepDeltas.every((delta) => delta <= 1)).toBe(true);
+    expect(naturalCacheGeometry.unusedRightSpace).toBeGreaterThan(
+      naturalCacheGeometry.naturalStep / 2
+    );
+    await betCache.getByRole("button", { name: "清空", exact: true }).click();
+
     for (let value = 1; value <= 16; value += 1) {
       await chipRack
         .getByRole("button", { name: String(value), exact: true })
@@ -658,6 +778,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
         .getBoundingClientRect();
       const totalRect = total.getBoundingClientRect();
       const clearRect = clear.getBoundingClientRect();
+      const firstSlot = track.querySelector<HTMLElement>(".cache-chip-slot");
       return {
         cacheWithinFelt:
           cacheRect.left >= feltRect.left &&
@@ -665,9 +786,12 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
           cacheRect.top >= feltRect.top &&
           cacheRect.bottom <= feltRect.bottom,
         spansFelt: feltRect.width - cacheRect.width <= 20,
-        chipCount: getComputedStyle(track)
-          .getPropertyValue("--cache-chip-count")
-          .trim(),
+        naturalStep: firstSlot
+          ? Number.parseFloat(getComputedStyle(firstSlot).maxWidth)
+          : chipRects[0]!.width,
+        maximumStep: Math.max(...steps),
+        firstLeftOffset: chipRects[0]!.left - trackRect.left,
+        lastRightOffset: trackRect.right - chipRects.at(-1)!.right,
         everyChipWithinTrack: chipRects.every(
           (rect) => rect.left >= trackRect.left - 1 && rect.right <= trackRect.right + 1
         ),
@@ -681,11 +805,19 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     });
     expect(cacheGeometry.cacheWithinFelt).toBe(true);
     expect(cacheGeometry.spansFelt).toBe(true);
-    expect(cacheGeometry.chipCount).toBe("16");
+    expect(Math.abs(cacheGeometry.firstLeftOffset)).toBeLessThanOrEqual(1);
+    expect(Math.abs(cacheGeometry.lastRightOffset)).toBeLessThanOrEqual(1);
     expect(cacheGeometry.everyChipWithinTrack).toBe(true);
+    expect(cacheGeometry.maximumStep).toBeLessThan(cacheGeometry.naturalStep - 1);
     expect(cacheGeometry.stepSpread).toBeLessThanOrEqual(1.5);
     expect(cacheGeometry.valueCountGap).toBeLessThanOrEqual(1);
     expect(cacheGeometry.controlsWithinCache).toBe(true);
+    const middleCachedChip = betCache.getByRole("button", { name: /移除 8 筹码/ });
+    await middleCachedChip.focus();
+    await middleCachedChip.press("Enter");
+    await expect(betCache.locator(".cache-chip-slot")).toHaveCount(15);
+    await chipRack.getByRole("button", { name: "8", exact: true }).click();
+    await expect(betCache.locator(".cache-chip-slot")).toHaveCount(16);
     await betCache.getByRole("button", { name: "清空", exact: true }).click();
     await expect(betCache.locator(".cache-chip-slot")).toHaveCount(0);
     await actorPage.getByRole("button", { name: "一键跟注" }).click();

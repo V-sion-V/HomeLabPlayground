@@ -1984,7 +1984,7 @@ function WaitingRoom({
   };
 
   return (
-    <main className="app-shell">
+    <main className="app-shell poker-waiting-shell">
       <RoomHeader
         roomName={room.name}
         gameLabel={t(language, "poker")}
@@ -2871,25 +2871,13 @@ function PlayerTable({
             aria-label={t(language, "betCache")}
             aria-live="polite"
           >
-            <div
-              className="cache-chips"
-              style={{
-                "--cache-chip-count": Math.max(1, cachedDenominations.length)
-              } as React.CSSProperties}
-            >
-              {cachedDenominations.map((chip, index) => {
+            <div className="cache-chips">
+              {cachedDenominations.map((chip) => {
                 const count = cache[String(chip)]!;
-                const position = cachedDenominations.length <= 1
-                  ? 0
-                  : index / (cachedDenominations.length - 1);
                 return (
                   <span
                     key={chip}
                     className="cache-chip-slot"
-                    style={{
-                      "--cache-chip-position": `${position * 100}%`,
-                      "--cache-chip-offset": `${position * -100}%`
-                    } as React.CSSProperties}
                   >
                     <button
                       type="button"

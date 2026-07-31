@@ -33,7 +33,7 @@
 
 ## 2. 当前开发阶段
 
-阶段快照日期：`2026-07-31`。当前分支为 `main`；本快照已包含 `game-room-ui-and-poker-hand-start` change-1 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
+阶段快照日期：`2026-08-01`。当前分支为 `main`；本快照已包含 `game-room-ui-and-poker-hand-start` change-2 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
 
 ### 已完成
 
@@ -51,6 +51,7 @@
 - `avalon-game` change-2 已完成并冻结：固定页移动端双层滚动已改为动态视口内唯一滚动区；“查看身份”统一强调全部玩家卡并保证本人精确角色，确认后按钮恢复次要样式；手机查看/操作保持左窄右宽双列；任务轨迹使用简化内容、放大票数和高对比结果色；提名区域呼吸提示、本人/队长语义色及 Avalon/Poker 长按/右键/键盘房主管理菜单已交付。lint、typecheck、realtime 5/5、生产 build/static、Chromium/WebKit 8/8、300px 动态视口、计算样式、几何和手势门禁均通过；没有修改服务端规则、投影、资产、SQLite、部署接口或正式服务器。
 - `game-room-ui-and-poker-hand-start` initial 已完成并冻结：Poker 两种模式改为服务端权威的持久手动盲注与全员开手确认，每笔实际盲注和流水原子且幂等，部分进度、私牌和旧 JSON 可安全恢复；Poker/Avalon 已登录房间统一三段式顶栏，外部暂停/恢复/手动作废入口退役；Avalon 公开角色构成、Poker 按住私牌、本人回合 felt 缓存、无拖动筹码及 300px 双游戏布局已交付。lint、typecheck、platform/server/Avalon platform 40/40、Poker 17/17、Avalon 8/8、realtime 5/5、Chromium/WebKit 8/8、容量 4/4、生产 build/static 和真实 iStoreOS 隔离 Docker smoke 全部通过；当前权威快照为 `docs/requirements/game-room-ui-and-poker-hand-start/effective-requirements.md`。
 - `game-room-ui-and-poker-hand-start` change-1 已完成并冻结：Poker 准备主面板移除外圈边框，玩家卡填充前景/头像右侧身份块/紧凑尺寸、全宽且按实际面值节点数动态等分的下注缓存、紧凑数量行及手机阴影安全区已交付；普通/游戏/管理员瞬时反馈统一为左上角最新在上、可关闭、约五秒自动消失的 toast。lint、typecheck、platform/server/Avalon platform 40/40、Poker 17/17、Avalon 8/8、realtime 5/5、capacity 4/4、生产 build/static、Chromium/WebKit 8/8、300px/16 面值几何与差异门禁全部通过；没有修改服务端规则、投影、资产、SQLite 或部署接口，当前权威快照仍为 `docs/requirements/game-room-ui-and-poker-hand-start/effective-requirements.md`。
+- `game-room-ui-and-poker-hand-start` change-2 已完成并冻结：Poker 准备页已从共享顶栏下沿形成无外圈空白的贴边表面，等待/活动头像保持正圆；下注缓存少量面值从左按正常小间距排列，仅在轨道拥挤时均匀压缩；手机上方玩家卡精确恢复旧可见顶部距离和原横向 gap，并通过独立裁剪安全区与层级完整显示阴影、焦点和庄家标识。lint、typecheck、platform/server/Avalon platform 40/40、Poker 17/17、Avalon 8/8、realtime 5/5、capacity 4/4、生产 build/static、Chromium/WebKit 8/8、桌面/300px/3/16 面值几何与差异门禁全部通过；没有修改服务端规则、投影、资产、SQLite 或部署接口，当前权威快照为 `docs/requirements/game-room-ui-and-poker-hand-start/effective-requirements.md`。
 
 ### 尚未完成或待执行
 
@@ -58,7 +59,7 @@
 - 当前没有待恢复的 `deployment-automation` initial 任务。其三个 phase plan/result、完成状态、`change-0.md` 与有效需求已经冻结；未来部署自动化需求必须新建连续的 `change-N` 运行。
 - 当前没有待恢复的 `admin-account-preferences-and-ui` initial 任务。其远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，没有切换正式服务、固定卷、发布目录或唯一备份；正式发布仍需按受支持部署入口另行执行并以只读服务器事实为准。
 - 当前没有待恢复的 `avalon-game` initial、change-1 或 change-2 任务。initial 远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，且已全部清理；change-1 与 change-2 只执行本地验证。2026-07-31 收口时正式服务仍运行 Git `67e68cea036a41c38917e19936c27e3f7cd49f19` 对应 healthy 镜像，固定卷、发布标记、唯一备份和部署锁均未改变；阿瓦隆及两次 UI 变更尚未正式发布到 `home-table`。
-- 当前没有待恢复的 `game-room-ui-and-poker-hand-start` initial 或 change-1 任务。initial 远端功能验收只使用明确归属的随机隔离容器、卷、镜像、端口和临时归档，且已全部清理；change-1 产品验收为本地生产浏览器与自动化门禁。用户授权的正式发布属于工作流冻结后的独立运维动作，其实际结果以最近一次受支持部署输出和只读服务器事实为准，不倒写为 change-1 阶段证据。
+- 当前没有待恢复的 `game-room-ui-and-poker-hand-start` initial、change-1 或 change-2 任务。initial 远端功能验收只使用明确归属的随机隔离容器、卷、镜像、端口和临时归档，且已全部清理；change-1/change-2 产品验收为本地生产浏览器与自动化门禁。用户授权的正式发布属于工作流冻结后的独立运维动作，其实际结果以最近一次受支持部署输出和只读服务器事实为准，不倒写为 change 阶段证据。
 
 ### 工作流文档规则
 
