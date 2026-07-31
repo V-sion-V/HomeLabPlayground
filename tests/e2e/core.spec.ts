@@ -6,7 +6,7 @@ test.describe.configure({ mode: "serial" });
 test("uses anonymous admin routes, two-step registration, and account preference persistence", async ({
   page
 }, testInfo) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const suffix = uniqueSuffix(testInfo.project.name);
   const username = `资料甲-${suffix}`;
   const updatedUsername = `资料乙-${suffix}`;
@@ -34,7 +34,35 @@ test("uses anonymous admin routes, two-step registration, and account preference
   await page.getByRole("button", { name: /德州扑克/ }).click();
   await selectStyledOption(page, "花色配色", "高对比度");
   await page.getByLabel("筹码面值 6").fill("1000");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const adminSave = page.getByRole("button", { name: "保存", exact: true });
+  const contentTopBeforeToast = await page
+    .locator(".fixed-panel-scroll")
+    .evaluate((content) => content.getBoundingClientRect().top);
+  await adminSave.click();
+  const toasts = page.locator(".toast");
+  await expect(toasts).toHaveCount(1);
+  await expect(toasts.first()).toContainText("设置已保存");
+  await expect(adminSave).toBeEnabled();
+  expect(
+    await page
+      .locator(".fixed-panel-scroll")
+      .evaluate((content) => content.getBoundingClientRect().top)
+  ).toBe(contentTopBeforeToast);
+  await adminSave.click();
+  await expect(toasts).toHaveCount(2);
+  const toastOrder = await toasts.evaluateAll((items) =>
+    items.map((item) => ({
+      id: Number(item.getAttribute("data-toast-id")),
+      top: item.getBoundingClientRect().top,
+      position: getComputedStyle(item.parentElement!).position
+    }))
+  );
+  expect(toastOrder[0]!.id).toBeGreaterThan(toastOrder[1]!.id);
+  expect(toastOrder[0]!.top).toBeLessThan(toastOrder[1]!.top);
+  expect(toastOrder.every((toast) => toast.position === "fixed")).toBe(true);
+  await toasts.first().getByRole("button", { name: "关闭提示" }).click();
+  await expect(toasts).toHaveCount(1);
+  await expect(toasts).toHaveCount(0, { timeout: 6_000 });
 
   await page.getByRole("button", { name: /账户管理/ }).click();
   await expect(page).toHaveURL(/\/admin\/accounts$/);
@@ -125,13 +153,15 @@ test("uses anonymous admin routes, two-step registration, and account preference
   await page.getByLabel("新赛季名称").fill(seasonName);
   await page.getByLabel("基础分").fill("12000");
   await page.getByRole("button", { name: "开始新赛季", exact: true }).click();
-  await page
-    .getByRole("alertdialog", { name: "开始新赛季" })
-    .getByRole("button", { name: "最终确认" })
-    .click();
-  await expect(page.locator(".admin-selection-row").first()).toContainText(
-    seasonName
-  );
+  const startSeasonDialog = page.getByRole("alertdialog", {
+    name: "开始新赛季"
+  });
+  await startSeasonDialog.getByRole("button", { name: "最终确认" }).click();
+  await expect(startSeasonDialog).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.locator(".toast")).toContainText("新赛季已开始");
+  await expect(
+    page.locator(".admin-selection-row", { hasText: seasonName })
+  ).toContainText("当前赛季");
 });
 
 test("runs a real two-player hand, isolates private cards, synchronizes display, and transfers control", async ({
@@ -178,7 +208,16 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await hostPage.goto("/admin");
     await hostPage.getByRole("button", { name: /德州扑克/ }).click();
     await selectStyledOption(hostPage, "花色配色", "高对比度");
+    const denominationInputs = hostPage.getByLabel(/^筹码面值 \d+$/);
+    const addDenomination = hostPage.getByRole("button", { name: /添加面值/ });
+    for (let count = await denominationInputs.count(); count < 16; count += 1) {
+      await addDenomination.click();
+    }
+    for (let index = 0; index < 16; index += 1) {
+      await denominationInputs.nth(index).fill(String(index + 1));
+    }
     await hostPage.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(hostPage.locator(".toast")).toContainText("设置已保存");
     await enter(hostPage, hostName);
     await enter(guestPage, guestName);
     await enter(unreadyPage, unreadyName);
@@ -197,6 +236,18 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await create.getByLabel("买入筹码").fill("2000");
     await create.getByRole("button", { name: "创建房间" }).click();
     await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
+    const waitingPanelBorder = await hostPage
+      .locator(".waiting-panel")
+      .evaluate((panel) => {
+        const style = getComputedStyle(panel);
+        return [
+          style.borderTopWidth,
+          style.borderRightWidth,
+          style.borderBottomWidth,
+          style.borderLeftWidth
+        ];
+      });
+    expect(waitingPanelBorder).toEqual(["0px", "0px", "0px", "0px"]);
     const waitingViewport = hostPage.viewportSize()!;
     await hostPage.setViewportSize({ width: 300, height: 760 });
     const waitingHeader = await hostPage.locator(".shared-room-header").evaluate((header) => {
@@ -307,6 +358,42 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByText("盲注与开局确认 · 第 1 手")).toBeVisible();
     await expect(hostPage.locator(".player-seat.needs-action")).toHaveCount(2);
     await expect(hostPage.locator(".player-seat.is-self")).toContainText("本人");
+    const filledSeatLayout = await hostPage
+      .locator(".player-seat.needs-action")
+      .first()
+      .evaluate((card) => {
+        const avatar = card.querySelector<HTMLElement>(".member-avatar")!;
+        const name = card.querySelector<HTMLElement>(".poker-seat-identity b")!;
+        const connection = card.querySelector<HTMLElement>(
+          ".poker-seat-identity small"
+        )!;
+        const text = [
+          name,
+          connection,
+          ...card.querySelectorAll<HTMLElement>(
+            ".seat-values small > span, .seat-values strong"
+          )
+        ];
+        const avatarRect = avatar.getBoundingClientRect();
+        const nameRect = name.getBoundingClientRect();
+        const connectionRect = connection.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        return {
+          background: getComputedStyle(card).backgroundColor,
+          foreground: getComputedStyle(card).color,
+          textColors: text.map((element) => getComputedStyle(element).color),
+          width: cardRect.width,
+          identityRightOfAvatar: nameRect.left >= avatarRect.right - 1,
+          connectionBelowName: connectionRect.top >= nameRect.bottom - 1
+        };
+      });
+    expect(filledSeatLayout.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(filledSeatLayout.textColors.every(
+      (color) => color === filledSeatLayout.foreground
+    )).toBe(true);
+    expect(filledSeatLayout.width).toBeLessThanOrEqual(150);
+    expect(filledSeatLayout.identityRightOfAvatar).toBe(true);
+    expect(filledSeatLayout.connectionBelowName).toBe(true);
     await expect(hostPage.getByLabel("下注缓存")).toHaveCount(0);
     await expect(hostPage.getByRole("button", { name: "弃牌" })).toBeDisabled();
     await expect(hostPage.getByLabel("我的手牌")).toHaveCount(0);
@@ -354,6 +441,19 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     const memberTrigger = hostPage.getByRole("group", {
       name: `${unreadyName} 成员操作`
     });
+    const memberCacheOverlap = await memberTrigger.evaluate((member) => {
+      const cache = document.querySelector<HTMLElement>(".felt-bet-cache");
+      if (!cache) return false;
+      const memberRect = member.getBoundingClientRect();
+      const cacheRect = cache.getBoundingClientRect();
+      return !(
+        memberRect.right <= cacheRect.left ||
+        memberRect.left >= cacheRect.right ||
+        memberRect.bottom <= cacheRect.top ||
+        memberRect.top >= cacheRect.bottom
+      );
+    });
+    expect(memberCacheOverlap).toBe(false);
     await expect(
       hostPage.getByRole("menuitem", { name: "移除玩家" })
     ).toHaveCount(0);
@@ -427,6 +527,41 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       viewport: innerWidth,
       documentWidth: document.documentElement.scrollWidth
     }))).toEqual({ viewport: 300, documentWidth: 300 });
+    const mobileSeatGeometry = await hostPage.locator(".table-seats").evaluate((track) => {
+      const trackRect = track.getBoundingClientRect();
+      const cards = Array.from(
+        track.querySelectorAll<HTMLElement>(".player-seat")
+      );
+      const cardRects = cards.map((card) => card.getBoundingClientRect());
+      const dealer = track.querySelector<HTMLElement>(".dealer-marker");
+      const dealerRect = dealer?.getBoundingClientRect();
+      return {
+        topGap: Math.min(...cardRects.map((rect) => rect.top - trackRect.top)),
+        bottomGap: Math.min(...cardRects.map((rect) => trackRect.bottom - rect.bottom)),
+        shadows: cards.map((card) => getComputedStyle(card).boxShadow),
+        dealerWithinTrack: Boolean(dealerRect) &&
+          dealerRect!.top >= trackRect.top &&
+          dealerRect!.bottom <= trackRect.bottom
+      };
+    });
+    expect(mobileSeatGeometry.topGap).toBeGreaterThanOrEqual(27);
+    expect(mobileSeatGeometry.bottomGap).toBeGreaterThanOrEqual(32);
+    expect(mobileSeatGeometry.shadows.every((shadow) => shadow !== "none")).toBe(true);
+    expect(mobileSeatGeometry.dealerWithinTrack).toBe(true);
+    const focusableSeat = hostPage.locator('.player-seat[tabindex="0"]').first();
+    await hostPage.evaluate(() => {
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await hostPage.keyboard.press("Tab");
+      if (await focusableSeat.evaluate((card) => card === document.activeElement)) {
+        break;
+      }
+    }
+    await expect(focusableSeat).toBeFocused();
+    expect(
+      await focusableSeat.evaluate((card) => getComputedStyle(card).outlineStyle)
+    ).not.toBe("none");
     await expect(hostPage.locator(".player-seat .seat-values").first()).toContainText(
       "剩余筹码"
     );
@@ -476,49 +611,83 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
 
     const actorPage = await actingPage(hostPage, guestPage);
     const observerPage = actorPage === hostPage ? guestPage : hostPage;
-    const chip25 = actorPage
-      .locator(".chip-rack")
-      .getByRole("button", { name: "25", exact: true });
+    await actorPage.setViewportSize({ width: 300, height: 760 });
+    const chipRack = actorPage.locator(".chip-rack");
+    const chipOne = chipRack
+      .getByRole("button", { name: "1", exact: true });
     const betCache = actorPage.getByLabel("下注缓存");
     await expect(observerPage.getByLabel("下注缓存")).toHaveCount(0);
-    await expect(chip25).not.toHaveAttribute("draggable", "true");
+    await expect(chipOne).not.toHaveAttribute("draggable", "true");
     expect(
-      await actorPage
-        .locator(".chip-rack")
-        .evaluate((rack) => getComputedStyle(rack).touchAction)
+      await chipRack.evaluate((rack) => getComputedStyle(rack).touchAction)
     ).toBe("pan-x");
-    await chip25.focus();
-    await chip25.press("Enter");
-    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
+    await chipOne.focus();
+    await chipOne.press("Enter");
+    const cachedOne = betCache.getByRole("button", { name: /移除 1 筹码/ });
+    await expect(cachedOne).toHaveCount(1);
+    await cachedOne.press("Enter");
+    await expect(cachedOne).toHaveCount(0);
+
+    for (let value = 1; value <= 16; value += 1) {
+      await chipRack
+        .getByRole("button", { name: String(value), exact: true })
+        .click();
+    }
+    await chipOne.click();
+    await expect(betCache.locator(".cache-chip-slot")).toHaveCount(16);
     const cacheGeometry = await betCache.evaluate((cache) => {
-      const felt = cache.closest<HTMLElement>(".poker-felt");
-      const firstChip = cache.querySelector<HTMLElement>(".poker-chip");
+      const felt = cache.closest<HTMLElement>(".poker-felt")!;
+      const track = cache.querySelector<HTMLElement>(".cache-chips")!;
+      const chips = Array.from(
+        track.querySelectorAll<HTMLElement>(".poker-chip")
+      );
       const cacheRect = cache.getBoundingClientRect();
-      const feltRect = felt?.getBoundingClientRect();
-      const chipRect = firstChip?.getBoundingClientRect();
+      const feltRect = felt.getBoundingClientRect();
+      const trackRect = track.getBoundingClientRect();
+      const chipRects = chips.map((chip) => chip.getBoundingClientRect());
+      const centers = chipRects.map((rect) => rect.left + rect.width / 2);
+      const steps = centers.slice(1).map((center, index) => center - centers[index]!);
+      const total = cache.querySelector<HTMLElement>(":scope > strong")!;
+      const clear = cache.querySelector<HTMLElement>(":scope > .text-button")!;
+      const countedChip = chips.find((chip) => chip.querySelector(".cache-chip-count"))!;
+      const valueRect = countedChip
+        .querySelector<HTMLElement>(".cache-chip-value")!
+        .getBoundingClientRect();
+      const countRect = countedChip
+        .querySelector<HTMLElement>(".cache-chip-count")!
+        .getBoundingClientRect();
+      const totalRect = total.getBoundingClientRect();
+      const clearRect = clear.getBoundingClientRect();
       return {
         cacheWithinFelt:
-          Boolean(feltRect) &&
-          cacheRect.left >= feltRect!.left &&
-          cacheRect.right <= feltRect!.right &&
-          cacheRect.top >= feltRect!.top &&
-          cacheRect.bottom <= feltRect!.bottom,
-        firstChipVisible:
-          Boolean(chipRect) &&
-          chipRect!.left >= cacheRect.left &&
-          chipRect!.right <= cacheRect.right
+          cacheRect.left >= feltRect.left &&
+          cacheRect.right <= feltRect.right &&
+          cacheRect.top >= feltRect.top &&
+          cacheRect.bottom <= feltRect.bottom,
+        spansFelt: feltRect.width - cacheRect.width <= 20,
+        chipCount: getComputedStyle(track)
+          .getPropertyValue("--cache-chip-count")
+          .trim(),
+        everyChipWithinTrack: chipRects.every(
+          (rect) => rect.left >= trackRect.left - 1 && rect.right <= trackRect.right + 1
+        ),
+        stepSpread: Math.max(...steps) - Math.min(...steps),
+        valueCountGap: countRect.top - valueRect.bottom,
+        controlsWithinCache:
+          totalRect.left >= cacheRect.left &&
+          clearRect.right <= cacheRect.right &&
+          totalRect.right <= clearRect.left
       };
     });
     expect(cacheGeometry.cacheWithinFelt).toBe(true);
-    expect(cacheGeometry.firstChipVisible).toBe(true);
-    await betCache
-      .getByRole("button", { name: "移除 25 筹码" })
-      .press("Enter");
-    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(0);
-    await chip25.click();
-    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
-    await betCache.getByRole("button", { name: "移除 25 筹码" }).click();
-    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(0);
+    expect(cacheGeometry.spansFelt).toBe(true);
+    expect(cacheGeometry.chipCount).toBe("16");
+    expect(cacheGeometry.everyChipWithinTrack).toBe(true);
+    expect(cacheGeometry.stepSpread).toBeLessThanOrEqual(1.5);
+    expect(cacheGeometry.valueCountGap).toBeLessThanOrEqual(1);
+    expect(cacheGeometry.controlsWithinCache).toBe(true);
+    await betCache.getByRole("button", { name: "清空", exact: true }).click();
+    await expect(betCache.locator(".cache-chip-slot")).toHaveCount(0);
     await actorPage.getByRole("button", { name: "一键跟注" }).click();
     await expect(actorPage.getByRole("button", { name: "确认跟注" })).toBeEnabled();
     await actorPage.getByRole("button", { name: "确认跟注" }).click();
@@ -739,7 +908,7 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
     await selectStyledOption(hostPage, "奥伯伦规则", "原版奥伯伦");
     await hostPage.getByLabel("每人押分").fill("100");
     await hostPage.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(hostPage.getByRole("status")).toContainText("设置已保存");
+    await expect(hostPage.locator(".toast")).toContainText("设置已保存");
 
     await hostPage.goto("/admin/seasons");
     await hostPage.getByLabel("新赛季名称").fill(seasonName);
@@ -749,7 +918,7 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       .getByRole("alertdialog", { name: "开始新赛季" })
       .getByRole("button", { name: "最终确认" })
       .click();
-    await expect(hostPage.getByRole("status")).toContainText("新赛季已开始");
+    await expect(hostPage.locator(".toast")).toContainText("新赛季已开始");
 
     await Promise.all(
       playerPages.map((page, index) => enter(page, playerNames[index]!))

@@ -25,7 +25,8 @@ import {
   FixedPanel,
   SelectField,
   ThemeToggle,
-  applyProductTheme
+  applyProductTheme,
+  useToast
 } from "./ui";
 
 type AdminPath = "/admin" | "/admin/accounts" | "/admin/seasons";
@@ -48,7 +49,7 @@ export function AdminApp() {
   const [theme, setTheme] = useState<ThemeMode>(
     () => readAdminTheme() ?? "dark"
   );
-  const [notice, setNotice] = useState("");
+  const pushNotice = useToast();
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/admin/state");
@@ -62,11 +63,11 @@ export function AdminApp() {
 
   useEffect(() => {
     void refresh().catch((reason) =>
-      setNotice(
+      pushNotice(
         adminErrorMessage(readAdminLanguage() ?? "zh-CN", reason)
       )
     );
-  }, [refresh]);
+  }, [pushNotice, refresh]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -133,7 +134,7 @@ export function AdminApp() {
     return (
       <main className="loading-shell">
         <div className="brand-mark" aria-hidden="true">♠</div>
-        <p>{notice || t(language, "loading")}</p>
+        <p>{t(language, "loading")}</p>
       </main>
     );
   }
@@ -144,8 +145,7 @@ export function AdminApp() {
         language={language}
         projection={projection}
         controls={localControls}
-        notice={notice}
-        onNotice={setNotice}
+        onNotice={pushNotice}
         onBack={() => navigate("/admin")}
         command={command}
       />
@@ -157,8 +157,7 @@ export function AdminApp() {
         language={language}
         projection={projection}
         controls={localControls}
-        notice={notice}
-        onNotice={setNotice}
+        onNotice={pushNotice}
         onBack={() => navigate("/admin")}
         command={command}
       />
@@ -169,8 +168,7 @@ export function AdminApp() {
       language={language}
       projection={projection}
       controls={localControls}
-      notice={notice}
-      onNotice={setNotice}
+      onNotice={pushNotice}
       onAccounts={() => navigate("/admin/accounts")}
       onSeasons={() => navigate("/admin/seasons")}
       command={command}
@@ -182,7 +180,6 @@ function AdminHome({
   language,
   projection,
   controls,
-  notice,
   onNotice,
   onAccounts,
   onSeasons,
@@ -191,7 +188,6 @@ function AdminHome({
   language: Language;
   projection: AdminProjection;
   controls: React.ReactNode;
-  notice: string;
   onNotice: (notice: string) => void;
   onAccounts: () => void;
   onSeasons: () => void;
@@ -266,9 +262,6 @@ function AdminHome({
             </button>
           }
         />
-      }
-      footer={
-        notice ? <p className="notice" role="status">{notice}</p> : <span />
       }
     >
       <p className="warning admin-trust-warning">
@@ -571,7 +564,6 @@ function AdminAccounts({
   language,
   projection,
   controls,
-  notice,
   onNotice,
   onBack,
   command
@@ -605,7 +597,6 @@ function AdminAccounts({
         language={language}
         title={t(language, "accountManagement")}
         controls={controls}
-        notice={notice}
         onBack={onBack}
         ids={ids}
         selected={selected}
@@ -656,7 +647,6 @@ function AdminSeasons({
   language,
   projection,
   controls,
-  notice,
   onNotice,
   onBack,
   command
@@ -708,7 +698,6 @@ function AdminSeasons({
         language={language}
         title={t(language, "seasonManagement")}
         controls={controls}
-        notice={notice}
         onBack={onBack}
         ids={ids}
         selected={selected}
@@ -795,7 +784,6 @@ function AdminSelectionShell({
   language,
   title,
   controls,
-  notice,
   onBack,
   ids,
   selected,
@@ -808,7 +796,6 @@ function AdminSelectionShell({
   language: Language;
   title: string;
   controls: React.ReactNode;
-  notice: string;
   onBack: () => void;
   ids: string[];
   selected: Set<string>;
@@ -850,7 +837,6 @@ function AdminSelectionShell({
         </div>
       }
     >
-      {notice && <p className="notice" role="status">{notice}</p>}
       <div className="admin-select-all">
         <IndeterminateCheckbox
           checked={allSelected}
@@ -1113,7 +1099,6 @@ interface AdminSubpageProps {
   language: Language;
   projection: AdminProjection;
   controls: React.ReactNode;
-  notice: string;
   onNotice: (notice: string) => void;
   onBack: () => void;
   command: AdminCommand;

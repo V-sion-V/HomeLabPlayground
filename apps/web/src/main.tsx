@@ -51,9 +51,11 @@ import {
   RoomHeader,
   SelectField,
   ThemeToggle,
+  ToastProvider,
   applyProductTheme,
   type ThemeScope,
-  useContextMenuGesture
+  useContextMenuGesture,
+  useToast
 } from "./ui";
 import "./styles.css";
 
@@ -85,7 +87,7 @@ function App() {
   const [lobby, setLobby] = useState<LobbyProjection | null>(null);
   const [room, setRoom] = useState<RoomProjection | null>(null);
   const [restoring, setRestoring] = useState(!displayRoomId && Boolean(readRecentAccount()));
-  const [notice, setNotice] = useState("");
+  const pushNotice = useToast();
   const restoreStarted = useRef(false);
   const accountPreferencesApplied = useRef(false);
   const activeRoomId = room?.id;
@@ -142,7 +144,6 @@ function App() {
         : null
     );
     writeRecentAccount(result.data.account);
-    setNotice("");
   }, []);
 
   const enter = useCallback(async (username: string) => {
@@ -259,7 +260,7 @@ function App() {
         if (message.type === "projection") setRoom(message.data as RoomProjection);
         if (message.type === "room.closed" || message.type === "room.left") {
           setRoom(null);
-          setNotice(
+          pushNotice(
             t(language, message.type === "room.closed" ? "roomClosed" : "removedFromRoom")
           );
           void refreshLobby();
@@ -273,7 +274,7 @@ function App() {
           setRoom(null);
           setLobby(null);
           setSession(null);
-          setNotice(t(language, "connectionTaken"));
+          pushNotice(t(language, "connectionTaken"));
         }
       });
       socket.addEventListener("close", () => {
@@ -286,7 +287,7 @@ function App() {
       if (retry) clearTimeout(retry);
       socket?.close();
     };
-  }, [activeRoomId, language, loginDefaults, refreshLobby, session]);
+  }, [activeRoomId, language, loginDefaults, pushNotice, refreshLobby, session]);
 
   const command = useCallback(
     async <T,>(
@@ -369,7 +370,6 @@ function App() {
         setTheme={setThemeMode}
         onEnter={enter}
         onRegister={register}
-        notice={notice}
       />
     );
   }
@@ -380,8 +380,7 @@ function App() {
         language={language}
         session={session}
         room={room}
-        notice={notice}
-        setNotice={setNotice}
+        pushNotice={pushNotice}
         volume={volume}
         command={command}
         onLobby={() => {
@@ -400,8 +399,7 @@ function App() {
       session={session}
       setSession={setSession}
       lobby={lobby}
-      notice={notice}
-      setNotice={setNotice}
+      pushNotice={pushNotice}
       command={command}
       onRoom={setRoom}
       onPreferences={(account) => {
@@ -439,8 +437,7 @@ function Login({
   setLanguage,
   setTheme,
   onEnter,
-  onRegister,
-  notice
+  onRegister
 }: {
   language: Language;
   defaults: { language: Language; theme: ThemeMode };
@@ -453,7 +450,6 @@ function Login({
     language: Language;
     theme: ThemeMode;
   }) => Promise<void>;
-  notice: string;
 }) {
   const [username, setUsername] = useState("");
   const [registrationUsername, setRegistrationUsername] = useState("");
@@ -624,9 +620,7 @@ function Login({
               groupLabel={t(language, "themeSelection")}
             />
           </div>
-          {(error || notice) && (
-            <p className="error" role="alert">{error || notice}</p>
-          )}
+          {error && <p className="error" role="alert">{error}</p>}
           <button className="primary wide" type="submit" disabled={busy}>
             {busy ? t(language, "loading") : t(language, "registerAndEnter")}
           </button>
@@ -653,9 +647,7 @@ function Login({
               </button>
             </span>
           </label>
-          {(error || notice) && (
-            <p className="error" role="alert">{error || notice}</p>
-          )}
+          {error && <p className="error" role="alert">{error}</p>}
           <p className="fine-print">{t(language, "noPassword")}</p>
         </form>
       )}
@@ -668,8 +660,7 @@ function Lobby({
   session,
   setSession,
   lobby,
-  notice,
-  setNotice,
+  pushNotice,
   command,
   onRoom,
   onPreferences,
@@ -679,8 +670,7 @@ function Lobby({
   session: Session;
   setSession: (session: Session) => void;
   lobby: LobbyProjection;
-  notice: string;
-  setNotice: (notice: string) => void;
+  pushNotice: (notice: string) => void;
   command: CommandFunction;
   onRoom: (room: RoomProjection) => void;
   onPreferences: (account: Account) => void;
@@ -697,7 +687,7 @@ function Lobby({
       `/api/room/${encodeURIComponent(roomId)}?accountId=${encodeURIComponent(session.account.id)}&connectionId=${encodeURIComponent(session.connectionId)}`
     );
     if (!response.ok) {
-      setNotice(t(language, "roomClosed"));
+      pushNotice(t(language, "roomClosed"));
       return;
     }
     onRoom((await response.json()) as RoomProjection);
@@ -718,7 +708,6 @@ function Lobby({
           </button>
         </div>
       </header>
-      {notice && <p className="notice" role="status">{notice}</p>}
       <div className="lobby-grid">
         <section className="room-column">
           <div className="section-title">
@@ -903,7 +892,7 @@ function Lobby({
               if (result.data) onRoom({ ...result.data, platformVersion: result.version });
               setCreateGame(null);
             } catch (reason) {
-              setNotice(errorMessage(language, reason));
+              pushNotice(errorMessage(language, reason));
             }
           }}
         />
@@ -932,7 +921,7 @@ function Lobby({
               }
               setCreateGame(null);
             } catch (reason) {
-              setNotice(errorMessage(language, reason));
+              pushNotice(errorMessage(language, reason));
             }
           }}
         />
@@ -956,7 +945,7 @@ function Lobby({
               if (result.data) onRoom({ ...result.data, platformVersion: result.version });
               setJoinRoom(null);
             } catch (reason) {
-              setNotice(errorMessage(language, reason));
+              pushNotice(errorMessage(language, reason));
             }
           }}
         />
@@ -982,7 +971,7 @@ function Lobby({
               }
               setJoinRoom(null);
             } catch (reason) {
-              setNotice(errorMessage(language, reason));
+              pushNotice(errorMessage(language, reason));
             }
           }}
         />
@@ -1014,7 +1003,7 @@ function Lobby({
               }
               setProfileOpen(false);
             } catch (reason) {
-              setNotice(errorMessage(language, reason));
+              pushNotice(errorMessage(language, reason));
             }
           }}
         />
@@ -1855,8 +1844,7 @@ function RoomView({
   language,
   session,
   room,
-  notice,
-  setNotice,
+  pushNotice,
   volume,
   command,
   onLobby
@@ -1864,8 +1852,7 @@ function RoomView({
   language: Language;
   session: Session;
   room: RoomProjection;
-  notice: string;
-  setNotice: (notice: string) => void;
+  pushNotice: (notice: string) => void;
   volume: number;
   command: CommandFunction;
   onLobby: () => void;
@@ -1873,11 +1860,10 @@ function RoomView({
   const host = room.hostAccountId === session.account.id;
   const run = async (type: string, payload: Record<string, unknown> = {}) => {
     try {
-      setNotice("");
       await command(type, { roomId: room.id, ...payload }, room.id);
       return true;
     } catch (reason) {
-      setNotice(errorMessage(language, reason));
+      pushNotice(errorMessage(language, reason));
       return false;
     }
   };
@@ -1887,7 +1873,6 @@ function RoomView({
         language={language}
         account={session.account}
         room={room}
-        notice={notice}
         volume={volume}
         run={run}
         onLobby={onLobby}
@@ -1900,7 +1885,6 @@ function RoomView({
         language={language}
         session={session}
         room={room}
-        notice={notice}
         host={host}
         run={run}
         onLobby={onLobby}
@@ -1913,7 +1897,6 @@ function RoomView({
         language={language}
         session={session}
         room={room}
-        notice={notice}
         host={host}
         run={run}
         onLobby={onLobby}
@@ -1925,7 +1908,6 @@ function RoomView({
       language={language}
       session={session}
       room={room}
-      notice={notice}
       host={host}
       volume={volume}
       run={run}
@@ -1938,7 +1920,6 @@ function WaitingRoom({
   language,
   session,
   room,
-  notice,
   host,
   run,
   onLobby
@@ -1946,7 +1927,6 @@ function WaitingRoom({
   language: Language;
   session: Session;
   room: PokerRoomProjection;
-  notice: string;
   host: boolean;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
@@ -2018,7 +1998,6 @@ function WaitingRoom({
           host ? () => setConfirmation({ kind: "close" }) : undefined
         }
       />
-      {notice && <p className="notice" role="status">{notice}</p>}
       <section className="waiting-panel">
         <div className="room-summary">
           <strong>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")}</strong>
@@ -2253,7 +2232,6 @@ function SpectatorTable({
   language,
   session,
   room,
-  notice,
   host,
   run,
   onLobby
@@ -2261,7 +2239,6 @@ function SpectatorTable({
   language: Language;
   session: Session;
   room: PokerRoomProjection;
-  notice: string;
   host: boolean;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
   onLobby: () => void;
@@ -2292,7 +2269,6 @@ function SpectatorTable({
           host ? () => setConfirmation({ kind: "close" }) : undefined
         }
       />
-      {notice && <p className="notice" role="status">{notice}</p>}
       <PublicTableSurface
         language={language}
         room={room}
@@ -2382,7 +2358,6 @@ function PlayerTable({
   language,
   session,
   room,
-  notice,
   host,
   volume,
   run,
@@ -2391,7 +2366,6 @@ function PlayerTable({
   language: Language;
   session: Session;
   room: PokerRoomProjection;
-  notice: string;
   host: boolean;
   volume: number;
   run: (type: string, payload?: Record<string, unknown>) => Promise<boolean>;
@@ -2440,6 +2414,9 @@ function PlayerTable({
   const cacheSize = Object.values(cache).reduce(
     (sum, count) => sum + count,
     0
+  );
+  const cachedDenominations = denominations.filter(
+    (chip) => (cache[String(chip)] ?? 0) > 0
   );
   const canAct = room.status === "in_progress" && room.actingAccountId === session.account.id;
   const pendingHandStart = new Set(room.pendingHandStartAccountIds ?? []);
@@ -2673,7 +2650,12 @@ function PlayerTable({
               <span className="member-avatar" aria-hidden="true">
                 {entry.avatar}
               </span>
-              <b>{entry.username}{entry.accountId === room.hostAccountId ? " ★" : ""}</b>
+              <span className="poker-seat-identity">
+                <b>{entry.username}{entry.accountId === room.hostAccountId ? " ★" : ""}</b>
+                <small className={entry.connected ? "online" : "offline"}>
+                  {entry.connected ? t(language, "online") : t(language, "offline")}
+                </small>
+              </span>
               <span className="seat-values">
                 <small>
                   <span>{t(language, "remainingChips")}</span>
@@ -2684,9 +2666,6 @@ function PlayerTable({
                   <strong>{entry.currentBet.toLocaleString()}</strong>
                 </small>
               </span>
-              <small className={entry.connected ? "online" : "offline"}>
-                {entry.connected ? t(language, "online") : t(language, "offline")}
-              </small>
               {(isSelf || actionStatus) && (
                 <span className="poker-seat-badges">
                   {isSelf && <b>{t(language, "you")}</b>}
@@ -2892,27 +2871,42 @@ function PlayerTable({
             aria-label={t(language, "betCache")}
             aria-live="polite"
           >
-            <div className="cache-chips">
-              {denominations.map((chip) => {
-                const count = cache[String(chip)] ?? 0;
-                if (count <= 0) return null;
+            <div
+              className="cache-chips"
+              style={{
+                "--cache-chip-count": Math.max(1, cachedDenominations.length)
+              } as React.CSSProperties}
+            >
+              {cachedDenominations.map((chip, index) => {
+                const count = cache[String(chip)]!;
+                const position = cachedDenominations.length <= 1
+                  ? 0
+                  : index / (cachedDenominations.length - 1);
                 return (
-                  <button
-                    type="button"
+                  <span
                     key={chip}
-                    className="poker-chip"
-                    style={chipStyle(chip, denominations)}
-                    aria-label={`${t(language, "removeChip").replace(
-                      "{amount}",
-                      chip.toLocaleString()
-                    )} × ${count}`}
-                    onClick={() =>
-                      setCache((current) => removeChip(current, chip))
-                    }
+                    className="cache-chip-slot"
+                    style={{
+                      "--cache-chip-position": `${position * 100}%`,
+                      "--cache-chip-offset": `${position * -100}%`
+                    } as React.CSSProperties}
                   >
-                    <span>{chip.toLocaleString()}</span>
-                    {count > 1 && <small>×{count}</small>}
-                  </button>
+                    <button
+                      type="button"
+                      className="poker-chip"
+                      style={chipStyle(chip, denominations)}
+                      aria-label={`${t(language, "removeChip").replace(
+                        "{amount}",
+                        chip.toLocaleString()
+                      )} × ${count}`}
+                      onClick={() =>
+                        setCache((current) => removeChip(current, chip))
+                      }
+                    >
+                      <span className="cache-chip-value">{chip.toLocaleString()}</span>
+                      {count > 1 && <small className="cache-chip-count">×{count}</small>}
+                    </button>
+                  </span>
                 );
               })}
             </div>
@@ -3005,7 +2999,6 @@ function PlayerTable({
             )}
           </div>
         </div>
-        {notice && <p className="notice" role="status">{notice}</p>}
         {room.phase !== "complete" && <HandResultBanner language={language} room={room} />}
         {room.phase === "showdown" &&
           room.mode === "chips-only" &&
@@ -4178,6 +4171,8 @@ function Root() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Root />
+    <ToastProvider>
+      <Root />
+    </ToastProvider>
   </StrictMode>
 );

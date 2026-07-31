@@ -28,7 +28,6 @@ interface AvalonRoomViewProps {
   language: Language;
   account: Account;
   room: AvalonRoomProjection;
-  notice: string;
   volume: number;
   run: RunCommand;
   onLobby: () => void;
@@ -512,7 +511,6 @@ export function AvalonRoomView({
   language,
   account,
   room,
-  notice,
   volume,
   run,
   onLobby
@@ -676,13 +674,6 @@ export function AvalonRoomView({
           </div>
         )}
       </div>
-      <p
-        className={`notice avalon-notice${notice ? "" : " avalon-notice-empty"}`}
-        role="status"
-      >
-        {notice || "\u00a0"}
-      </p>
-
       <section className="avalon-layout">
         <AvalonMemberRail
           language={language}

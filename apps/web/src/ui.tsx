@@ -1,5 +1,7 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -36,6 +38,92 @@ type ContextMenuGestureProps = Pick<
 const contextMenuTargetSelector = "[data-context-menu-id]";
 const contextMenuLongPressMs = 540;
 const contextMenuMoveTolerance = 12;
+const toastAutoDismissMs = 5_000;
+
+interface ToastItem {
+  id: number;
+  message: string;
+  closeLabel: string;
+}
+
+type PushToast = (message: string) => void;
+
+const ToastContext = createContext<PushToast | null>(null);
+
+export function ToastProvider({ children }: { children: ReactNode }) {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const nextToastId = useRef(0);
+  const timers = useRef(new Map<number, number>());
+
+  const dismiss = useCallback((id: number) => {
+    const timer = timers.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      timers.current.delete(id);
+    }
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  const push = useCallback<PushToast>((message) => {
+    const normalized = message.trim();
+    if (!normalized) return;
+    const id = ++nextToastId.current;
+    const closeLabel = document.documentElement.lang.startsWith("zh")
+      ? "关闭提示"
+      : "Close notification";
+    setToasts((current) => [
+      { id, message: normalized, closeLabel },
+      ...current
+    ]);
+    timers.current.set(
+      id,
+      window.setTimeout(() => dismiss(id), toastAutoDismissMs)
+    );
+  }, [dismiss]);
+
+  useEffect(
+    () => () => {
+      for (const timer of timers.current.values()) window.clearTimeout(timer);
+      timers.current.clear();
+    },
+    []
+  );
+
+  return (
+    <ToastContext.Provider value={push}>
+      {children}
+      {createPortal(
+        <div className="toast-viewport">
+          {toasts.map((toast) => (
+            <section
+              className="toast"
+              data-toast-id={toast.id}
+              key={toast.id}
+              role="alert"
+            >
+              <span className="toast-message">{toast.message}</span>
+              <button
+                type="button"
+                className="toast-close"
+                aria-label={toast.closeLabel}
+                onClick={() => dismiss(toast.id)}
+              >
+                ×
+              </button>
+            </section>
+          ))}
+        </div>,
+        document.body
+      )}
+    </ToastContext.Provider>
+  );
+}
+
+export function useToast(): PushToast {
+  const push = useContext(ToastContext);
+  if (!push) throw new Error("useToast must be used within ToastProvider");
+  return push;
+}
 
 const paletteVariables: Record<keyof ThemePalette, string> = {
   canvas: "--color-canvas",
