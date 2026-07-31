@@ -78,6 +78,10 @@ export function createPokerState(options: {
     phase: "blinds",
     mode: options.mode,
     dealerPosition: options.dealerPosition ?? orderedPlayers[0]!.position,
+    smallBlindAccountId: "",
+    bigBlindAccountId: "",
+    blindPostedAccountIds: [],
+    handStartConfirmedAccountIds: [],
     actingAccountId: null,
     communityCards: [],
     holeCards: {},
@@ -100,14 +104,93 @@ export function createPokerState(options: {
     bigBlind: options.bigBlind,
     version: 0
   };
-  postBlinds(state);
+  const dealerIndex = state.players.findIndex(
+    (player) => player.position === state.dealerPosition
+  );
+  const smallIndex =
+    state.players.length === 2 ? dealerIndex : nextIndex(state, dealerIndex);
+  const bigIndex = nextIndex(state, smallIndex);
+  state.smallBlindAccountId = state.players[smallIndex]!.accountId;
+  state.bigBlindAccountId = state.players[bigIndex]!.accountId;
   if (state.mode === "chips-and-cards") dealHoleCards(state);
-  state.phase = "preflop";
-  state.actingAccountId = nextActiveAccount(state, bigBlindPlayerIndex(state));
-  if (state.actingAccountId === null) {
-    state.advanceDeadline = (options.now ?? Date.now()) + 3_000;
-  }
   return state;
+}
+
+export function postBlind(
+  state: PokerState,
+  accountId: string,
+  expectedVersion = state.version,
+  now = Date.now()
+): number {
+  if (expectedVersion !== state.version) throw new DomainError("STALE_VERSION");
+  if (state.phase !== "blinds") throw new DomainError("INVALID_PHASE");
+  const blind =
+    accountId === state.smallBlindAccountId
+      ? state.smallBlind
+      : accountId === state.bigBlindAccountId
+        ? state.bigBlind
+        : undefined;
+  if (blind === undefined) throw new DomainError("BLIND_NOT_ASSIGNED");
+  if (state.blindPostedAccountIds.includes(accountId)) {
+    throw new DomainError("BLIND_ALREADY_POSTED");
+  }
+  const player = requirePlayer(state, accountId);
+  if (player.folded) throw new DomainError("PLAYER_FOLDED");
+  const committed = commit(player, blind);
+  state.blindPostedAccountIds.push(accountId);
+  state.currentBet = Math.max(state.currentBet, player.roundBet);
+  state.pots = calculatePots(state.players);
+  state.version += 1;
+  state.lastAction = {
+    accountId,
+    kind: "blind",
+    amount: committed,
+    version: state.version,
+    reversible: false
+  };
+  delete state.undoSnapshot;
+  advanceFromHandStartWhenReady(state, now);
+  return committed;
+}
+
+export function confirmHandStart(
+  state: PokerState,
+  accountId: string,
+  expectedVersion = state.version,
+  now = Date.now()
+): PokerState {
+  if (expectedVersion !== state.version) throw new DomainError("STALE_VERSION");
+  if (state.phase !== "blinds") throw new DomainError("INVALID_PHASE");
+  const player = requirePlayer(state, accountId);
+  if (player.folded) throw new DomainError("PLAYER_FOLDED");
+  if (
+    (accountId === state.smallBlindAccountId ||
+      accountId === state.bigBlindAccountId) &&
+    !state.blindPostedAccountIds.includes(accountId)
+  ) {
+    throw new DomainError("BLIND_REQUIRED");
+  }
+  if (state.handStartConfirmedAccountIds.includes(accountId)) {
+    throw new DomainError("HAND_START_ALREADY_CONFIRMED");
+  }
+  state.handStartConfirmedAccountIds.push(accountId);
+  state.version += 1;
+  advanceFromHandStartWhenReady(state, now);
+  return state;
+}
+
+export function pendingHandStartAccountIds(state: PokerState): string[] {
+  if (state.phase !== "blinds") return [];
+  return state.players
+    .filter((player) => !player.folded)
+    .filter(
+      (player) =>
+        !state.handStartConfirmedAccountIds.includes(player.accountId) ||
+        ((player.accountId === state.smallBlindAccountId ||
+          player.accountId === state.bigBlindAccountId) &&
+          !state.blindPostedAccountIds.includes(player.accountId))
+    )
+    .map((player) => player.accountId);
 }
 
 export function legalActions(state: PokerState, accountId: string) {
@@ -271,6 +354,10 @@ export function forceFold(
     state.phase = "showdown";
     state.actingAccountId = null;
     state.advanceDeadline = now + 3_000;
+    return state;
+  }
+  if (state.phase === "blinds") {
+    advanceFromHandStartWhenReady(state, now);
     return state;
   }
   if (state.actingAccountId === accountId) {
@@ -512,16 +599,29 @@ function chooseFive(cards: Card[]): Card[][] {
   return result;
 }
 
-function postBlinds(state: PokerState): void {
-  const dealerIndex = state.players.findIndex(
-    (player) => player.position === state.dealerPosition
-  );
-  const smallIndex = state.players.length === 2 ? dealerIndex : nextIndex(state, dealerIndex);
-  const bigIndex = nextIndex(state, smallIndex);
-  commit(state.players[smallIndex]!, state.smallBlind);
-  commit(state.players[bigIndex]!, state.bigBlind);
+function advanceFromHandStartWhenReady(
+  state: PokerState,
+  now: number
+): void {
+  if (
+    state.phase !== "blinds" ||
+    pendingHandStartAccountIds(state).length > 0
+  ) {
+    return;
+  }
+  state.phase = "preflop";
   state.currentBet = state.bigBlind;
   state.pots = calculatePots(state.players);
+  state.actedAccountIds = [];
+  state.raiseLockedAccountIds = [];
+  state.minimumRaise = state.bigBlind;
+  state.actingAccountId = nextActiveAccount(
+    state,
+    bigBlindPlayerIndex(state)
+  );
+  if (state.actingAccountId === null) {
+    state.advanceDeadline = now + 3_000;
+  }
 }
 
 function updateRaiseLocksAfterShortRaise(
@@ -584,11 +684,9 @@ function nextIndex(state: PokerState, fromIndex: number): number {
 }
 
 function bigBlindPlayerIndex(state: PokerState): number {
-  const dealerIndex = state.players.findIndex(
-    (player) => player.position === state.dealerPosition
+  return state.players.findIndex(
+    (player) => player.accountId === state.bigBlindAccountId
   );
-  const smallIndex = state.players.length === 2 ? dealerIndex : nextIndex(state, dealerIndex);
-  return nextIndex(state, smallIndex);
 }
 
 function remainingUnfolded(state: PokerState) {

@@ -5,6 +5,7 @@ import { buildApp } from "../apps/server/src/app";
 import type { RoomProjection } from "@party/contracts";
 import { initialSnapshot, PlatformDomain } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
+import { createPokerState } from "@party/poker";
 import {
   command,
   defaultAvalonRoomConfig,
@@ -36,6 +37,16 @@ describe("target household capacity", () => {
         domain.setAvalonReady(second.id, account.id, true)
       );
     domain.startRoom(first.id, accounts[0]!.id);
+    first.poker = createPokerState({
+      players: first.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: first.config.mode,
+      smallBlind: first.config.smallBlind,
+      bigBlind: first.config.bigBlind
+    });
     domain.startAvalonGame(second.id, accounts[7]!.id, {
       confirmUnready: false,
       randomInt: () => 0
@@ -54,6 +65,10 @@ describe("target household capacity", () => {
     const secondIds = new Set(secondDisplay.seats.map((seat) => seat.accountId));
     expect(firstDisplayTwo).toEqual(firstDisplay);
     expect([...firstIds].some((id) => secondIds.has(id))).toBe(false);
+    expect(firstDisplay.phase).toBe("blinds");
+    expect(firstDisplay.actingAccountId).toBeNull();
+    expect(firstDisplay.pendingHandStartAccountIds).toHaveLength(7);
+    expect(firstDisplay.blindPostedAccountIds).toEqual([]);
     expect(firstDisplay.communityCards).toBeDefined();
     expect(secondDisplay.phase).toBe("role-confirmation");
     expect(JSON.stringify([firstDisplay, secondDisplay])).not.toContain(
@@ -255,8 +270,58 @@ describe("target household capacity", () => {
           roomId: roomA.data.id
         }
       });
-      const startedAProjection = requirePokerProjection(startedA.data);
+      let startedAProjection = requirePokerProjection(startedA.data);
       version = startedA.version;
+      expect(startedAProjection.phase).toBe("blinds");
+      expect(startedAProjection.actingAccountId).toBeNull();
+      expect(startedAProjection.pendingHandStartAccountIds).toHaveLength(7);
+      for (const blindAccountId of [
+        startedAProjection.bigBlindAccountId,
+        startedAProjection.smallBlindAccountId
+      ]) {
+        const blindIndex = entered.findIndex(
+          (entry) => entry.data.account.id === blindAccountId
+        );
+        expect(blindIndex).toBeGreaterThanOrEqual(0);
+        const posted = await postJson<RoomProjection>(
+          `${baseUrl}/api/command`,
+          {
+            commandId: randomUUID(),
+            connectionId: entered[blindIndex]!.data.connectionId,
+            aggregateId: roomA.data.id,
+            expectedVersion: version,
+            type: "poker.blind.post",
+            payload: {
+              accountId: blindAccountId,
+              roomId: roomA.data.id,
+              pokerVersion: startedAProjection.pokerVersion
+            }
+          }
+        );
+        startedAProjection = requirePokerProjection(posted.data);
+        version = posted.version;
+      }
+      for (let index = 0; index < 7; index += 1) {
+        const confirmed = await postJson<RoomProjection>(
+          `${baseUrl}/api/command`,
+          {
+            commandId: randomUUID(),
+            connectionId: entered[index]!.data.connectionId,
+            aggregateId: roomA.data.id,
+            expectedVersion: version,
+            type: "poker.hand-start.confirm",
+            payload: {
+              accountId: entered[index]!.data.account.id,
+              roomId: roomA.data.id,
+              pokerVersion: startedAProjection.pokerVersion
+            }
+          }
+        );
+        startedAProjection = requirePokerProjection(confirmed.data);
+        version = confirmed.version;
+      }
+      expect(startedAProjection.phase).toBe("preflop");
+      expect(startedAProjection.handStartConfirmedAccountIds).toHaveLength(7);
       const startedB = await postJson<RoomProjection>(`${baseUrl}/api/command`, {
         commandId: randomUUID(),
         connectionId: entered[7]!.data.connectionId,

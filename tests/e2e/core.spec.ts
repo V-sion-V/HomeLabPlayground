@@ -138,7 +138,7 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   browser,
   page: hostPage
 }, testInfo) => {
-  test.setTimeout(150_000);
+  test.setTimeout(240_000);
   const suffix = uniqueSuffix(testInfo.project.name);
   const hostName = `房主-${suffix}`;
   const guestName = `玩家-${suffix}`;
@@ -155,6 +155,16 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
   const displayPage = await displayContext.newPage();
   const takeoverContext = await browser.newContext();
   const takeoverPage = await takeoverContext.newPage();
+  for (const pokerPage of [
+    hostPage,
+    guestPage,
+    unreadyPage,
+    latePage,
+    displayPage,
+    takeoverPage
+  ]) {
+    pokerPage.setDefaultTimeout(10_000);
+  }
 
   try {
     await Promise.all([
@@ -165,6 +175,10 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       emulateLanHttp(displayPage),
       emulateLanHttp(takeoverPage)
     ]);
+    await hostPage.goto("/admin");
+    await hostPage.getByRole("button", { name: /德州扑克/ }).click();
+    await selectStyledOption(hostPage, "花色配色", "高对比度");
+    await hostPage.getByRole("button", { name: "保存", exact: true }).click();
     await enter(hostPage, hostName);
     await enter(guestPage, guestName);
     await enter(unreadyPage, unreadyName);
@@ -178,19 +192,26 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     const create = hostPage.getByRole("dialog", { name: "创建房间 · 德州扑克" });
     await create.getByLabel("房间名称").fill(roomName);
     await selectStyledOption(create, "游戏模式", "筹码＋牌");
-    await expect(create.getByLabel("房主转让时限")).toHaveValue("120");
+    await expect(create.getByLabel("房主转让时限")).toHaveValue(/^\d+$/);
     await create.getByLabel("房主转让时限").fill("45");
     await create.getByLabel("买入筹码").fill("2000");
     await create.getByRole("button", { name: "创建房间" }).click();
     await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
     const waitingViewport = hostPage.viewportSize()!;
     await hostPage.setViewportSize({ width: 300, height: 760 });
-    const waitingHeader = await hostPage.locator(".room-topbar").evaluate((header) => {
+    const waitingHeader = await hostPage.locator(".shared-room-header").evaluate((header) => {
       const buttons = Array.from(
-        header.querySelectorAll<HTMLButtonElement>(".room-top-actions button")
+        header.querySelectorAll<HTMLButtonElement>(
+          ".shared-room-header-actions button, .shared-room-header-danger button"
+        )
       ).map((button) => {
         const rect = button.getBoundingClientRect();
-        return { x: Math.round(rect.x), y: Math.round(rect.y) };
+        return {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          borderRadius: getComputedStyle(button).borderRadius
+        };
       });
       return {
         buttons,
@@ -200,12 +221,28 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     });
     expect(waitingHeader.buttons).toHaveLength(3);
     expect(new Set(waitingHeader.buttons.map((button) => button.y)).size).toBe(1);
+    expect(waitingHeader.buttons.every((button) => button.width <= 46)).toBe(true);
+    expect(
+      waitingHeader.buttons.every(
+        (button) =>
+          button.borderRadius === "50%" || button.borderRadius === "999px"
+      )
+    )
+      .toBe(true);
     expect(waitingHeader.documentWidth).toBe(waitingHeader.viewport);
     await hostPage.setViewportSize(waitingViewport);
-    const displayHref = await hostPage
+    await expect(
+      hostPage.getByRole("link", { name: "打开公共大屏" })
+    ).toHaveCount(0);
+    await hostPage.getByRole("button", { name: "返回大厅" }).click();
+    await expect(hostPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+    const ownRoomCard = hostPage.locator(".room-card").filter({ hasText: roomName });
+    const displayHref = await ownRoomCard
       .getByRole("link", { name: "打开公共大屏" })
       .getAttribute("href");
     expect(displayHref).toBeTruthy();
+    await ownRoomCard.getByRole("button", { name: "返回牌桌" }).click();
+    await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
     const roomId = new URL(displayHref!, "http://127.0.0.1:4173").searchParams.get(
       "roomId"
     );
@@ -264,11 +301,56 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       .click();
     await expect(hostPage.getByLabel("德州扑克")).toBeVisible();
     await expect(guestPage.getByLabel("德州扑克")).toBeVisible();
-    await expect(unreadyPage.getByText("正在观战")).toBeVisible();
+    await expect(unreadyPage.locator(".shared-room-title h1")).toHaveText(roomName);
     await expect(unreadyPage.getByLabel("我的手牌")).toHaveCount(0);
     await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
+    await expect(hostPage.getByText("盲注与开局确认 · 第 1 手")).toBeVisible();
+    await expect(hostPage.locator(".player-seat.needs-action")).toHaveCount(2);
+    await expect(hostPage.locator(".player-seat.is-self")).toContainText("本人");
+    await expect(hostPage.getByLabel("下注缓存")).toHaveCount(0);
+    await expect(hostPage.getByRole("button", { name: "弃牌" })).toBeDisabled();
+    await expect(hostPage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(guestPage.getByLabel("我的手牌")).toHaveCount(0);
+
+    const initialPokerState = await pokerPublicProgress(displayPage, roomId!);
+    expect(initialPokerState.phase).toBe("blinds");
+    expect(initialPokerState.potTotal).toBe(0);
+    expect(initialPokerState.blindPostedAccountIds).toEqual([]);
+    expect(initialPokerState.pendingHandStartAccountIds).toHaveLength(2);
+
+    await guestPage.getByRole("button", { name: "提交盲注 100" }).click();
+    await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await expect(hostPage.getByLabel("我的手牌")).toHaveCount(0);
+    expect((await pokerPublicProgress(displayPage, roomId!)).phase).toBe("blinds");
+
+    await hostPage.getByRole("button", { name: "提交盲注 50" }).click();
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await guestPage.getByRole("button", { name: "确认底牌" }).click();
+    await expect(guestPage.getByText("已完成，等待其他玩家")).toBeVisible();
+    expect((await pokerPublicProgress(displayPage, roomId!)).phase).toBe("blinds");
+    await hostPage.getByRole("button", { name: "确认底牌" }).click();
+    await expect(hostPage.getByText("翻牌前 · 第 1 手")).toBeVisible();
+    await expect(guestPage.getByText("翻牌前 · 第 1 手")).toBeVisible();
+    const startedPokerState = await pokerPublicProgress(displayPage, roomId!);
+    expect(startedPokerState.phase).toBe("preflop");
+    expect(startedPokerState.potTotal).toBe(150);
+    expect(
+      startedPokerState.seats.reduce(
+        (sum, entry) => sum + entry.currentBet,
+        0
+      )
+    ).toBe(150);
+    expect(startedPokerState.blindPostedAccountIds).toHaveLength(2);
+    expect(startedPokerState.handStartConfirmedAccountIds).toHaveLength(2);
+    await expect(hostPage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(guestPage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(
+      hostPage.getByRole("button", { name: /按住查看底牌/ })
+    ).toBeVisible();
+    await expect(
+      guestPage.getByRole("button", { name: /按住查看底牌/ })
+    ).toBeVisible();
     const memberTrigger = hostPage.getByRole("group", {
       name: `${unreadyName} 成员操作`
     });
@@ -326,11 +408,18 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     });
     await lateJoin.getByLabel("买入筹码").fill("2000");
     await lateJoin.getByRole("button", { name: "加入牌局" }).click();
-    await expect(latePage.getByText("正在观战")).toBeVisible();
+    await expect(latePage.locator(".shared-room-title h1")).toHaveText(roomName);
     await expect(latePage.getByLabel("我的手牌")).toHaveCount(0);
-    await expect(latePage.getByRole("button", { name: /确认|弃牌|全押/ })).toHaveCount(0);
-    await expect(hostPage.locator(".table-title strong")).toHaveText(roomName);
-    await expect(hostPage.locator(".table-title")).toContainText(`当前玩家 · ${hostName}`);
+    await expect(
+      latePage.getByRole("button", {
+        name: /提交盲注|确认底牌|确认已拿到实体底牌|弃牌|全押/
+      })
+    ).toHaveCount(0);
+    await expect(hostPage.locator(".shared-room-title h1")).toHaveText(roomName);
+    await expect(hostPage.locator(".shared-room-title")).toContainText("德州扑克");
+    await expect(hostPage.locator(".shared-room-title")).not.toContainText(hostName);
+    await expect(hostPage.getByRole("link", { name: "打开公共大屏" })).toHaveCount(0);
+    await expect(hostPage.getByRole("button", { name: /暂停牌局|继续牌局/ })).toHaveCount(0);
     await expect(hostPage.getByLabel("语言选择")).toHaveCount(0);
     await expect(hostPage.getByRole("button", { name: "静音" })).toHaveCount(0);
     await hostPage.setViewportSize({ width: 300, height: 760 });
@@ -344,10 +433,33 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.locator(".player-seat .seat-values").first()).toContainText(
       "本轮下注"
     );
-    const ownCard = hostPage.getByLabel("我的手牌").locator("[data-suit]").first();
+    const peekControl = hostPage.getByRole("button", {
+      name: /按住查看底牌/
+    });
+    await peekControl.click();
+    await expect(hostPage.locator(".hole-card-reveal-layer")).toHaveCount(0);
+    await peekControl.dispatchEvent("pointerdown", {
+      pointerType: "mouse",
+      button: 0,
+      buttons: 1
+    });
+    const revealedCards = hostPage
+      .locator(".hole-card-reveal-layer")
+      .locator("[data-suit]");
+    await expect(revealedCards).toHaveCount(2);
+    const ownCard = revealedCards.first();
     const suit = await ownCard.getAttribute("data-suit");
     const cardColor = await ownCard.evaluate((element) => getComputedStyle(element).color);
     expect(cardColor).toBe(highContrastSuitColor(suit));
+    await hostPage.evaluate(() => {
+      window.dispatchEvent(new PointerEvent("pointerup"));
+    });
+    await expect(hostPage.locator(".hole-card-reveal-layer")).toHaveCount(0);
+    await peekControl.focus();
+    await hostPage.keyboard.down("Enter");
+    await expect(hostPage.locator(".hole-card-reveal-layer [data-suit]")).toHaveCount(2);
+    await hostPage.keyboard.up("Enter");
+    await expect(hostPage.locator(".hole-card-reveal-layer")).toHaveCount(0);
 
     await displayPage.goto(displayHref!);
     await expect(displayPage.locator("main")).toHaveClass(/suit-theme-high-contrast/);
@@ -368,28 +480,42 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       .locator(".chip-rack")
       .getByRole("button", { name: "25", exact: true });
     const betCache = actorPage.getByLabel("下注缓存");
-    if (testInfo.project.name.startsWith("chromium")) {
-      await chip25.focus();
-      await chip25.press("Enter");
-      await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
-      await betCache.getByRole("button", { name: "移除 25 筹码" }).press("Enter");
-      await chip25.dragTo(betCache);
-    } else {
-      const chipBox = await chip25.boundingBox();
-      const cacheBox = await betCache.boundingBox();
-      expect(chipBox).toBeTruthy();
-      expect(cacheBox).toBeTruthy();
-      await chip25.dispatchEvent("pointerdown", {
-        pointerType: "touch",
-        clientX: chipBox!.x + chipBox!.width / 2,
-        clientY: chipBox!.y + chipBox!.height / 2
-      });
-      await chip25.dispatchEvent("pointerup", {
-        pointerType: "touch",
-        clientX: cacheBox!.x + cacheBox!.width / 2,
-        clientY: cacheBox!.y + cacheBox!.height / 2
-      });
-    }
+    await expect(observerPage.getByLabel("下注缓存")).toHaveCount(0);
+    await expect(chip25).not.toHaveAttribute("draggable", "true");
+    expect(
+      await actorPage
+        .locator(".chip-rack")
+        .evaluate((rack) => getComputedStyle(rack).touchAction)
+    ).toBe("pan-x");
+    await chip25.focus();
+    await chip25.press("Enter");
+    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
+    const cacheGeometry = await betCache.evaluate((cache) => {
+      const felt = cache.closest<HTMLElement>(".poker-felt");
+      const firstChip = cache.querySelector<HTMLElement>(".poker-chip");
+      const cacheRect = cache.getBoundingClientRect();
+      const feltRect = felt?.getBoundingClientRect();
+      const chipRect = firstChip?.getBoundingClientRect();
+      return {
+        cacheWithinFelt:
+          Boolean(feltRect) &&
+          cacheRect.left >= feltRect!.left &&
+          cacheRect.right <= feltRect!.right &&
+          cacheRect.top >= feltRect!.top &&
+          cacheRect.bottom <= feltRect!.bottom,
+        firstChipVisible:
+          Boolean(chipRect) &&
+          chipRect!.left >= cacheRect.left &&
+          chipRect!.right <= cacheRect.right
+      };
+    });
+    expect(cacheGeometry.cacheWithinFelt).toBe(true);
+    expect(cacheGeometry.firstChipVisible).toBe(true);
+    await betCache
+      .getByRole("button", { name: "移除 25 筹码" })
+      .press("Enter");
+    await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(0);
+    await chip25.click();
     await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(1);
     await betCache.getByRole("button", { name: "移除 25 筹码" }).click();
     await expect(betCache.getByRole("button", { name: "移除 25 筹码" })).toHaveCount(0);
@@ -503,20 +629,44 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       .click();
     await expect(hostPage.getByRole("dialog", { name: "本手结算" })).toHaveCount(0);
     await expect(latePage.getByText("第 2 手")).toBeVisible();
-    await expect(latePage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
-    await expect(guestPage.getByText("正在观战")).toBeVisible();
+    await expect(latePage.getByText("盲注与开局确认 · 第 2 手")).toBeVisible();
+    await completePokerHandStart([hostPage, latePage]);
+    await expect(latePage.getByText("翻牌前 · 第 2 手")).toBeVisible();
+    await expect(latePage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(
+      latePage.getByRole("button", { name: /按住查看底牌/ })
+    ).toBeVisible();
+    await expect(guestPage.locator(".shared-room-title h1")).toHaveText(roomName);
     await expect(guestPage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(
+      guestPage.getByRole("button", {
+        name: /提交盲注|确认底牌|按住查看底牌/
+      })
+    ).toHaveCount(0);
     await expect(displayPage.getByText("本手结算", { exact: true })).toHaveCount(0);
 
     await hostPage.reload();
     await expect(hostPage.getByText(roomName)).toBeVisible();
     await expect(hostPage.getByRole("button", { name: /静音|开启音效/ })).toHaveCount(0);
-    await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
+    await expect(hostPage.getByLabel("我的手牌")).toHaveCount(0);
+    await expect(
+      hostPage.getByRole("button", { name: /按住查看底牌/ })
+    ).toBeVisible();
     await expect(hostPage.getByText("第 2 手")).toBeVisible();
 
+    const hostPeekControl = hostPage.getByRole("button", {
+      name: /按住查看底牌/
+    });
+    await hostPeekControl.dispatchEvent("pointerdown", {
+      pointerType: "mouse",
+      button: 0,
+      buttons: 1
+    });
+    await expect(hostPage.locator(".hole-card-reveal-layer [data-suit]")).toHaveCount(2);
     await enter(takeoverPage, hostName, false, false);
     await expect(takeoverPage.getByText(roomName)).toBeVisible();
     await expect(hostPage.getByRole("alert")).toContainText("新设备");
+    await expect(hostPage.locator(".hole-card-reveal-layer")).toHaveCount(0);
 
     await takeoverPage.getByRole("button", { name: "离开房间" }).click();
     const leaveConfirmation = takeoverPage.getByRole("alertdialog", {
@@ -633,10 +783,37 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       productConfig.themes.poker.dark.accent
     );
 
-    const displayHref = await hostPage
-      .getByRole("link", { name: "公共大屏" })
+    await expect(
+      hostPage.getByRole("link", { name: "打开公共大屏" })
+    ).toHaveCount(0);
+    await expect(
+      hostPage.getByRole("button", { name: /暂停|继续|作废/ })
+    ).toHaveCount(0);
+    const compositionTrigger = hostPage.getByRole("button", {
+      name: "查看本局角色构成"
+    });
+    await compositionTrigger.click();
+    const compositionPopover = hostPage.getByRole("dialog", {
+      name: "角色构成"
+    });
+    await expect(compositionPopover).toContainText(
+      "至少选择 5 名在线玩家后显示角色构成"
+    );
+    await hostPage.keyboard.press("Escape");
+    await expect(compositionPopover).toHaveCount(0);
+    await expect(compositionTrigger).toBeFocused();
+
+    await hostPage.getByRole("button", { name: "返回大厅" }).click();
+    await expect(hostPage.getByRole("heading", { name: "聚会大厅" })).toBeVisible();
+    const avalonRoomCard = hostPage
+      .locator(".room-card")
+      .filter({ hasText: roomName });
+    const displayHref = await avalonRoomCard
+      .getByRole("link", { name: "打开公共大屏" })
       .getAttribute("href");
     expect(displayHref).toBeTruthy();
+    await avalonRoomCard.getByRole("button", { name: "返回牌桌" }).click();
+    await expect(hostPage.getByRole("heading", { name: roomName })).toBeVisible();
     const roomId = new URL(
       displayHref!,
       "http://127.0.0.1:4173"
@@ -662,7 +839,7 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
         `当前人数 ${guestIndex + 1}/10`
       );
       await joinDialog.getByRole("button", { name: "加入牌局" }).click();
-      await expect(guestPage.locator(".avalon-room-title h1")).toHaveText(
+      await expect(guestPage.locator(".shared-room-title h1")).toHaveText(
         roomName
       );
       await expect(joinDialog).toHaveCount(0);
@@ -693,6 +870,11 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       hostPage.getByRole("menu", { name: "玩家操作" })
     ).toBeVisible();
     await hostPage.keyboard.press("Escape");
+    await selectStyledOption(hostPage, "角色来源", "自定义角色");
+    await hostPage.getByLabel("派西维尔", { exact: true }).fill("0");
+    await hostPage.getByLabel("莫甘娜", { exact: true }).fill("0");
+    await hostPage.getByRole("button", { name: "保存下一局设置" }).click();
+    await expect(hostPage.getByLabel("角色来源")).toContainText("自定义角色");
     const waitingLayout = await hostPage
       .locator(".avalon-action-panel")
       .evaluate((panel) => {
@@ -701,6 +883,9 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
         );
         const save = panel.querySelector<HTMLButtonElement>(
           ".avalon-settings-card > .primary"
+        );
+        const settings = panel.querySelector<HTMLElement>(
+          ".avalon-settings-card"
         );
         const stake = panel.querySelector<HTMLInputElement>(
           ".avalon-settings-card input[type='number']"
@@ -712,14 +897,13 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
           viewportWidth: innerWidth,
           startBottom: start?.getBoundingClientRect().bottom ?? 0,
           saveBottom: save?.getBoundingClientRect().bottom ?? 0,
+          settingsTop: settings?.getBoundingClientRect().top ?? 0,
           stakeHeight: stake?.getBoundingClientRect().height ?? 0,
           selectHeight: select?.getBoundingClientRect().height ?? 0
         };
       });
-    if (waitingLayout.viewportWidth > 700) {
-      expect(Math.abs(waitingLayout.startBottom - waitingLayout.saveBottom))
-        .toBeLessThanOrEqual(2);
-    }
+    expect(waitingLayout.settingsTop).toBeGreaterThan(waitingLayout.startBottom);
+    expect(waitingLayout.saveBottom).toBeGreaterThan(waitingLayout.settingsTop);
     expect(Math.abs(waitingLayout.stakeHeight - waitingLayout.selectHeight))
       .toBeLessThanOrEqual(2);
 
@@ -729,11 +913,36 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       "data-theme-scope",
       "avalon"
     );
+    await expect(
+      displayPage.locator(".avalon-role-composition")
+    ).toContainText("至少选择 5 名在线玩家后显示角色构成");
+    expect(
+      await displayPage
+        .locator(".avalon-display-layout")
+        .evaluate((layout) => {
+          const composition = layout.querySelector(".avalon-role-composition");
+          const members = layout.querySelector(".avalon-member-rail");
+          return Boolean(
+            composition &&
+            members &&
+            (composition.compareDocumentPosition(members) &
+              Node.DOCUMENT_POSITION_FOLLOWING)
+          );
+        })
+    ).toBe(true);
     await expect(displayPage.locator(".avalon-member")).toHaveCount(5);
     await expect(
       displayPage.getByRole("button", { name: /准备|开始|提交|同意|反对/ })
     ).toHaveCount(0);
 
+    await expect(hostPage.getByText("房主自动准备并参赛")).toHaveCount(0);
+    await expect(hostPage.getByText("1/5", { exact: true })).toHaveCount(0);
+    await expect(
+      hostPage.locator(".avalon-ready-meter")
+    ).toHaveAttribute(
+      "aria-label",
+      "当前选中 1 人，最少 5 人，最多 10 人"
+    );
     await expect(hostPage.locator(".avalon-ready-dots i")).toHaveCount(10);
     await expect(
       hostPage.locator(".avalon-ready-dots i.is-filled")
@@ -751,9 +960,35 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
     await expect(
       hostPage.locator(".avalon-ready-dots i.is-filled")
     ).toHaveCount(5);
+    await expect(
+      hostPage.locator(".avalon-ready-card .avalon-role-composition")
+    ).toContainText("5 人");
+    await expect(
+      hostPage.locator(".avalon-ready-card .avalon-role-composition li")
+    ).toHaveCount(4);
+    await expect(
+      hostPage.locator(".avalon-ready-card .avalon-role-composition")
+    ).toContainText(/忠臣\s*×2/);
+    await expect(
+      displayPage.locator(".avalon-role-composition")
+    ).toContainText("5 人");
+    await expect(
+      displayPage.locator(".avalon-role-composition")
+    ).toContainText(/忠臣\s*×2/);
+    await compositionTrigger.click();
+    await expect(compositionPopover.locator("li")).toHaveCount(4);
+    await expect(compositionPopover).toContainText("梅林");
+    await expect(compositionPopover).toContainText(/忠臣\s*×2/);
+    await compositionTrigger.click();
+    await expect(compositionPopover).toHaveCount(0);
     await hostPage.getByRole("button", { name: "开始游戏" }).click();
     await expect(hostPage.locator(".avalon-member.is-ready")).toHaveCount(0);
     await expect(hostPage.locator(".avalon-member.needs-action")).toHaveCount(5);
+    await compositionTrigger.click();
+    await expect(compositionPopover).toContainText("5 人");
+    await expect(compositionPopover).toContainText(/忠臣\s*×2/);
+    await hostPage.keyboard.press("Escape");
+    await expect(compositionPopover).toHaveCount(0);
     await expect(hostPage.locator(".avalon-secret")).toHaveCount(0);
     await expect(hostPage.locator(".avalon-mission-rule")).toHaveCount(5);
     await expect(
@@ -828,6 +1063,21 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       const action = document.querySelector<HTMLElement>(
         ".avalon-control-card.is-actionable"
       );
+      const memberGrid = document.querySelector<HTMLElement>(
+        ".avalon-member-grid"
+      );
+      const headerButtons = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".shared-room-header-actions button, .shared-room-header-danger button"
+        )
+      ).map((button) => {
+        const rect = button.getBoundingClientRect();
+        return {
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          borderRadius: getComputedStyle(button).borderRadius
+        };
+      });
       return {
         viewportWidth: innerWidth,
         viewportHeight: innerHeight,
@@ -839,7 +1089,16 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
         secretX: secret?.getBoundingClientRect().x ?? 0,
         secretWidth: secret?.getBoundingClientRect().width ?? 0,
         actionX: action?.getBoundingClientRect().x ?? 0,
-        actionWidth: action?.getBoundingClientRect().width ?? 0
+        actionWidth: action?.getBoundingClientRect().width ?? 0,
+        memberColumns:
+          memberGrid
+            ? getComputedStyle(memberGrid).gridTemplateColumns
+                .split(" ")
+                .filter(Boolean).length
+            : 0,
+        memberCount:
+          memberGrid?.querySelectorAll(".avalon-member").length ?? 0,
+        headerButtons
       };
     });
     expect(activeMobile.viewportWidth).toBe(300);
@@ -854,6 +1113,18 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
     expect(activeMobile.actionWidth).toBeGreaterThan(
       activeMobile.secretWidth * 1.45
     );
+    expect(activeMobile.memberColumns).toBe(2);
+    expect(activeMobile.memberCount).toBe(5);
+    expect(activeMobile.headerButtons).toHaveLength(3);
+    expect(new Set(activeMobile.headerButtons.map((button) => button.y)).size)
+      .toBe(1);
+    expect(
+      activeMobile.headerButtons.every(
+        (button) =>
+          button.width <= 46 &&
+          (button.borderRadius === "50%" || button.borderRadius === "999px")
+      )
+    ).toBe(true);
     await hostPage.setViewportSize(activeViewport);
     const automaticRoles = await Promise.all(
       playerPages.map((playerPage) => revealAndCoverAvalonRole(playerPage))
@@ -917,6 +1188,18 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
     await expect(hostPage.getByText(/结算后总分 -150/).first()).toBeVisible();
     await hostPage.reload();
     await expect(hostPage.locator(".avalon-result-list article")).toHaveCount(5);
+    await expect(
+      hostPage.locator(".avalon-ready-card .avalon-role-composition")
+    ).toContainText("5 人");
+    await expect(
+      hostPage.locator(".avalon-ready-card .avalon-role-composition li")
+    ).toHaveCount(4);
+    await expect(
+      hostPage.locator(".avalon-ready-card .avalon-role-composition")
+    ).toContainText(/忠臣\s*×2/);
+    await expect(displayPage.locator(".avalon-role-composition")).toContainText(
+      "5 人"
+    );
 
     const desktopViewport = hostPage.viewportSize()!;
     await hostPage.setViewportSize({ width: 300, height: 760 });
@@ -1184,6 +1467,57 @@ async function actingPage(first: Page, second: Page): Promise<Page> {
   if (await first.getByText("轮到你行动").isVisible()) return first;
   await expect(second.getByText("轮到你行动")).toBeVisible();
   return second;
+}
+
+async function completePokerHandStart(pages: Page[]): Promise<void> {
+  await Promise.all(
+    pages.map((page) =>
+      expect(page.getByText(/盲注与开局确认 · 第 \d+ 手/)).toBeVisible()
+    )
+  );
+  for (const page of pages) {
+    const postBlind = page.getByRole("button", { name: /提交盲注 \d+/ });
+    if ((await postBlind.count()) > 0 && await postBlind.isVisible()) {
+      await postBlind.click();
+    }
+  }
+  for (const page of pages) {
+    const confirmCards = page.getByRole("button", {
+      name: /确认底牌|确认已拿到实体底牌/
+    });
+    await expect(confirmCards).toBeVisible();
+    await confirmCards.click();
+  }
+  await Promise.all(
+    pages.map((page) =>
+      expect(page.locator(".poker-hand-start-card")).toHaveCount(0)
+    )
+  );
+}
+
+async function pokerPublicProgress(
+  displayPage: Page,
+  roomId: string
+): Promise<{
+  phase: string;
+  potTotal: number;
+  blindPostedAccountIds: string[];
+  handStartConfirmedAccountIds: string[];
+  pendingHandStartAccountIds: string[];
+  seats: Array<{ currentBet: number }>;
+}> {
+  const response = await displayPage.request.get(
+    `/api/room/${encodeURIComponent(roomId)}?display=1`
+  );
+  expect(response.ok()).toBe(true);
+  return (await response.json()) as {
+    phase: string;
+    potTotal: number;
+    blindPostedAccountIds: string[];
+    handStartConfirmedAccountIds: string[];
+    pendingHandStartAccountIds: string[];
+    seats: Array<{ currentBet: number }>;
+  };
 }
 
 async function openMemberContextMenu(

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import type { Card } from "@party/contracts";
+import type { Card, PokerRoom } from "@party/contracts";
 import { buildApp, dispatch, dispatchAdmin } from "../apps/server/src/app";
 import { initialSnapshot, PlatformDomain } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
-import { createPokerState } from "@party/poker";
+import {
+  confirmHandStart,
+  createPokerState,
+  postBlind
+} from "@party/poker";
 import { DEFAULT_AVALON_ROLE_PRESETS } from "@party/avalon";
 import {
   defaultRoomConfig,
@@ -241,6 +245,171 @@ describe("server", () => {
     expect(unauthorizedRemove.statusCode).toBe(409);
     expect(unauthorizedRemove.json().code).toBe("HOST_ONLY");
 
+    const pendingProjection = await app.inject({
+      method: "GET",
+      url:
+        `/api/room/${roomId}?accountId=${alice.account.id}` +
+        `&connectionId=${encodeURIComponent(alice.connectionId)}`
+    });
+    expect(pendingProjection.json()).toMatchObject({
+      phase: "blinds",
+      smallBlindAccountId: alice.account.id,
+      bigBlindAccountId: bob.account.id,
+      blindPostedAccountIds: [],
+      handStartConfirmedAccountIds: [],
+      pendingHandStartAccountIds: [alice.account.id, bob.account.id],
+      actingAccountId: null,
+      currentBet: 0
+    });
+    expect(
+      pendingProjection
+        .json()
+        .seats.map((seat: { tableChips: number }) => seat.tableChips)
+    ).toEqual([2_000, 2_000]);
+
+    for (const type of ["room.pause", "room.resume", "avalon.void"]) {
+      const removedCommand = await sendCommand(app, {
+        commandId: `removed-external-command-${type}`,
+        connectionId: alice.connectionId,
+        aggregateId: roomId,
+        expectedVersion: version,
+        type,
+        payload: {
+          accountId: alice.account.id,
+          roomId
+        }
+      });
+      expect(removedCommand.statusCode).toBe(400);
+    }
+
+    const prematureConfirmation = await sendCommand(app, {
+      commandId: "confirm-before-posting-blind",
+      connectionId: alice.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.hand-start.confirm",
+      payload: {
+        accountId: alice.account.id,
+        roomId,
+        pokerVersion: 0
+      }
+    });
+    expect(prematureConfirmation.statusCode).toBe(409);
+    expect(prematureConfirmation.json().code).toBe("BLIND_REQUIRED");
+
+    const bobBlindEnvelope = {
+      commandId: "post-big-blind",
+      connectionId: bob.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.blind.post",
+      payload: {
+        accountId: bob.account.id,
+        roomId,
+        pokerVersion: 0
+      }
+    };
+    const bobBlind = await sendCommand(app, bobBlindEnvelope);
+    expect(bobBlind.statusCode).toBe(200);
+    version = bobBlind.json().version;
+    let pokerVersion = bobBlind.json().data.pokerVersion as number;
+    expect(bobBlind.json().data).toMatchObject({
+      phase: "blinds",
+      blindPostedAccountIds: [bob.account.id],
+      pendingHandStartAccountIds: [alice.account.id, bob.account.id]
+    });
+
+    const replayedBlind = await sendCommand(app, bobBlindEnvelope);
+    expect(replayedBlind.statusCode).toBe(200);
+    expect(replayedBlind.json().status).toBe("replayed");
+
+    const duplicateBlind = await sendCommand(app, {
+      ...bobBlindEnvelope,
+      commandId: "post-big-blind-twice",
+      expectedVersion: version,
+      payload: {
+        ...bobBlindEnvelope.payload,
+        pokerVersion
+      }
+    });
+    expect(duplicateBlind.statusCode).toBe(409);
+    expect(duplicateBlind.json().code).toBe("BLIND_ALREADY_POSTED");
+
+    const aliceBlind = await sendCommand(app, {
+      commandId: "post-small-blind",
+      connectionId: alice.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.blind.post",
+      payload: {
+        accountId: alice.account.id,
+        roomId,
+        pokerVersion
+      }
+    });
+    expect(aliceBlind.statusCode).toBe(200);
+    version = aliceBlind.json().version;
+    pokerVersion = aliceBlind.json().data.pokerVersion;
+
+    const bobConfirmed = await sendCommand(app, {
+      commandId: "confirm-big-blind",
+      connectionId: bob.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.hand-start.confirm",
+      payload: {
+        accountId: bob.account.id,
+        roomId,
+        pokerVersion
+      }
+    });
+    expect(bobConfirmed.statusCode).toBe(200);
+    version = bobConfirmed.json().version;
+    pokerVersion = bobConfirmed.json().data.pokerVersion;
+    expect(bobConfirmed.json().data).toMatchObject({
+      phase: "blinds",
+      actingAccountId: null,
+      handStartConfirmedAccountIds: [bob.account.id],
+      pendingHandStartAccountIds: [alice.account.id]
+    });
+
+    const aliceConfirmed = await sendCommand(app, {
+      commandId: "confirm-small-blind",
+      connectionId: alice.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.hand-start.confirm",
+      payload: {
+        accountId: alice.account.id,
+        roomId,
+        pokerVersion
+      }
+    });
+    expect(aliceConfirmed.statusCode).toBe(200);
+    version = aliceConfirmed.json().version;
+    pokerVersion = aliceConfirmed.json().data.pokerVersion;
+    expect(aliceConfirmed.json().data).toMatchObject({
+      phase: "preflop",
+      currentBet: 100,
+      actingAccountId: alice.account.id,
+      pendingHandStartAccountIds: []
+    });
+
+    const staleConfirmation = await sendCommand(app, {
+      commandId: "stale-hand-start-confirmation",
+      connectionId: bob.connectionId,
+      aggregateId: roomId,
+      expectedVersion: version,
+      type: "poker.hand-start.confirm",
+      payload: {
+        accountId: bob.account.id,
+        roomId,
+        pokerVersion: 0
+      }
+    });
+    expect(staleConfirmation.statusCode).toBe(409);
+    expect(staleConfirmation.json().code).toBe("STALE_VERSION");
+
     const privateProjection = await app.inject({
       method: "GET",
       url:
@@ -264,7 +433,7 @@ describe("server", () => {
       payload: {
         accountId: alice.account.id,
         roomId,
-        pokerVersion: 0,
+        pokerVersion,
         action: { kind: "fold" }
       }
     });
@@ -345,6 +514,16 @@ describe("server", () => {
     expect(state.handResults[0]?.participantAccountIds).toEqual(
       expect.arrayContaining([alice.account.id, bob.account.id])
     );
+    expect(
+      state.ledger
+        .filter(
+          (line) =>
+            line.reason === "blind" &&
+            line.source.startsWith(`table:${roomId}:`)
+        )
+        .map((line) => line.amount)
+        .sort((left, right) => left - right)
+    ).toEqual([50, 100]);
     expect(state.ledger.some((line) => line.reason === "settlement")).toBe(true);
     new (await import("@party/domain")).PlatformDomain(state).validateInvariants();
     reopened.close();
@@ -618,6 +797,7 @@ describe("server", () => {
       smallBlind: room.config.smallBlind,
       bigBlind: room.config.bigBlind
     });
+    completePokerHandStart(domain, room);
     store.save(state);
 
     const left = dispatch(store, {
@@ -833,6 +1013,7 @@ describe("server", () => {
       smallBlind: room.config.smallBlind,
       bigBlind: room.config.bigBlind
     });
+    completePokerHandStart(domain, room);
     expect(room.poker.actingAccountId).toBe(alice.id);
     store.save(state);
 
@@ -886,6 +1067,7 @@ describe("server", () => {
       smallBlind: room.config.smallBlind,
       bigBlind: room.config.bigBlind
     });
+    completePokerHandStart(domain, room);
     const bobCommitted = room.poker.players.find(
       (player) => player.accountId === bob.id
     )!.totalBet;
@@ -1252,6 +1434,7 @@ describe("server", () => {
       bigBlind: room.config.bigBlind,
       deck: []
     });
+    completePokerHandStart(domain, room);
     room.poker.phase = "showdown";
     room.poker.actingAccountId = null;
     delete room.poker.advanceDeadline;
@@ -1266,7 +1449,7 @@ describe("server", () => {
       payload: {
         accountId: alice.id,
         roomId: room.id,
-        pokerVersion: 0,
+        pokerVersion: room.poker.version,
         winnersByPot: room.poker.pots.map((pot) => [pot.eligibleAccountIds[0]!])
       }
     });
@@ -1333,6 +1516,31 @@ describe("server", () => {
     store.close();
   });
 });
+
+function completePokerHandStart(
+  domain: PlatformDomain,
+  room: PokerRoom
+): void {
+  const poker = room.poker;
+  if (!poker) throw new Error("Poker state is required");
+  for (const accountId of [
+    poker.smallBlindAccountId,
+    poker.bigBlindAccountId
+  ]) {
+    const amount = postBlind(poker, accountId, poker.version, 1_000);
+    domain.recordPokerMovement(
+      room.id,
+      accountId,
+      amount,
+      "table-to-pot",
+      "blind",
+      poker.handNumber
+    );
+  }
+  for (const player of poker.players) {
+    confirmHandStart(poker, player.accountId, poker.version, 1_000);
+  }
+}
 
 async function sendCommand(app: FastifyInstance, payload: Record<string, unknown>) {
   return await app.inject({

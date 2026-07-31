@@ -48,6 +48,7 @@ import {
   ArrowIcon,
   CollapsibleCard,
   ConfirmDialog,
+  RoomHeader,
   SelectField,
   ThemeToggle,
   applyProductTheme,
@@ -2004,39 +2005,24 @@ function WaitingRoom({
 
   return (
     <main className="app-shell">
-      <header className="topbar room-topbar">
-        <div className="room-top-actions">
-          <button className="secondary icon-label" onClick={onLobby}>
-            <ArrowIcon direction="left" /> {t(language, "backLobby")}
-          </button>
-          <button
-            className="secondary"
-            onClick={() => setConfirmation({ kind: "leave" })}
-          >
-            {t(language, "leaveRoom")}
-          </button>
-          {host && (
-            <button
-              className="danger"
-              onClick={() => setConfirmation({ kind: "close" })}
-            >
-              {t(language, "endGame")}
-            </button>
-          )}
-        </div>
-        <div className="room-heading">
-          <p className="eyebrow">{t(language, "waiting")}</p>
-          <h1>{room.name}</h1>
-        </div>
-      </header>
+      <RoomHeader
+        roomName={room.name}
+        gameLabel={t(language, "poker")}
+        phaseLabel={t(language, "waiting")}
+        backLabel={t(language, "backLobby")}
+        leaveLabel={t(language, "leaveRoom")}
+        closeLabel={t(language, "endGame")}
+        onBack={onLobby}
+        onLeave={() => setConfirmation({ kind: "leave" })}
+        onClose={
+          host ? () => setConfirmation({ kind: "close" }) : undefined
+        }
+      />
       {notice && <p className="notice" role="status">{notice}</p>}
       <section className="waiting-panel">
         <div className="room-summary">
           <strong>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")}</strong>
           <span>{room.config.smallBlind} / {room.config.bigBlind}</span>
-          <a className="secondary" href={`/?display=1&roomId=${encodeURIComponent(room.id)}`} target="_blank" rel="noreferrer">
-            {t(language, "openDisplay")}
-          </a>
         </div>
         <div className="waiting-seats" {...memberMenuGesture}>
           {room.seats.map((seat) => {
@@ -2293,35 +2279,19 @@ function SpectatorTable({
 
   return (
     <main className={`display-shell suit-theme-${room.suitColorPreset}`}>
-      <header className="display-header spectator-header">
-        <div className="room-top-actions">
-          <button className="secondary" onClick={onLobby}>
-            <ArrowIcon direction="left" /> {t(language, "backLobby")}
-          </button>
-          <button
-            className="secondary"
-            onClick={() => setConfirmation({ kind: "leave" })}
-          >
-            {t(language, "leaveRoom")}
-          </button>
-          {host && (
-            <button
-              className="danger"
-              onClick={() => setConfirmation({ kind: "close" })}
-            >
-              {t(language, "endGame")}
-            </button>
-          )}
-        </div>
-        <div className="spectator-identity">
-          <p className="eyebrow">{t(language, "spectating")}</p>
-          <h1>{room.name}</h1>
-          <span>
-            {session.account.avatar} {session.account.username} ·{" "}
-            {t(language, "spectator")}
-          </span>
-        </div>
-      </header>
+      <RoomHeader
+        roomName={room.name}
+        gameLabel={t(language, "poker")}
+        phaseLabel={phaseLabel(language, room.phase)}
+        backLabel={t(language, "backLobby")}
+        leaveLabel={t(language, "leaveRoom")}
+        closeLabel={t(language, "endGame")}
+        onBack={onLobby}
+        onLeave={() => setConfirmation({ kind: "leave" })}
+        onClose={
+          host ? () => setConfirmation({ kind: "close" }) : undefined
+        }
+      />
       {notice && <p className="notice" role="status">{notice}</p>}
       <PublicTableSurface
         language={language}
@@ -2428,6 +2398,7 @@ function PlayerTable({
   onLobby: () => void;
 }) {
   const [cache, setCache] = useState<Record<string, number>>({});
+  const [holeCardsVisible, setHoleCardsVisible] = useState(false);
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<
     PublicSeatProjection | null
@@ -2448,26 +2419,18 @@ function PlayerTable({
       setSelectedMember(member);
     }
   });
-  const betCacheRef = useRef<HTMLDivElement>(null);
-  const chipRackRef = useRef<HTMLDivElement>(null);
-  const pointerGesture = useRef<{
-    source: "rack" | "cache";
-    value: number;
-    x: number;
-    y: number;
-  } | null>(null);
-  const suppressClick = useRef<{
-    source: "rack" | "cache";
-    expiresAt: number;
-  } | null>(null);
   const seat = room.seats.find((candidate) => candidate.accountId === session.account.id);
   const denominations = room.effectiveDenominations;
   const authorityKey = JSON.stringify([
+    room.id,
     room.status,
+    room.phase,
+    room.pokerVersion,
     room.actingAccountId,
     room.currentBet,
     room.minimumRaise,
-    seat?.tableChips
+    seat?.tableChips,
+    seat?.currentBet
   ]);
   const previousAuthority = useRef(authorityKey);
   const total = Object.entries(cache).reduce(
@@ -2479,6 +2442,34 @@ function PlayerTable({
     0
   );
   const canAct = room.status === "in_progress" && room.actingAccountId === session.account.id;
+  const pendingHandStart = new Set(room.pendingHandStartAccountIds ?? []);
+  const blindPosted = new Set(room.blindPostedAccountIds ?? []);
+  const handStartConfirmed = new Set(
+    room.handStartConfirmedAccountIds ?? []
+  );
+  const ownBlind =
+    session.account.id === room.smallBlindAccountId
+      ? "small"
+      : session.account.id === room.bigBlindAccountId
+        ? "big"
+        : undefined;
+  const ownBlindPosted = ownBlind
+    ? blindPosted.has(session.account.id)
+    : true;
+  const ownHandStartConfirmed = handStartConfirmed.has(session.account.id);
+  const showHandStartCard =
+    room.phase === "blinds" &&
+    seat?.role === "participant" &&
+    !seat.folded;
+  const canConfirmHandStart =
+    showHandStartCard &&
+    !ownHandStartConfirmed &&
+    ownBlindPosted;
+  const canViewHoleCards =
+    room.mode === "chips-and-cards" &&
+    Boolean(room.ownHoleCards?.length) &&
+    ownHandStartConfirmed &&
+    !["complete", "void"].includes(room.phase ?? "");
   const raiseLocked = room.raiseLockedAccountIds?.includes(session.account.id) ?? false;
   const callAmount = Math.max(
     0,
@@ -2544,6 +2535,50 @@ function PlayerTable({
   }, [authorityKey, cacheSize]);
 
   useEffect(() => {
+    setHoleCardsVisible(false);
+  }, [
+    room.id,
+    room.handNumber,
+    room.phase,
+    room.pokerVersion,
+    room.status,
+    seat?.connected,
+    session.account.id,
+    session.connectionId
+  ]);
+
+  useEffect(() => {
+    if (!holeCardsVisible) return;
+    const cover = () => setHoleCardsVisible(false);
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") cover();
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") cover();
+    };
+    window.addEventListener("pointerup", cover);
+    window.addEventListener("pointercancel", cover);
+    window.addEventListener("blur", cover);
+    window.addEventListener("offline", cover);
+    window.addEventListener("pagehide", cover);
+    window.addEventListener("keyup", onKeyUp);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pointerup", cover);
+      window.removeEventListener("pointercancel", cover);
+      window.removeEventListener("blur", cover);
+      window.removeEventListener("offline", cover);
+      window.removeEventListener("pagehide", cover);
+      window.removeEventListener("keyup", onKeyUp);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [holeCardsVisible]);
+
+  useEffect(() => {
+    if (!canViewHoleCards) setHoleCardsVisible(false);
+  }, [canViewHoleCards]);
+
+  useEffect(() => {
     if (!room.phase) return;
     playTone(volume);
   }, [room.phase, volume]);
@@ -2576,72 +2611,22 @@ function PlayerTable({
     });
   };
 
-  const completePointerDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const gesture = pointerGesture.current;
-    pointerGesture.current = null;
-    if (!gesture || event.pointerType === "mouse") return;
-    const moved = Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 12;
-    if (!moved) return;
-    suppressClick.current = {
-      source: gesture.source,
-      expiresAt: performance.now() + 500
-    };
-    event.preventDefault();
-    if (!canAct) return;
-    const targetRect =
-      gesture.source === "rack"
-        ? betCacheRef.current?.getBoundingClientRect()
-        : chipRackRef.current?.getBoundingClientRect();
-    if (
-      !targetRect ||
-      event.clientX < targetRect.left ||
-      event.clientX > targetRect.right ||
-      event.clientY < targetRect.top ||
-      event.clientY > targetRect.bottom
-    ) {
-      return;
-    }
-    if (
-      gesture.source === "rack" &&
-      total + gesture.value <= (seat?.tableChips ?? 0)
-    ) {
-      setCache((current) => addChip(current, gesture.value));
-    } else if (gesture.source === "cache") {
-      setCache((current) => removeChip(current, gesture.value));
-    }
-  };
-
   return (
     <main className={`table-shell suit-theme-${room.suitColorPreset}`}>
-      <header className="table-topbar">
-        <div className="table-top-left">
-          <button className="secondary back-button" onClick={onLobby}>
-            <ArrowIcon direction="left" />
-            <span className="back-label">{t(language, "backLobby")}</span>
-          </button>
-          <button
-            className="secondary leave-top-button"
-            disabled={!host && room.phase !== "complete"}
-            onClick={() => setConfirmation({ kind: "leave" })}
-          >
-            {t(language, "leaveRoom")}
-          </button>
-          {host && (
-            <button
-              className="danger close-top-button"
-              onClick={() => setConfirmation({ kind: "close" })}
-            >
-              {t(language, "endGame")}
-            </button>
-          )}
-        </div>
-        <div className="table-title">
-          <strong>{room.name}</strong>
-          <span>{t(language, "currentPlayer")} · {session.account.username}</span>
-          <small>{room.mode === "chips-only" ? t(language, "chipsOnly") : t(language, "chipsCards")} · {room.config.smallBlind} / {room.config.bigBlind}</small>
-        </div>
-        <div className="table-controls" aria-hidden="true" />
-      </header>
+      <RoomHeader
+        roomName={room.name}
+        gameLabel={t(language, "poker")}
+        phaseLabel={phaseLabel(language, room.phase)}
+        backLabel={t(language, "backLobby")}
+        leaveLabel={t(language, "leaveRoom")}
+        closeLabel={t(language, "endGame")}
+        onBack={onLobby}
+        onLeave={() => setConfirmation({ kind: "leave" })}
+        leaveDisabled={!host && room.phase !== "complete"}
+        onClose={
+          host ? () => setConfirmation({ kind: "close" }) : undefined
+        }
+      />
       <section
         className="poker-felt"
         aria-label={t(language, "poker")}
@@ -2650,22 +2635,34 @@ function PlayerTable({
         <div className="table-seats">
           {room.seats.filter((entry) => entry.role === "participant").map((entry) => {
             const canManage = host && entry.accountId !== session.account.id;
+            const isSelf = entry.accountId === session.account.id;
+            const isActing = entry.accountId === room.actingAccountId;
+            const needsHandStart = pendingHandStart.has(entry.accountId);
+            const actionStatus = needsHandStart
+              ? t(language, "handStartPending")
+              : isActing
+                ? t(language, "currentAction")
+                : handStartConfirmed.has(entry.accountId)
+                  ? t(language, "handStartConfirmed")
+                  : "";
             return (
             <article
               key={entry.accountId}
               className={[
                 "player-seat",
-                entry.accountId === room.actingAccountId ? "active" : "",
+                isActing || needsHandStart ? "needs-action" : "",
+                isSelf ? "is-self" : "",
                 canManage ? "member-menu-trigger" : ""
               ].filter(Boolean).join(" ")}
               data-context-menu-id={canManage ? entry.accountId : undefined}
               tabIndex={canManage ? 0 : undefined}
               role={canManage ? "group" : undefined}
-              aria-label={
-                canManage
-                  ? `${entry.username} ${t(language, "memberActions")}`
-                  : undefined
-              }
+              aria-label={[
+                entry.username,
+                isSelf ? t(language, "you") : "",
+                actionStatus,
+                canManage ? t(language, "memberActions") : ""
+              ].filter(Boolean).join(" · ")}
               aria-haspopup={canManage ? "menu" : undefined}
               aria-expanded={
                 canManage
@@ -2690,6 +2687,12 @@ function PlayerTable({
               <small className={entry.connected ? "online" : "offline"}>
                 {entry.connected ? t(language, "online") : t(language, "offline")}
               </small>
+              {(isSelf || actionStatus) && (
+                <span className="poker-seat-badges">
+                  {isSelf && <b>{t(language, "you")}</b>}
+                  {actionStatus && <b>{actionStatus}</b>}
+                </span>
+              )}
               {entry.position === room.dealerPosition && (
                 <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
               )}
@@ -2763,19 +2766,99 @@ function PlayerTable({
             +{room.lastAction.amount.toLocaleString()}
           </div>
         )}
+        {showHandStartCard && (
+          <section
+            className={`poker-hand-start-card${
+              pendingHandStart.has(session.account.id)
+                ? " needs-action"
+                : " is-complete"
+            }`}
+            aria-label={t(language, "handStartPending")}
+          >
+            {ownBlind && !ownBlindPosted ? (
+              <>
+                <strong>
+                  {t(
+                    language,
+                    ownBlind === "small"
+                      ? "smallBlindPrompt"
+                      : "bigBlindPrompt"
+                  )}
+                </strong>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!seat?.connected}
+                  onClick={() =>
+                    void run("poker.blind.post", {
+                      pokerVersion: room.pokerVersion
+                    })
+                  }
+                >
+                  {t(language, "postBlind").replace(
+                    "{amount}",
+                    String(
+                      Math.min(
+                        ownBlind === "small"
+                          ? room.config.smallBlind
+                          : room.config.bigBlind,
+                        seat?.tableChips ?? 0
+                      )
+                    )
+                  )}
+                </button>
+              </>
+            ) : ownHandStartConfirmed ? (
+              <>
+                <strong>{t(language, "handStartReady")}</strong>
+                <small>{t(language, "handStartConfirmed")}</small>
+              </>
+            ) : (
+              <>
+                {ownBlind && (
+                  <small className="poker-blind-posted">
+                    ✓ {t(language, "blindPosted")}
+                  </small>
+                )}
+                {room.mode === "chips-and-cards" &&
+                  room.ownHoleCards &&
+                  room.ownHoleCards.length > 0 && (
+                    <div
+                      className="poker-hand-start-cards"
+                      aria-label={t(language, "myCards")}
+                    >
+                      {room.ownHoleCards.map((card, index) => (
+                        <PlayingCard key={index} card={card} compact />
+                      ))}
+                    </div>
+                  )}
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!canConfirmHandStart || !seat?.connected}
+                  onClick={() =>
+                    void run("poker.hand-start.confirm", {
+                      pokerVersion: room.pokerVersion
+                    })
+                  }
+                >
+                  {t(
+                    language,
+                    room.mode === "chips-and-cards"
+                      ? "confirmHoleCards"
+                      : "confirmPhysicalCards"
+                  )}
+                </button>
+              </>
+            )}
+          </section>
+        )}
         <div className="board">
           <p>{phaseLabel(language, room.phase)} · {formatTemplate(t(language, "hand"), room.handNumber ?? 1)}</p>
           {room.mode === "chips-and-cards" && (
             <div className="cards" aria-label={t(language, "communityCards")}>
               {(room.communityCards ?? []).map((card, index) => (
                 <PlayingCard key={index} card={card} />
-              ))}
-            </div>
-          )}
-          {room.ownHoleCards && room.ownHoleCards.length > 0 && (
-            <div className="own-cards" aria-label={t(language, "myCards")}>
-              {room.ownHoleCards.map((card, index) => (
-                <PlayingCard key={index} card={card} compact />
               ))}
             </div>
           )}
@@ -2788,6 +2871,61 @@ function PlayerTable({
             />
           )}
         </div>
+        {holeCardsVisible &&
+          canViewHoleCards &&
+          room.ownHoleCards && (
+            <div
+              className="hole-card-reveal-layer"
+              role="status"
+              aria-label={t(language, "holeCardsRevealed")}
+            >
+              <div className="hole-card-reveal-cards">
+                {room.ownHoleCards.map((card, index) => (
+                  <PlayingCard key={index} card={card} />
+                ))}
+              </div>
+            </div>
+          )}
+        {canAct && (
+          <div
+            className="bet-cache felt-bet-cache"
+            aria-label={t(language, "betCache")}
+            aria-live="polite"
+          >
+            <div className="cache-chips">
+              {denominations.map((chip) => {
+                const count = cache[String(chip)] ?? 0;
+                if (count <= 0) return null;
+                return (
+                  <button
+                    type="button"
+                    key={chip}
+                    className="poker-chip"
+                    style={chipStyle(chip, denominations)}
+                    aria-label={`${t(language, "removeChip").replace(
+                      "{amount}",
+                      chip.toLocaleString()
+                    )} × ${count}`}
+                    onClick={() =>
+                      setCache((current) => removeChip(current, chip))
+                    }
+                  >
+                    <span>{chip.toLocaleString()}</span>
+                    {count > 1 && <small>×{count}</small>}
+                  </button>
+                );
+              })}
+            </div>
+            <strong>{total.toLocaleString()}</strong>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => setCache({})}
+            >
+              {t(language, "clear")}
+            </button>
+          </div>
+        )}
       </section>
       {room.phase === "complete" && room.lastResult && (
         <SettlementPanel
@@ -2829,11 +2967,41 @@ function PlayerTable({
                 {t(language, "undo")}
               </button>
             )}
-            {host && room.status === "in_progress" && (
-              <button className="text-button" onClick={() => void run("room.pause")}>{t(language, "pauseGame")}</button>
-            )}
-            {host && room.status === "paused" && (
-              <button className="text-button" onClick={() => void run("room.resume")}>{t(language, "resumeGame")}</button>
+            {canViewHoleCards && (
+              <button
+                type="button"
+                className="secondary hole-card-peek-control"
+                aria-label={`${t(language, "viewHoleCards")} · ${t(
+                  language,
+                  "holdToViewHint"
+                )}`}
+                aria-pressed={holeCardsVisible}
+                onPointerDown={(event) => {
+                  if (event.button === 0) setHoleCardsVisible(true);
+                }}
+                onPointerUp={() => setHoleCardsVisible(false)}
+                onPointerCancel={() => setHoleCardsVisible(false)}
+                onPointerLeave={() => setHoleCardsVisible(false)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setHoleCardsVisible(true);
+                  }
+                }}
+                onKeyUp={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setHoleCardsVisible(false);
+                  }
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setHoleCardsVisible(false);
+                }}
+              >
+                <strong>{t(language, "viewHoleCards")}</strong>
+                <small>{t(language, "holdToViewHint")}</small>
+              </button>
             )}
           </div>
         </div>
@@ -2846,120 +3014,19 @@ function PlayerTable({
           <WinnerPicker language={language} room={room} run={run} />
         )}
         <div
-          className="bet-cache"
-          ref={betCacheRef}
-          aria-label={t(language, "betCache")}
-          onDragOver={(event) => {
-            if (canAct) event.preventDefault();
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const value = Number(event.dataTransfer.getData("chip"));
-            if (
-              canAct &&
-              denominations.includes(value) &&
-              total + value <= (seat?.tableChips ?? 0)
-            ) {
-              setCache((current) => addChip(current, value));
-            }
-          }}
-        >
-          <span>{t(language, "betCache")}</span>
-          <div className="cache-chips">
-            {denominations.map((chip) => {
-              const count = cache[String(chip)] ?? 0;
-              if (count <= 0) return null;
-              return (
-                <button
-                  key={chip}
-                  className="poker-chip"
-                  style={chipStyle(chip, denominations)}
-                  aria-label={`${t(language, "removeChip").replace(
-                    "{amount}",
-                    chip.toLocaleString()
-                  )} × ${count}`}
-                  draggable={canAct}
-                  disabled={!canAct}
-                  onDragStart={(event) =>
-                    event.dataTransfer.setData("cache-chip", String(chip))
-                  }
-                  onPointerDown={(event) => {
-                    if (event.pointerType !== "mouse") {
-                      pointerGesture.current = {
-                        source: "cache",
-                        value: chip,
-                        x: event.clientX,
-                        y: event.clientY
-                      };
-                    }
-                  }}
-                  onPointerUp={completePointerDrag}
-                  onClick={() => {
-                    if (
-                      suppressClick.current?.source === "cache" &&
-                      suppressClick.current.expiresAt >= performance.now()
-                    ) {
-                      suppressClick.current = null;
-                      return;
-                    }
-                    suppressClick.current = null;
-                    setCache((current) => removeChip(current, chip));
-                  }}
-                >
-                  <span>{chip.toLocaleString()}</span>
-                  {count > 1 && <small>×{count}</small>}
-                </button>
-              );
-            })}
-          </div>
-          <strong>{total.toLocaleString()}</strong>
-          <button className="text-button" disabled={!canAct} onClick={() => setCache({})}>{t(language, "clear")}</button>
-        </div>
-        <div
           className="chip-rack"
-          ref={chipRackRef}
           aria-label={t(language, "chipDenominations")}
-          onDragOver={(event) => {
-            if (canAct) event.preventDefault();
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const value = Number(event.dataTransfer.getData("cache-chip"));
-            if (canAct && denominations.includes(value)) {
-              setCache((current) => removeChip(current, value));
-            }
-          }}
         >
           {denominations.map((value) => (
             <button
+              type="button"
               key={value}
-              draggable
               className="poker-chip"
               style={chipStyle(value, denominations)}
               disabled={!canAct || total + value > (seat?.tableChips ?? 0)}
-              onDragStart={(event) => event.dataTransfer.setData("chip", String(value))}
-              onPointerDown={(event) => {
-                if (event.pointerType !== "mouse") {
-                  pointerGesture.current = {
-                    source: "rack",
-                    value,
-                    x: event.clientX,
-                    y: event.clientY
-                  };
-                }
-              }}
-              onPointerUp={completePointerDrag}
-              onClick={() => {
-                if (
-                  suppressClick.current?.source === "rack" &&
-                  suppressClick.current.expiresAt >= performance.now()
-                ) {
-                  suppressClick.current = null;
-                  return;
-                }
-                suppressClick.current = null;
-                setCache((current) => addChip(current, value));
-              }}
+              onClick={() =>
+                setCache((current) => addChip(current, value))
+              }
             >
               {value.toLocaleString()}
             </button>
@@ -3163,6 +3230,10 @@ function PublicTableSurface({
   const participants = room.phase
     ? room.seats.filter((seat) => seat.role === "participant")
     : room.seats;
+  const pendingHandStart = new Set(room.pendingHandStartAccountIds ?? []);
+  const handStartConfirmed = new Set(
+    room.handStartConfirmedAccountIds ?? []
+  );
   const memberMenuGesture = useContextMenuGesture((accountId, anchor) => {
     const member = participants.find(
       (candidate) => candidate.accountId === accountId
@@ -3176,21 +3247,30 @@ function PublicTableSurface({
           const canManage = Boolean(
             onMemberMenu && seat.accountId !== memberMenuDisabledId
           );
+          const isActing = seat.accountId === room.actingAccountId;
+          const needsHandStart = pendingHandStart.has(seat.accountId);
+          const actionStatus = needsHandStart
+            ? t(language, "handStartPending")
+            : isActing
+              ? t(language, "currentAction")
+              : handStartConfirmed.has(seat.accountId)
+                ? t(language, "handStartConfirmed")
+                : "";
           return (
           <article
             key={seat.accountId}
             className={[
-              seat.accountId === room.actingAccountId ? "active" : "",
+              isActing || needsHandStart ? "needs-action" : "",
               canManage ? "member-menu-trigger" : ""
             ].filter(Boolean).join(" ")}
             data-context-menu-id={canManage ? seat.accountId : undefined}
             tabIndex={canManage ? 0 : undefined}
             role={canManage ? "group" : undefined}
-            aria-label={
-              canManage
-                ? `${seat.username} ${t(language, "memberActions")}`
-                : undefined
-            }
+            aria-label={[
+              seat.username,
+              actionStatus,
+              canManage ? t(language, "memberActions") : ""
+            ].filter(Boolean).join(" · ")}
             aria-haspopup={canManage ? "menu" : undefined}
             aria-expanded={
               canManage ? activeMemberId === seat.accountId : undefined
@@ -3210,6 +3290,11 @@ function PublicTableSurface({
                 <strong>{seat.currentBet.toLocaleString()}</strong>
               </small>
             </span>
+            {actionStatus && (
+              <span className="poker-seat-badges">
+                <b>{actionStatus}</b>
+              </span>
+            )}
             {seat.position === room.dealerPosition && (
               <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
             )}
@@ -3898,7 +3983,7 @@ function phaseLabel(
 ): string {
   const zh = {
     waiting: "等待",
-    blinds: "盲注",
+    blinds: "盲注与开局确认",
     preflop: "翻牌前",
     flop: "翻牌",
     turn: "转牌",
@@ -3910,7 +3995,7 @@ function phaseLabel(
   };
   const en = {
     waiting: "Waiting",
-    blinds: "Blinds",
+    blinds: "Blinds & hand confirmation",
     preflop: "Pre-flop",
     flop: "Flop",
     turn: "Turn",
@@ -4010,6 +4095,11 @@ function errorMessage(language: Language, reason: unknown): string {
     POKER_NOT_STARTED: ["牌局尚未开始", "Poker has not started"],
     ROOMS_MUST_CLOSE: ["请先关闭全部房间，再管理平台数据", "Close every room before managing platform data"],
     WRONG_ACTOR: ["当前不是你的行动", "It is not your turn"],
+    BLIND_NOT_ASSIGNED: ["只有指定的大小盲可以提交盲注", "Only the assigned blinds can post"],
+    BLIND_ALREADY_POSTED: ["本手盲注已经提交", "This blind was already posted"],
+    BLIND_REQUIRED: ["请先提交你的固定盲注", "Post your assigned blind first"],
+    HAND_START_ALREADY_CONFIRMED: ["你已经确认本手开局", "You already confirmed this hand start"],
+    PLAYER_FOLDED: ["你已不在本手行动中", "You are no longer active in this hand"],
     CANNOT_CHECK: ["当前需要跟注，不能过牌", "You must call or fold; checking is unavailable"],
     INVALID_BET: ["下注金额不合法", "The bet amount is invalid"],
     MINIMUM_RAISE: ["加注未达到最低额度", "Raise is below the minimum"],

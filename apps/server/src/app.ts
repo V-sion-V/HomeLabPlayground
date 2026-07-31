@@ -20,10 +20,12 @@ import { PlatformStore } from "@party/persistence";
 import {
   act,
   advancePhase,
+  confirmHandStart,
   createPokerState,
   evaluateSeven,
   forceFold,
   handCategoryFromScore,
+  postBlind,
   settleAutomatically,
   settleManual,
   undoLastAction,
@@ -161,8 +163,6 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     pokerVersion: safeNonnegativeIntegerSchema.optional(),
     confirmUnready: z.boolean().optional()
   }),
-  "room.pause": z.object(roomPayload),
-  "room.resume": z.object(roomPayload),
   "room.transfer-host": z.object({
     ...roomPayload,
     targetAccountId: z.string().min(1).max(128)
@@ -185,6 +185,14 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     ...roomPayload,
     pokerVersion: safeNonnegativeIntegerSchema,
     action: pokerActionSchema
+  }),
+  "poker.blind.post": z.object({
+    ...roomPayload,
+    pokerVersion: safeNonnegativeIntegerSchema
+  }),
+  "poker.hand-start.confirm": z.object({
+    ...roomPayload,
+    pokerVersion: safeNonnegativeIntegerSchema
   }),
   "poker.undo": z.object({
     ...roomPayload,
@@ -250,10 +258,6 @@ const commandPayloadSchemas: Record<string, z.ZodTypeAny> = {
     ...roomPayload,
     avalonVersion: safeNonnegativeIntegerSchema,
     targetAccountId: z.string().min(1).max(128)
-  }),
-  "avalon.void": z.object({
-    ...roomPayload,
-    avalonVersion: safeNonnegativeIntegerSchema
   })
 };
 const adminCommandPayloadSchemas: Record<string, z.ZodTypeAny> = {
@@ -857,12 +861,6 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
           confirmUnready: payload.confirmUnready === true
         });
       }
-      case "room.pause":
-        requireHost();
-        return domain.projectRoom(domain.pauseRoom(roomId, accountId).id, { accountId });
-      case "room.resume":
-        requireHost();
-        return domain.projectRoom(domain.resumeRoom(roomId, accountId).id, { accountId });
       case "room.transfer-host":
         requireHost();
         return domain.projectRoom(
@@ -956,6 +954,40 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
         requireHost();
         domain.closeRoom(roomId);
         return { closed: true };
+      case "poker.blind.post": {
+        assertLease();
+        const room = requirePokerRoom();
+        if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
+        if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
+        const amount = postBlind(
+          room.poker,
+          accountId,
+          Number(payload.pokerVersion)
+        );
+        domain.recordPokerMovement(
+          room.id,
+          accountId,
+          amount,
+          "table-to-pot",
+          "blind",
+          room.poker.handNumber
+        );
+        room.version += 1;
+        return domain.projectRoom(room.id, { accountId });
+      }
+      case "poker.hand-start.confirm": {
+        assertLease();
+        const room = requirePokerRoom();
+        if (room.status !== "in_progress") throw new DomainError("ROOM_PAUSED");
+        if (!room.poker) throw new DomainError("POKER_NOT_STARTED");
+        confirmHandStart(
+          room.poker,
+          accountId,
+          Number(payload.pokerVersion)
+        );
+        room.version += 1;
+        return domain.projectRoom(room.id, { accountId });
+      }
       case "poker.action": {
         assertLease();
         const room = requirePokerRoom();
@@ -1256,19 +1288,6 @@ export function dispatch(store: PlatformStore, envelope: CommandEnvelope) {
           { accountId }
         );
       }
-      case "avalon.void": {
-        const room = requireHost();
-        if (room.gameType !== "avalon") {
-          throw new DomainError("WRONG_GAME_TYPE");
-        }
-        return domain.projectRoom(
-          domain.voidAvalonRound(
-            room.id,
-            Number(payload.avalonVersion)
-          ).id,
-          { accountId }
-        );
-      }
       case "system.connection.open":
         domain.assertLease(accountId, envelope.connectionId ?? "");
         domain.connect(accountId);
@@ -1470,7 +1489,6 @@ function startSelectedHand(
     denominations: domain.state.settings.poker.denominations
   });
   if (previous) room.poker.handNumber = previous.handNumber + 1;
-  recordInitialBets(domain, room);
   room.version += 1;
   return domain.projectRoom(room.id, { accountId: hostAccountId });
 }
@@ -1532,29 +1550,6 @@ function pokerStartingStacks(room: {
       player.stack + player.totalBet
     ]) ?? []
   );
-}
-
-function recordInitialBets(
-  domain: PlatformDomain,
-  room: {
-    id: string;
-    poker?: {
-      handNumber: number;
-      players: Array<{ accountId: string; totalBet: number }>;
-    };
-  }
-): void {
-  if (!room.poker) return;
-  for (const player of room.poker.players) {
-    domain.recordPokerMovement(
-      room.id,
-      player.accountId,
-      player.totalBet,
-      "table-to-pot",
-      "blind",
-      room.poker.handNumber
-    );
-  }
 }
 
 function recordSettlement(

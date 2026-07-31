@@ -4,11 +4,14 @@ import {
   act,
   advancePhase,
   calculatePots,
+  confirmHandStart,
   createPokerState,
   evaluateSeven,
   forceFold,
   handCategoryFromScore,
   legalActions,
+  pendingHandStartAccountIds,
+  postBlind,
   settleAutomatically,
   settleManual,
   undoLastAction,
@@ -36,7 +39,7 @@ describe("Texas hold'em engine", () => {
     expect(state.denominations).toEqual([1, 20, 100]);
   });
 
-  it("posts blinds, enforces the actor and minimum raise, and supports atomic undo", () => {
+  it("waits for manual blinds and confirmations before enforcing the actor and undo boundary", () => {
     const state = createPokerState({
       players,
       mode: "chips-only",
@@ -44,18 +47,103 @@ describe("Texas hold'em engine", () => {
       bigBlind: 20,
       deck: []
     });
+    expect(state).toMatchObject({
+      phase: "blinds",
+      actingAccountId: null,
+      smallBlindAccountId: "bob",
+      bigBlindAccountId: "cara",
+      blindPostedAccountIds: [],
+      handStartConfirmedAccountIds: [],
+      currentBet: 0
+    });
+    expect(state.players.map((player) => player.stack)).toEqual([
+      1_000, 500, 200
+    ]);
+    expect(pendingHandStartAccountIds(state)).toEqual([
+      "alice",
+      "bob",
+      "cara"
+    ]);
+    expect(() => act(state, "alice", { kind: "call" })).toThrowError(
+      "WRONG_ACTOR"
+    );
+    expect(() => postBlind(state, "alice")).toThrowError(
+      "BLIND_NOT_ASSIGNED"
+    );
+    confirmHandStart(state, "alice");
+    expect(() => confirmHandStart(state, "alice")).toThrowError(
+      "HAND_START_ALREADY_CONFIRMED"
+    );
+    expect(() => confirmHandStart(state, "bob")).toThrowError(
+      "BLIND_REQUIRED"
+    );
+    postBlind(state, "cara");
+    expect(() => postBlind(state, "cara")).toThrowError(
+      "BLIND_ALREADY_POSTED"
+    );
+    postBlind(state, "bob");
+    confirmHandStart(state, "bob");
+    expect(state.phase).toBe("blinds");
+    confirmHandStart(state, "cara");
+    expect(state.phase).toBe("preflop");
     expect(state.actingAccountId).toBe("alice");
     expect(legalActions(state, "alice").callAmount).toBe(20);
     expect(() => act(state, "bob", { kind: "call" })).toThrowError("WRONG_ACTOR");
     expect(() => act(state, "alice", { kind: "raise", amount: 30 })).toThrowError(
       "MINIMUM_RAISE"
     );
+    const beforeVersion = state.version;
     const after = act(state, "alice", { kind: "raise", amount: 40 });
-    expect(after.version).toBe(1);
-    const restored = undoLastAction(after, "alice", 1);
-    expect(restored.version).toBe(0);
+    expect(after.version).toBe(beforeVersion + 1);
+    const restored = undoLastAction(after, "alice", after.version);
+    expect(restored.version).toBe(beforeVersion);
     expect(restored.players.find((player) => player.accountId === "alice")?.stack).toBe(1_000);
-    expect(() => undoLastAction(after, "alice", 0)).toThrowError("STALE_VERSION");
+    expect(() => undoLastAction(after, "alice", beforeVersion)).toThrowError(
+      "STALE_VERSION"
+    );
+  });
+
+  it("recomputes hand-start readiness when a pending player is force-folded", () => {
+    const state = createPokerState({
+      players,
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: []
+    });
+    confirmHandStart(state, "alice");
+    postBlind(state, "bob");
+    confirmHandStart(state, "bob");
+    forceFold(state, "cara", 1_000);
+    expect(state.phase).toBe("preflop");
+    expect(state.actingAccountId).toBe("alice");
+    expect(state.currentBet).toBe(20);
+    expect(state.players.find((player) => player.accountId === "cara")).toMatchObject({
+      folded: true,
+      stack: 200,
+      totalBet: 0
+    });
+    expect(pendingHandStartAccountIds(state)).toEqual([]);
+  });
+
+  it("ends a hand-start safely when force-folding leaves only one player", () => {
+    const state = createPokerState({
+      players: players.slice(0, 2),
+      mode: "chips-only",
+      smallBlind: 10,
+      bigBlind: 20,
+      deck: []
+    });
+    postBlind(state, state.smallBlindAccountId, state.version, 1_000);
+    forceFold(state, state.bigBlindAccountId, 1_000);
+    expect(state).toMatchObject({
+      phase: "showdown",
+      actingAccountId: null,
+      advanceDeadline: 4_000
+    });
+    expect(state.pots).toEqual([
+      { amount: 10, eligibleAccountIds: [state.smallBlindAccountId] }
+    ]);
   });
 
   it("keeps the full big blind as the opening wager when the big blind is short", () => {
@@ -69,6 +157,7 @@ describe("Texas hold'em engine", () => {
       bigBlind: 100,
       deck: []
     });
+    completeHandStart(state);
     expect(state.currentBet).toBe(100);
     expect(state.players.find((player) => player.accountId === "bob")).toMatchObject({
       roundBet: 50,
@@ -137,6 +226,7 @@ describe("Texas hold'em engine", () => {
       bigBlind: 20,
       deck
     });
+    completeHandStart(state);
     expect(state.holeCards.alice).toHaveLength(2);
     const first = state.actingAccountId!;
     act(state, first, { kind: "call" }, state.version, 1_000);
@@ -157,6 +247,7 @@ describe("Texas hold'em engine", () => {
       bigBlind: 20,
       deck: fixedDeck()
     });
+    completeHandStart(state);
     act(state, state.actingAccountId!, { kind: "fold" });
     expect(state.communityCards).toHaveLength(0);
     expect(state.phase).toBe("showdown");
@@ -177,6 +268,7 @@ describe("Texas hold'em engine", () => {
       deck: fixedDeck(),
       now: 1_000
     });
+    completeHandStart(state, 1_000);
     expect(state.actingAccountId).toBeNull();
     expect(state.advanceDeadline).toBe(4_000);
 
@@ -207,6 +299,7 @@ describe("Texas hold'em engine", () => {
       bigBlind: 20,
       deck: []
     });
+    completeHandStart(state);
     expect(state.actingAccountId).toBe("alice");
     forceFold(state, "alice", 1_000);
     expect(state.players.find((player) => player.accountId === "alice")?.folded).toBe(true);
@@ -231,6 +324,7 @@ describe("Texas hold'em engine", () => {
       bigBlind: 20,
       deck: []
     });
+    completeHandStart(state);
     act(state, "alice", { kind: "call" });
     act(state, "bob", { kind: "all-in" });
     act(state, "cara", { kind: "call" });
@@ -259,6 +353,7 @@ describe("Texas hold'em engine", () => {
       bigBlind: 20,
       deck: []
     });
+    completeHandStart(state);
     act(state, "dan", { kind: "call" });
     act(state, "alice", { kind: "call" });
     act(state, "bob", { kind: "all-in" });
@@ -353,6 +448,18 @@ function fixedDeck(): Card[] {
   return cards(
     "AS KH QD JC TS 9H 8D 7C 6S 5H 4D 3C 2S AH KD QC JS TH 9D 8C 7S 6H 5D 4C 3S 2H AD KC QH JD TC 9S 8H 7D 6C 5S 4H 3D 2C AC KS QD JH TD 9C 8S 7H"
   );
+}
+
+function completeHandStart(
+  state: ReturnType<typeof createPokerState>,
+  now = Date.now()
+) {
+  postBlind(state, state.bigBlindAccountId, state.version, now);
+  postBlind(state, state.smallBlindAccountId, state.version, now);
+  for (const player of state.players) {
+    confirmHandStart(state, player.accountId, state.version, now);
+  }
+  return state;
 }
 
 function cards(input: string): Card[] {

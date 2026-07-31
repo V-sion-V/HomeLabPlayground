@@ -248,6 +248,10 @@ export interface PokerState {
   phase: HandPhase;
   mode: RoomMode;
   dealerPosition: number;
+  smallBlindAccountId: string;
+  bigBlindAccountId: string;
+  blindPostedAccountIds: string[];
+  handStartConfirmedAccountIds: string[];
   actingAccountId: string | null;
   communityCards: Card[];
   holeCards: Record<string, Card[]>;
@@ -612,6 +616,11 @@ export interface PokerRoomProjection extends RoomProjectionBase {
   raiseLockedAccountIds?: string[];
   handNumber?: number;
   dealerPosition?: number;
+  smallBlindAccountId?: string;
+  bigBlindAccountId?: string;
+  blindPostedAccountIds?: string[];
+  handStartConfirmedAccountIds?: string[];
+  pendingHandStartAccountIds?: string[];
   lastAction?: {
     accountId: string;
     kind: string;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { PlatformDomain, initialSnapshot } from "@party/domain";
-import { act, createPokerState } from "@party/poker";
+import {
+  createPokerState,
+  postBlind
+} from "@party/poker";
 import {
   currentAvalonLeader,
   currentAvalonMissionRule
@@ -128,6 +131,19 @@ describe("role projections and realtime concurrency", () => {
     expect(aliceProjection.ownHoleCards).not.toEqual(bobProjection.ownHoleCards);
     expect(displayProjection.ownHoleCards).toBeUndefined();
     expect(caraProjection.ownHoleCards).toBeUndefined();
+    expect(aliceProjection.pendingHandStartAccountIds).toEqual([
+      alice.id,
+      bob.id
+    ]);
+    expect(bobProjection.pendingHandStartAccountIds).toEqual(
+      aliceProjection.pendingHandStartAccountIds
+    );
+    expect(caraProjection.pendingHandStartAccountIds).toEqual(
+      aliceProjection.pendingHandStartAccountIds
+    );
+    expect(displayProjection.pendingHandStartAccountIds).toEqual(
+      aliceProjection.pendingHandStartAccountIds
+    );
     expect(JSON.stringify(caraProjection)).not.toContain("holeCards");
     expect(JSON.stringify(displayProjection)).not.toContain("holeCards");
     expect(displayProjection.communityCards).toHaveLength(5);
@@ -201,7 +217,7 @@ describe("role projections and realtime concurrency", () => {
     });
   });
 
-  it("accepts only the first command against one poker version", () => {
+  it("accepts only the first hand-start command against one poker version", () => {
     const state = createPokerState({
       players: [
         { accountId: "alice", position: 0, stack: 1_000 },
@@ -212,11 +228,16 @@ describe("role projections and realtime concurrency", () => {
       bigBlind: 20,
       deck: []
     });
-    const actor = state.actingAccountId!;
-    act(state, actor, { kind: "call" }, 0);
-    expect(() => act(state, state.actingAccountId!, { kind: "check" }, 0)).toThrowError(
-      "STALE_VERSION"
-    );
+    postBlind(state, state.bigBlindAccountId, 0);
+    expect(() =>
+      postBlind(state, state.smallBlindAccountId, 0)
+    ).toThrowError("STALE_VERSION");
+    expect(state.blindPostedAccountIds).toEqual([state.bigBlindAccountId]);
+    expect(
+      state.players.find(
+        (player) => player.accountId === state.smallBlindAccountId
+      )?.stack
+    ).toBe(1_000);
   });
 });
 

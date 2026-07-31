@@ -13,8 +13,8 @@ import type {
 import { AVALON_RULES, normalizeAvalonRoles } from "@party/avalon";
 import {
   AnchoredMenu,
-  ArrowIcon,
   ConfirmDialog,
+  RoomHeader,
   SelectField,
   useContextMenuGesture
 } from "./ui";
@@ -127,7 +127,12 @@ type AvalonTextKey =
   | "invalidRoleConfig"
   | "currentAction"
   | "waitingOthers"
-  | "players";
+  | "players"
+  | "roleComposition"
+  | "showRoleComposition"
+  | "minimumPlayers"
+  | "compositionMismatch"
+  | "selectedPlayerCount";
 
 const avalonTexts: Record<AvalonTextKey, [string, string]> = {
   game: ["阿瓦隆", "AVALON"],
@@ -231,7 +236,18 @@ const avalonTexts: Record<AvalonTextKey, [string, string]> = {
   ],
   currentAction: ["当前行动", "Current action"],
   waitingOthers: ["等待其他玩家", "Waiting for other players"],
-  players: ["人", "players"]
+  players: ["人", "players"],
+  roleComposition: ["角色构成", "Role composition"],
+  showRoleComposition: ["查看本局角色构成", "View role composition"],
+  minimumPlayers: [
+    "至少选择 5 名在线玩家后显示角色构成",
+    "Select at least 5 online players to show the role composition"
+  ],
+  compositionMismatch: [
+    "当前人数与角色配置不匹配",
+    "The current player count does not match the role configuration"
+  ],
+  selectedPlayerCount: ["当前选中 {count} 人，最少 5 人，最多 10 人", "{count} players selected; minimum 5, maximum 10"]
 };
 
 export function avalonText(language: Language, key: AvalonTextKey): string {
@@ -275,6 +291,96 @@ export function avalonCompatiblePlayerCounts(
       return false;
     }
   });
+}
+
+function avalonCompositionPlayerCount(room: AvalonRoomProjection): number {
+  if (room.phase !== undefined) {
+    return (
+      room.participantAccountIds.length ||
+      room.lastResult?.participantAccountIds.length ||
+      0
+    );
+  }
+  const ready = new Set(room.readyAccountIds);
+  return room.seats.filter(
+    (member) =>
+      member.accountId === room.hostAccountId ||
+      (member.connected && ready.has(member.accountId))
+  ).length;
+}
+
+function avalonRoleComposition(room: AvalonRoomProjection): {
+  playerCount: number;
+  roles: AvalonRole[];
+  error?: "minimum" | "mismatch";
+} {
+  const playerCount = avalonCompositionPlayerCount(room);
+  if (playerCount < 5) {
+    return { playerCount, roles: [], error: "minimum" };
+  }
+  if (playerCount > 10) {
+    return { playerCount, roles: [], error: "mismatch" };
+  }
+  const requestedRoles =
+    room.config.roleSource === "preset"
+      ? room.config.rolePresets[playerCount as AvalonPlayerCount]
+      : room.config.roles;
+  try {
+    return {
+      playerCount,
+      roles: normalizeAvalonRoles(playerCount, requestedRoles)
+    };
+  } catch {
+    return { playerCount, roles: [], error: "mismatch" };
+  }
+}
+
+function AvalonRoleComposition({
+  language,
+  room,
+  compact = false
+}: {
+  language: Language;
+  room: AvalonRoomProjection;
+  compact?: boolean;
+}) {
+  const composition = avalonRoleComposition(room);
+  const counts = new Map<AvalonRole, number>();
+  for (const role of composition.roles) {
+    counts.set(role, (counts.get(role) ?? 0) + 1);
+  }
+  return (
+    <section
+      className={`avalon-role-composition${compact ? " is-compact" : ""}`}
+      aria-label={avalonText(language, "roleComposition")}
+    >
+      <header>
+        <strong>{avalonText(language, "roleComposition")}</strong>
+        <span>
+          {composition.playerCount} {avalonText(language, "players")}
+        </span>
+      </header>
+      {composition.error ? (
+        <p>
+          {avalonText(
+            language,
+            composition.error === "minimum"
+              ? "minimumPlayers"
+              : "compositionMismatch"
+          )}
+        </p>
+      ) : (
+        <ul>
+          {[...counts].map(([role, count]) => (
+            <li key={role}>
+              <span>{avalonRoleLabel(language, role)}</span>
+              {count > 1 && <b>×{count}</b>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 function avalonRoleDescription(
@@ -420,8 +526,10 @@ export function AvalonRoomView({
   const [secretVisible, setSecretVisible] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<string[]>([]);
   const [assassinationTarget, setAssassinationTarget] = useState("");
+  const [compositionOpen, setCompositionOpen] = useState(false);
+  const compositionHeaderRef = useRef<HTMLDivElement>(null);
   const [danger, setDanger] = useState<
-    | { kind: "leave" | "close" | "void" | "start" }
+    | { kind: "leave" | "close" | "start" }
     | { kind: "remove"; accountId: string; username: string }
     | null
   >(null);
@@ -431,7 +539,35 @@ export function AvalonRoomView({
     setSecretVisible(false);
     setSelectedTeam([]);
     setAssassinationTarget("");
+    setCompositionOpen(false);
   }, [room.avalonVersion]);
+
+  useEffect(() => {
+    if (!compositionOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !compositionHeaderRef.current?.contains(event.target)
+      ) {
+        setCompositionOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCompositionOpen(false);
+        compositionHeaderRef.current
+          ?.querySelector<HTMLButtonElement>(".shared-room-title-button")
+          ?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [compositionOpen]);
 
   useEffect(() => {
     if (lastPhase.current !== room.phase) {
@@ -482,6 +618,10 @@ export function AvalonRoomView({
   const actionLabel =
     room.status === "paused"
       ? avalonText(language, "pause")
+      : room.phase === "complete"
+        ? avalonText(language, "outcome")
+        : room.phase === "void"
+          ? avalonText(language, "voided")
       : room.phase === "role-confirmation"
         ? avalonText(language, "roleProgress")
         : room.phase === "manual-night"
@@ -507,63 +647,35 @@ export function AvalonRoomView({
 
   return (
     <main className="avalon-shell">
-      <header className="avalon-topbar">
-        <div className="avalon-top-actions">
-          <button className="secondary" onClick={onLobby}>
-            <ArrowIcon direction="left" /> {avalonText(language, "back")}
-          </button>
-          <button className="secondary" onClick={() => setDanger({ kind: "leave" })}>
-            {avalonText(language, "leave")}
-          </button>
-        </div>
-        <div className="avalon-room-title">
-          <p className="eyebrow">
-            {avalonText(language, "game")} · {actionLabel}
-          </p>
-          <h1>{room.name}</h1>
-          <span>
-            {account.avatar} {account.username} ·{" "}
-            {room.viewerRole === "spectator"
-              ? avalonText(language, "spectating")
-              : avalonText(language, "participant")}
-          </span>
-        </div>
-        <div className="avalon-host-actions">
-          <a
-            className="secondary"
-            href={`/?display=1&roomId=${encodeURIComponent(room.id)}`}
-            target="_blank"
-            rel="noreferrer"
+      <div className="avalon-room-header-wrap" ref={compositionHeaderRef}>
+        <RoomHeader
+          roomName={room.name}
+          gameLabel={avalonText(language, "game")}
+          phaseLabel={actionLabel}
+          backLabel={avalonText(language, "back")}
+          leaveLabel={avalonText(language, "leave")}
+          closeLabel={avalonText(language, "close")}
+          onBack={onLobby}
+          onLeave={() => setDanger({ kind: "leave" })}
+          onClose={
+            host ? () => setDanger({ kind: "close" }) : undefined
+          }
+          titleButtonLabel={avalonText(language, "showRoleComposition")}
+          onTitleClick={() => setCompositionOpen((open) => !open)}
+          titleExpanded={compositionOpen}
+          titleControls="avalon-room-role-composition"
+        />
+        {compositionOpen && (
+          <div
+            id="avalon-room-role-composition"
+            className="avalon-role-composition-popover"
+            role="dialog"
+            aria-label={avalonText(language, "roleComposition")}
           >
-            {avalonText(language, "display")}
-          </a>
-          {host && !intermission && (
-            <>
-              <button
-                className="secondary"
-                onClick={() =>
-                  void run(
-                    room.status === "paused" ? "room.resume" : "room.pause"
-                  )
-                }
-              >
-                {avalonText(
-                  language,
-                  room.status === "paused" ? "resume" : "pause"
-                )}
-              </button>
-              <button className="danger" onClick={() => setDanger({ kind: "void" })}>
-                {avalonText(language, "void")}
-              </button>
-            </>
-          )}
-          {host && (
-            <button className="danger" onClick={() => setDanger({ kind: "close" })}>
-              {avalonText(language, "close")}
-            </button>
-          )}
-        </div>
-      </header>
+            <AvalonRoleComposition language={language} room={room} compact />
+          </div>
+        )}
+      </div>
       <p
         className={`notice avalon-notice${notice ? "" : " avalon-notice-empty"}`}
         role="status"
@@ -907,10 +1019,6 @@ export function AvalonRoomView({
               });
             } else if (action.kind === "leave") {
               void run("room.leave", { confirmed: true });
-            } else if (action.kind === "void") {
-              void run("avalon.void", {
-                avalonVersion: room.avalonVersion
-              });
             } else {
               void run("room.close");
             }
@@ -1593,15 +1701,14 @@ function AvalonIntermission({
     <>
       <section className="avalon-control-card avalon-ready-card">
         <h2>{avalonText(language, "waiting")}</h2>
-        <p>{avalonText(language, "hostReady")}</p>
+        <AvalonRoleComposition language={language} room={room} compact />
         <div
           className="avalon-ready-meter"
-          aria-label={`${selected.length}/5–10`}
+          aria-label={avalonText(language, "selectedPlayerCount").replace(
+            "{count}",
+            String(selected.length)
+          )}
         >
-          <span className="avalon-ready-count">
-            <strong>{selected.length}</strong>
-            <small>/5–10</small>
-          </span>
           <span className="avalon-ready-dots" aria-hidden="true">
             {Array.from({ length: 10 }, (_, index) => (
               <i
@@ -1875,6 +1982,7 @@ export function AvalonPublicDisplay({
         </div>
       </header>
       <section className="avalon-layout avalon-display-layout">
+        <AvalonRoleComposition language={language} room={room} />
         <AvalonMemberRail
           language={language}
           room={room}

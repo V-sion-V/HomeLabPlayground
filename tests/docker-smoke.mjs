@@ -165,23 +165,55 @@ try {
       roomId
     }
   });
-  const action = await post(`${firstBase}/api/command`, {
+  const pokerSessions = [alice.data, bob.data];
+  const firstBlindSession = pokerSessions.find(
+    (session) => session.account.id === start.data.bigBlindAccountId
+  );
+  if (
+    start.status !== "accepted" ||
+    start.data.phase !== "blinds" ||
+    start.data.actingAccountId !== null ||
+    !firstBlindSession
+  ) {
+    throw new Error("Poker did not enter the authoritative blinds phase");
+  }
+  const firstBlind = await post(`${firstBase}/api/command`, {
     commandId: randomUUID(),
-    connectionId: alice.data.connectionId,
+    connectionId: firstBlindSession.connectionId,
     aggregateId: roomId,
     expectedVersion: start.version,
-    type: "poker.action",
+    type: "poker.blind.post",
     payload: {
-      accountId: alice.data.account.id,
+      accountId: firstBlindSession.account.id,
       roomId,
-      pokerVersion: start.data.pokerVersion,
-      action: { kind: "call" }
+      pokerVersion: start.data.pokerVersion
     }
   });
-  if (action.status !== "accepted") throw new Error("Poker action was not accepted");
+  const partialPoker = await post(`${firstBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: firstBlindSession.connectionId,
+    aggregateId: roomId,
+    expectedVersion: firstBlind.version,
+    type: "poker.hand-start.confirm",
+    payload: {
+      accountId: firstBlindSession.account.id,
+      roomId,
+      pokerVersion: firstBlind.data.pokerVersion
+    }
+  });
+  if (
+    firstBlind.status !== "accepted" ||
+    partialPoker.status !== "accepted" ||
+    partialPoker.data.phase !== "blinds" ||
+    partialPoker.data.blindPostedAccountIds.length !== 1 ||
+    partialPoker.data.handStartConfirmedAccountIds.length !== 1 ||
+    partialPoker.data.pendingHandStartAccountIds.length !== 1
+  ) {
+    throw new Error("Partial Poker hand-start progress was not accepted");
+  }
 
   const avalonSessions = [];
-  let avalonPlatformVersion = action.version;
+  let avalonPlatformVersion = partialPoker.version;
   for (let index = 0; index < 5; index += 1) {
     const registered = await post(`${firstBase}/api/register`, {
       commandId: randomUUID(),
@@ -501,6 +533,15 @@ try {
     );
   }
   if (
+    afterRoom.phase !== "blinds" ||
+    afterRoom.actingAccountId !== null ||
+    afterRoom.blindPostedAccountIds.length !== 1 ||
+    afterRoom.handStartConfirmedAccountIds.length !== 1 ||
+    afterRoom.pendingHandStartAccountIds.length !== 1
+  ) {
+    throw new Error("Partial Poker hand-start state changed across restart");
+  }
+  if (
     afterAdmin.settings.defaultTheme !== "dark" ||
     JSON.stringify(afterAdmin).includes("connectionId") ||
     JSON.stringify(afterAdmin).includes("holeCards") ||
@@ -555,6 +596,74 @@ try {
     throw new Error("Legacy account preference defaults were not restored");
   }
   let secondVersion = bobReentry.version;
+  const recoveredPokerSessions = [aliceReentry.data, bobReentry.data];
+  const remainingPokerAccountId = afterRoom.pendingHandStartAccountIds[0];
+  const remainingPokerSession = recoveredPokerSessions.find(
+    (session) => session.account.id === remainingPokerAccountId
+  );
+  if (!remainingPokerSession) {
+    throw new Error("Recovered Poker hand-start participant was unavailable");
+  }
+  const recoveredBlind = await post(`${secondBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: remainingPokerSession.connectionId,
+    aggregateId: roomId,
+    expectedVersion: secondVersion,
+    type: "poker.blind.post",
+    payload: {
+      accountId: remainingPokerSession.account.id,
+      roomId,
+      pokerVersion: afterRoom.pokerVersion
+    }
+  });
+  const recoveredConfirmation = await post(`${secondBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: remainingPokerSession.connectionId,
+    aggregateId: roomId,
+    expectedVersion: recoveredBlind.version,
+    type: "poker.hand-start.confirm",
+    payload: {
+      accountId: remainingPokerSession.account.id,
+      roomId,
+      pokerVersion: recoveredBlind.data.pokerVersion
+    }
+  });
+  if (
+    recoveredBlind.status !== "accepted" ||
+    recoveredConfirmation.status !== "accepted" ||
+    recoveredConfirmation.data.phase !== "preflop" ||
+    recoveredConfirmation.data.blindPostedAccountIds.length !== 2 ||
+    recoveredConfirmation.data.handStartConfirmedAccountIds.length !== 2
+  ) {
+    throw new Error("Recovered Poker hand-start could not finish exactly once");
+  }
+  const recoveredActorSession = recoveredPokerSessions.find(
+    (session) =>
+      session.account.id === recoveredConfirmation.data.actingAccountId
+  );
+  if (!recoveredActorSession) {
+    throw new Error("Recovered Poker actor was unavailable");
+  }
+  const recoveredPokerAction = await post(`${secondBase}/api/command`, {
+    commandId: randomUUID(),
+    connectionId: recoveredActorSession.connectionId,
+    aggregateId: roomId,
+    expectedVersion: recoveredConfirmation.version,
+    type: "poker.action",
+    payload: {
+      accountId: recoveredActorSession.account.id,
+      roomId,
+      pokerVersion: recoveredConfirmation.data.pokerVersion,
+      action: { kind: "call" }
+    }
+  });
+  if (
+    recoveredPokerAction.status !== "accepted" ||
+    recoveredPokerAction.data.potTotal !== 200
+  ) {
+    throw new Error("Recovered Poker action was not accepted");
+  }
+  secondVersion = recoveredPokerAction.version;
   const avalonReentries = [];
   for (const session of avalonSessions) {
     const reentry = await post(`${secondBase}/api/enter`, {
@@ -621,26 +730,25 @@ try {
     (session) => session.account.id === avalonSessions[0].account.id
   );
   if (!recoveredHost) throw new Error("Recovered Avalon host was unavailable");
-  const voidedAvalon = await post(`${secondBase}/api/command`, {
+  const closedAvalon = await post(`${secondBase}/api/command`, {
     commandId: randomUUID(),
     connectionId: recoveredHost.connectionId,
     aggregateId: avalonRoomId,
     expectedVersion: secondVersion,
-    type: "avalon.void",
+    type: "room.close",
     payload: {
       accountId: recoveredHost.account.id,
-      roomId: avalonRoomId,
-      avalonVersion: recoveredAvalon.avalonVersion
+      roomId: avalonRoomId
     }
   });
   if (
-    voidedAvalon.status !== "accepted" ||
-    voidedAvalon.data.phase !== "void" ||
-    voidedAvalon.data.revealedRoles !== undefined
+    closedAvalon.status !== "accepted" ||
+    closedAvalon.data.closed !== true ||
+    JSON.stringify(closedAvalon.data).includes("revealedRoles")
   ) {
-    throw new Error("Recovered Avalon void did not preserve privacy");
+    throw new Error("Recovered Avalon close did not preserve privacy");
   }
-  secondVersion = voidedAvalon.version;
+  secondVersion = closedAvalon.version;
   must([
     "exec",
     secondContainer,
@@ -714,7 +822,7 @@ try {
     throw new Error("Deleted identity reappeared or replacement identity changed after restart");
   }
   console.log(
-    "Docker offline startup, non-root runtime, health, legacy preference recovery, signed Avalon stake/private-role/vote/mission recovery and void, named-volume poker/private-card persistence, admin deletion, lease invalidation, username reuse and restart recovery passed."
+    "Docker offline startup, non-root runtime, health, legacy preference recovery, signed Avalon stake/private-role/vote/mission recovery and safe close, named-volume Poker blinds/confirmation/private-card persistence, admin deletion, lease invalidation, username reuse and restart recovery passed."
   );
 } finally {
   for (const container of containers) run(["rm", "-f", container], false);

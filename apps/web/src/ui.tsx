@@ -522,6 +522,136 @@ export function ArrowIcon({
   );
 }
 
+function ExitIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="room-action-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <path
+        d="M10 5H5v14h5M13 8l4 4-4 4M8 12h9"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CloseRoomIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="room-action-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <path
+        d="m7 7 10 10M17 7 7 17"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function RoomHeader({
+  roomName,
+  gameLabel,
+  phaseLabel,
+  backLabel,
+  leaveLabel,
+  closeLabel,
+  onBack,
+  onLeave,
+  onClose,
+  leaveDisabled = false,
+  titleButtonLabel,
+  onTitleClick,
+  titleExpanded,
+  titleControls
+}: {
+  roomName: string;
+  gameLabel: string;
+  phaseLabel: string;
+  backLabel: string;
+  leaveLabel: string;
+  closeLabel: string;
+  onBack: () => void;
+  onLeave: () => void;
+  onClose?: () => void;
+  leaveDisabled?: boolean;
+  titleButtonLabel?: string;
+  onTitleClick?: () => void;
+  titleExpanded?: boolean;
+  titleControls?: string;
+}) {
+  const title = (
+    <>
+      <h1>{roomName}</h1>
+      <span>
+        {gameLabel} · {phaseLabel}
+      </span>
+    </>
+  );
+  return (
+    <header className="shared-room-header">
+      <div className="shared-room-header-actions">
+        <button
+          type="button"
+          className="secondary shared-room-action"
+          aria-label={backLabel}
+          onClick={onBack}
+        >
+          <ArrowIcon direction="left" />
+          <span className="shared-room-action-label">{backLabel}</span>
+        </button>
+        <button
+          type="button"
+          className="secondary shared-room-action"
+          aria-label={leaveLabel}
+          disabled={leaveDisabled}
+          onClick={onLeave}
+        >
+          <ExitIcon />
+          <span className="shared-room-action-label">{leaveLabel}</span>
+        </button>
+      </div>
+      {onTitleClick ? (
+        <button
+          type="button"
+          className="shared-room-title shared-room-title-button"
+          aria-label={titleButtonLabel ?? roomName}
+          aria-expanded={titleExpanded}
+          aria-controls={titleControls}
+          onClick={onTitleClick}
+        >
+          {title}
+        </button>
+      ) : (
+        <div className="shared-room-title">{title}</div>
+      )}
+      <div className="shared-room-header-danger">
+        {onClose && (
+          <button
+            type="button"
+            className="danger shared-room-action"
+            aria-label={closeLabel}
+            onClick={onClose}
+          >
+            <CloseRoomIcon />
+            <span className="shared-room-action-label">{closeLabel}</span>
+          </button>
+        )}
+      </div>
+    </header>
+  );
+}
+
 export function FixedPanel({
   as = "section",
   className = "",

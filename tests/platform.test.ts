@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
+import type { PokerRoom } from "@party/contracts";
 import { DEFAULT_DENOMINATIONS, fallbackAvatar } from "@party/contracts";
 import { PlatformDomain, initialSnapshot } from "@party/domain";
 import { PlatformStore } from "@party/persistence";
-import { createPokerState } from "@party/poker";
+import {
+  confirmHandStart,
+  createPokerState,
+  postBlind
+} from "@party/poker";
 import {
   command,
   defaultRoomConfig,
@@ -10,6 +15,31 @@ import {
   requirePokerRoom,
   temporaryDatabase
 } from "@party/test-support";
+
+function completePokerHandStart(
+  domain: PlatformDomain,
+  room: PokerRoom
+): void {
+  const poker = room.poker;
+  if (!poker) throw new Error("Poker state is required");
+  for (const accountId of [
+    poker.smallBlindAccountId,
+    poker.bigBlindAccountId
+  ]) {
+    const amount = postBlind(poker, accountId, poker.version, 1_000);
+    domain.recordPokerMovement(
+      room.id,
+      accountId,
+      amount,
+      "table-to-pot",
+      "blind",
+      poker.handNumber
+    );
+  }
+  for (const player of poker.players) {
+    confirmHandStart(poker, player.accountId, poker.version, 1_000);
+  }
+}
 
 describe("platform domain", () => {
   it("splits username lookup, existing entry, and create-only registration", () => {
@@ -395,6 +425,83 @@ describe("platform domain", () => {
     expect(room.poker.advanceDeadline).toBe(5_000);
   });
 
+  it("normalizes an old paused hand without replaying its start and closes it safely", () => {
+    const source = new PlatformDomain(initialSnapshot(), () => 1_000);
+    const alice = source.enterAccount("Alice");
+    const bob = source.enterAccount("Bob");
+    const room = source.createRoom(alice.id, "Legacy pause", defaultRoomConfig);
+    source.joinRoom(room.id, alice.id, 2_000);
+    source.joinRoom(room.id, bob.id, 2_000);
+    source.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    completePokerHandStart(source, room);
+    source.pauseRoom(room.id, alice.id);
+    const cardsBefore = structuredClone(room.poker.holeCards);
+    const stacksBefore = room.poker.players.map((player) => ({
+      accountId: player.accountId,
+      stack: player.stack,
+      totalBet: player.totalBet
+    }));
+    const blindLedgerBefore = source.state.ledger.filter(
+      (line) => line.reason === "blind"
+    ).length;
+    delete (
+      room.poker as {
+        smallBlindAccountId?: string;
+      }
+    ).smallBlindAccountId;
+    delete (
+      room.poker as {
+        bigBlindAccountId?: string;
+      }
+    ).bigBlindAccountId;
+    delete (
+      room.poker as {
+        blindPostedAccountIds?: string[];
+      }
+    ).blindPostedAccountIds;
+    delete (
+      room.poker as {
+        handStartConfirmedAccountIds?: string[];
+      }
+    ).handStartConfirmedAccountIds;
+
+    const recovered = new PlatformDomain(
+      structuredClone(source.state),
+      () => 2_000
+    );
+    const recoveredRoom = requirePokerRoom(recovered.state.rooms[room.id]);
+    expect(recoveredRoom.status).toBe("paused");
+    expect(recoveredRoom.poker?.phase).toBe("preflop");
+    expect(recoveredRoom.poker?.actingAccountId).toBe(alice.id);
+    expect(recoveredRoom.poker?.holeCards).toEqual(cardsBefore);
+    expect(
+      recoveredRoom.poker?.players.map((player) => ({
+        accountId: player.accountId,
+        stack: player.stack,
+        totalBet: player.totalBet
+      }))
+    ).toEqual(stacksBefore);
+    expect(
+      recovered.state.ledger.filter((line) => line.reason === "blind")
+    ).toHaveLength(blindLedgerBefore);
+
+    recovered.closeRoom(room.id);
+    expect(recovered.state.rooms[room.id]).toBeUndefined();
+    expect(recovered.state.seasonAssets[alice.id]?.score).toBe(10_000);
+    expect(recovered.state.seasonAssets[bob.id]?.score).toBe(10_000);
+    recovered.validateInvariants();
+  });
+
   it("records void results and links reverse poker ledger lines to their originals", () => {
     const domain = new PlatformDomain(initialSnapshot(), () => 1_000);
     const alice = domain.enterAccount("Alice");
@@ -413,6 +520,7 @@ describe("platform domain", () => {
       smallBlind: room.config.smallBlind,
       bigBlind: room.config.bigBlind
     });
+    completePokerHandStart(domain, room);
 
     domain.recordPokerMovement(
       room.id,
@@ -710,6 +818,194 @@ describe("SQLite command boundary", () => {
     reopened.close();
   });
 
+  it("rolls back a blind and its ledger together after a persistence fault", () => {
+    const filename = temporaryDatabase();
+    const store = new PlatformStore(filename);
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const room = domain.createRoom(alice.id, "Atomic blind", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    store.save(state);
+    const envelope = command(
+      0,
+      "poker.blind.post",
+      {
+        accountId: bob.id,
+        roomId: room.id,
+        pokerVersion: 0
+      },
+      room.id
+    );
+
+    expect(() =>
+      store.execute(envelope, (transactionDomain) => {
+        const transactionRoom = requirePokerRoom(
+          transactionDomain.state.rooms[room.id]
+        );
+        const poker = transactionRoom.poker!;
+        const amount = postBlind(
+          poker,
+          poker.bigBlindAccountId,
+          poker.version,
+          1_000
+        );
+        transactionDomain.recordPokerMovement(
+          room.id,
+          poker.bigBlindAccountId,
+          amount,
+          "table-to-pot",
+          "blind",
+          poker.handNumber
+        );
+        throw new Error("fault after blind and ledger");
+      })
+    ).toThrowError("fault after blind and ledger");
+
+    let persisted = store.load();
+    let persistedPoker = requirePokerRoom(persisted.rooms[room.id]).poker!;
+    expect(persisted.version).toBe(0);
+    expect(persistedPoker.version).toBe(0);
+    expect(persistedPoker.blindPostedAccountIds).toEqual([]);
+    expect(persistedPoker.players.map((player) => player.stack)).toEqual([
+      2_000,
+      2_000
+    ]);
+    expect(persisted.ledger.some((line) => line.reason === "blind")).toBe(false);
+
+    const accepted = store.execute(envelope, (transactionDomain) => {
+      const transactionRoom = requirePokerRoom(
+        transactionDomain.state.rooms[room.id]
+      );
+      const poker = transactionRoom.poker!;
+      const amount = postBlind(
+        poker,
+        poker.bigBlindAccountId,
+        poker.version,
+        1_000
+      );
+      transactionDomain.recordPokerMovement(
+        room.id,
+        poker.bigBlindAccountId,
+        amount,
+        "table-to-pot",
+        "blind",
+        poker.handNumber
+      );
+      return { amount };
+    });
+    expect(accepted).toMatchObject({
+      status: "accepted",
+      data: { amount: 100 }
+    });
+    expect(
+      store.execute(envelope, () => {
+        throw new Error("replay must not execute");
+      }).status
+    ).toBe("replayed");
+    persisted = store.load();
+    persistedPoker = requirePokerRoom(persisted.rooms[room.id]).poker!;
+    expect(persistedPoker.blindPostedAccountIds).toEqual([bob.id]);
+    expect(
+      persisted.ledger.filter(
+        (line) =>
+          line.reason === "blind" &&
+          line.source === `table:${room.id}:${bob.id}`
+      )
+    ).toHaveLength(1);
+    new PlatformDomain(persisted).validateInvariants();
+    store.close();
+  });
+
+  it("preserves partial hand-start cards, blind, and confirmations across restart", () => {
+    const filename = temporaryDatabase();
+    const store = new PlatformStore(filename);
+    const state = initialSnapshot(1_000);
+    const domain = new PlatformDomain(state, () => 1_000);
+    const alice = domain.enterAccount("Alice");
+    const bob = domain.enterAccount("Bob");
+    const cara = domain.enterAccount("Cara");
+    domain.acquireLease(alice.id);
+    domain.acquireLease(bob.id);
+    domain.acquireLease(cara.id);
+    const room = domain.createRoom(alice.id, "Restart opening", defaultRoomConfig);
+    domain.joinRoom(room.id, alice.id, 2_000);
+    domain.joinRoom(room.id, bob.id, 2_000);
+    domain.joinRoom(room.id, cara.id, 2_000);
+    domain.startRoom(room.id, alice.id);
+    room.poker = createPokerState({
+      players: room.seats.map((seat) => ({
+        accountId: seat.accountId,
+        position: seat.position,
+        stack: seat.tableChips
+      })),
+      mode: room.config.mode,
+      smallBlind: room.config.smallBlind,
+      bigBlind: room.config.bigBlind
+    });
+    const blindAmount = postBlind(
+      room.poker,
+      bob.id,
+      room.poker.version,
+      1_000
+    );
+    domain.recordPokerMovement(
+      room.id,
+      bob.id,
+      blindAmount,
+      "table-to-pot",
+      "blind",
+      room.poker.handNumber
+    );
+    confirmHandStart(room.poker, alice.id, room.poker.version, 1_000);
+    const cardsBefore = structuredClone(room.poker.holeCards);
+    const deckBefore = structuredClone(room.poker.deck);
+    store.save(state);
+    store.close();
+
+    const reopened = new PlatformStore(filename);
+    const recovered = reopened.recoverAfterRestart();
+    const recoveredRoom = requirePokerRoom(recovered.rooms[room.id]);
+    expect(recoveredRoom.poker).toMatchObject({
+      phase: "blinds",
+      actingAccountId: null,
+      blindPostedAccountIds: [bob.id],
+      handStartConfirmedAccountIds: [alice.id],
+      version: 2
+    });
+    expect(recoveredRoom.poker?.holeCards).toEqual(cardsBefore);
+    expect(recoveredRoom.poker?.deck).toEqual(deckBefore);
+    expect(
+      requirePokerProjection(
+        new PlatformDomain(recovered).projectRoom(room.id, { display: true })
+      ).pendingHandStartAccountIds
+    ).toEqual([bob.id, cara.id]);
+    expect(recoveredRoom.seats.every((seat) => !seat.connected)).toBe(true);
+    expect(recovered.leases).toEqual({});
+    expect(
+      recovered.ledger.filter(
+        (line) =>
+          line.reason === "blind" &&
+          line.source === `table:${room.id}:${bob.id}`
+      )
+    ).toHaveLength(1);
+    new PlatformDomain(recovered).validateInvariants();
+    reopened.close();
+  });
+
   it("normalizes legacy snapshots and marks every persisted player disconnected on restart", () => {
     const filename = temporaryDatabase();
     const store = new PlatformStore(filename);
@@ -802,6 +1098,26 @@ describe("SQLite command boundary", () => {
       }
     ).departedAccountIds;
     delete (
+      room.poker as {
+        smallBlindAccountId?: string;
+      }
+    ).smallBlindAccountId;
+    delete (
+      room.poker as {
+        bigBlindAccountId?: string;
+      }
+    ).bigBlindAccountId;
+    delete (
+      room.poker as {
+        blindPostedAccountIds?: string[];
+      }
+    ).blindPostedAccountIds;
+    delete (
+      room.poker as {
+        handStartConfirmedAccountIds?: string[];
+      }
+    ).handStartConfirmedAccountIds;
+    delete (
       state as {
         retiredIdentities?: Record<string, unknown>;
       }
@@ -861,6 +1177,16 @@ describe("SQLite command boundary", () => {
       DEFAULT_DENOMINATIONS
     );
     expect(recoveredRoom.poker?.departedAccountIds).toEqual([]);
+    expect(recoveredRoom.poker?.smallBlindAccountId).toBe(alice.id);
+    expect(recoveredRoom.poker?.bigBlindAccountId).toBe(bob.id);
+    expect(recoveredRoom.poker?.blindPostedAccountIds).toEqual([
+      alice.id,
+      bob.id
+    ]);
+    expect(recoveredRoom.poker?.handStartConfirmedAccountIds).toEqual([
+      alice.id,
+      bob.id
+    ]);
     expect(recovered.retiredIdentities).toEqual({});
     expect(recovered.rooms[room.id]?.waitingReadyAccountIds).toEqual([]);
     expect(recoveredRoom.poker?.readyAccountIds).toEqual([]);

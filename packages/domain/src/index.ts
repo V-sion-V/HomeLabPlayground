@@ -20,6 +20,7 @@ import type {
   PlatformSnapshot,
   PokerRoom,
   PokerRoomProjection,
+  PokerState,
   Room,
   RoomConfig,
   RoomMode,
@@ -81,6 +82,27 @@ export function normalizeDenominations(input: readonly number[]): number[] {
     throw new DomainError("INVALID_DENOMINATIONS");
   }
   return [...input].sort((left, right) => left - right);
+}
+
+function pokerBlindAccountIds(
+  state: Pick<PokerState, "dealerPosition" | "players">
+): { smallBlindAccountId: string; bigBlindAccountId: string } {
+  const players = [...state.players].sort(
+    (left, right) => left.position - right.position
+  );
+  const dealerIndex = players.findIndex(
+    (player) => player.position === state.dealerPosition
+  );
+  if (dealerIndex < 0 || players.length < 2) {
+    throw new DomainError("INVALID_POKER_STATE");
+  }
+  const smallIndex =
+    players.length === 2 ? dealerIndex : (dealerIndex + 1) % players.length;
+  const bigIndex = (smallIndex + 1) % players.length;
+  return {
+    smallBlindAccountId: players[smallIndex]!.accountId,
+    bigBlindAccountId: players[bigIndex]!.accountId
+  };
 }
 
 function checkedAdd(left: number, right: number): number {
@@ -360,6 +382,32 @@ export class PlatformDomain {
       ) {
         room.poker.departedAccountIds = [];
         this.normalizedPersistedState = true;
+      }
+      if (room.gameType === "texas-holdem" && room.poker) {
+        const legacyPoker = room.poker as unknown as PokerState & {
+          smallBlindAccountId?: string;
+          bigBlindAccountId?: string;
+          blindPostedAccountIds?: string[];
+          handStartConfirmedAccountIds?: string[];
+        };
+        if (
+          typeof legacyPoker.smallBlindAccountId !== "string" ||
+          typeof legacyPoker.bigBlindAccountId !== "string" ||
+          !Array.isArray(legacyPoker.blindPostedAccountIds) ||
+          !Array.isArray(legacyPoker.handStartConfirmedAccountIds)
+        ) {
+          const blinds = pokerBlindAccountIds(room.poker);
+          legacyPoker.smallBlindAccountId = blinds.smallBlindAccountId;
+          legacyPoker.bigBlindAccountId = blinds.bigBlindAccountId;
+          legacyPoker.blindPostedAccountIds = [
+            blinds.smallBlindAccountId,
+            blinds.bigBlindAccountId
+          ];
+          legacyPoker.handStartConfirmedAccountIds = room.poker.players.map(
+            (player) => player.accountId
+          );
+          this.normalizedPersistedState = true;
+        }
       }
       if (
         room.gameType === "texas-holdem" &&
@@ -1643,6 +1691,31 @@ export class PlatformDomain {
         amount: pot.amount,
         eligibleAccountIds: [...pot.eligibleAccountIds]
       })),
+      smallBlindAccountId: room.poker?.smallBlindAccountId,
+      bigBlindAccountId: room.poker?.bigBlindAccountId,
+      blindPostedAccountIds: room.poker
+        ? [...room.poker.blindPostedAccountIds]
+        : undefined,
+      handStartConfirmedAccountIds: room.poker
+        ? [...room.poker.handStartConfirmedAccountIds]
+        : undefined,
+      pendingHandStartAccountIds:
+        room.poker?.phase === "blinds"
+          ? room.poker.players
+              .filter((player) => !player.folded)
+              .filter(
+                (player) =>
+                  !room.poker?.handStartConfirmedAccountIds.includes(
+                    player.accountId
+                  ) ||
+                  ((player.accountId === room.poker?.smallBlindAccountId ||
+                    player.accountId === room.poker?.bigBlindAccountId) &&
+                    !room.poker?.blindPostedAccountIds.includes(
+                      player.accountId
+                    ))
+              )
+              .map((player) => player.accountId)
+          : [],
       readyAccountIds: this.readyAccountIdsForRoom(room),
       advanceDeadline: room.poker?.advanceDeadline
     };
@@ -1959,6 +2032,30 @@ export class PlatformDomain {
         this.validateRoomConfig(room.config);
         if (room.poker) normalizeDenominations(room.poker.denominations);
         if (room.poker) {
+        const pokerPlayerIds = new Set(
+          room.poker.players.map((player) => player.accountId)
+        );
+        if (
+          room.poker.smallBlindAccountId === room.poker.bigBlindAccountId ||
+          !pokerPlayerIds.has(room.poker.smallBlindAccountId) ||
+          !pokerPlayerIds.has(room.poker.bigBlindAccountId) ||
+          new Set(room.poker.blindPostedAccountIds).size !==
+            room.poker.blindPostedAccountIds.length ||
+          new Set(room.poker.handStartConfirmedAccountIds).size !==
+            room.poker.handStartConfirmedAccountIds.length ||
+          room.poker.blindPostedAccountIds.some(
+            (accountId) =>
+              accountId !== room.poker?.smallBlindAccountId &&
+              accountId !== room.poker?.bigBlindAccountId
+          ) ||
+          room.poker.handStartConfirmedAccountIds.some(
+            (accountId) => !pokerPlayerIds.has(accountId)
+          ) ||
+          (room.poker.phase === "blinds" &&
+            room.poker.actingAccountId !== null)
+        ) {
+          throw new DomainError("INVALID_POKER_STATE");
+        }
         const nonnegativePokerValues = [
           room.poker.currentBet,
           room.poker.minimumRaise,
