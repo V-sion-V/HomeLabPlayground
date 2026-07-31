@@ -19,7 +19,9 @@
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; max-width: 100%; min-width: 0; overflow-x: hidden; }
-body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 20% 0, #18463b 0, #071b18 45%, #04110f 100%); }
+html { min-height: 100%; }
+body, #root { min-height: 100dvh; }
+body { margin: 0; background: radial-gradient(circle at 20% 0, #18463b 0, #071b18 45%, #04110f 100%); }
 button, input, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #f5cc7c; outline-offset: 3px; }
@@ -53,7 +55,7 @@ h1, h2, h3, p { margin-top: 0; }
 .suit-clubs { color: var(--suit-clubs) !important; }
 .suit-spades { color: var(--suit-spades) !important; }
 
-.login-shell { min-height: 100vh; display: grid; grid-template-columns: 1.15fr .85fr; align-items: center; gap: 7vw; padding: 7vw 10vw; overflow: hidden; position: relative; }
+.login-shell { min-height: 100dvh; display: grid; grid-template-columns: 1.15fr .85fr; align-items: center; gap: 7vw; padding: 7vw 10vw; overflow: hidden; position: relative; }
 .login-shell::before { content: ""; position: absolute; width: 40vw; aspect-ratio: 1; border: 1px solid rgba(230,185,95,.13); border-radius: 50%; left: -15vw; bottom: -25vw; box-shadow: 0 0 0 7vw rgba(230,185,95,.035), 0 0 0 14vw rgba(230,185,95,.025); }
 .login-hero { position: relative; z-index: 1; }
 .brand-mark { display: grid; place-items: center; width: 76px; height: 76px; border-radius: 24px 24px 40px 40px; background: var(--gold); color: #102c27; font-size: 3rem; transform: rotate(-5deg); box-shadow: 0 20px 50px rgba(0,0,0,.35); margin-bottom: 2rem; }
@@ -72,7 +74,7 @@ legend { color: var(--muted); font-size: .85rem; font-weight: 700; margin-bottom
 .avatar.selected { border-color: var(--gold); background: rgba(230,185,95,.15); transform: translateY(-2px); }
 .error, .notice { color: #ffd0c8; background: rgba(238,114,93,.13); border-radius: 10px; padding: .65rem .8rem; font-size: .82rem; }
 
-.app-shell { min-height: 100vh; padding: 2rem clamp(1rem, 5vw, 5rem) 4rem; }
+.app-shell { min-height: 100dvh; padding: 2rem clamp(1rem, 5vw, 5rem) 4rem; }
 .topbar, .table-topbar, .display-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding-bottom: 1.2rem; }
 .topbar h1 { font-family: Georgia, serif; font-size: clamp(2rem, 4vw, 3.4rem); margin: 0; }
 .top-actions { display: flex; align-items: center; gap: .65rem; }
@@ -120,7 +122,7 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 .confirm-check input { width: auto; }
 .modal-actions { display: flex; justify-content: end; gap: .7rem; margin-top: 1.4rem; }
 
-.table-shell { width: 100%; min-width: 0; min-height: 100vh; display: grid; grid-template-rows: auto minmax(340px, 1fr) auto; }
+.table-shell { width: 100%; min-width: 0; min-height: 100dvh; display: grid; grid-template-rows: auto minmax(340px, 1fr) auto; }
 .table-topbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -220,7 +222,7 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 .action-grid { display: grid; grid-template-columns: .7fr 1fr 1fr 1.35fr; gap: .6rem; }
 .action-grid button { min-height: 48px; }
 
-.display-shell { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+.display-shell { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr; }
 .display-header { padding: 1.2rem 2rem; }
 .display-header h1 { font: 700 clamp(2rem, 4vw, 3.5rem) Georgia, serif; margin-bottom: .2rem; }
 .display-header span { color: var(--muted); }
@@ -233,7 +235,7 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 .seat-c { left: 50%; bottom: 7%; transform: translateX(-50%); }
 
 .loading-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-content: center;
   place-items: center;
@@ -374,7 +376,7 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
 }
 .settlement-panel {
   width: min(720px, 100%);
-  max-height: calc(100vh - 6rem);
+  max-height: calc(100dvh - 6rem);
   overflow: auto;
   padding: clamp(1rem, 3vw, 1.5rem);
   border: 1px solid rgba(230,185,95,.5);
@@ -584,7 +586,7 @@ summary { color: var(--gold); font-weight: 800; cursor: pointer; }
   .room-footer-actions { gap: .4rem; }
   .room-footer-actions > button { min-width: 0; padding-inline: .6rem; font-size: .75rem; }
   .settlement-layer { inset: 4rem 0 auto; padding: .35rem; }
-  .settlement-panel { max-height: calc(100vh - 4.5rem); border-radius: 18px; padding: .85rem; }
+  .settlement-panel { max-height: calc(100dvh - 4.5rem); border-radius: 18px; padding: .85rem; }
   .settlement-panel > header { gap: .5rem; }
   .settlement-panel > header > span { max-width: 8rem; }
   .showdown-player-list { grid-template-columns: 1fr; }
@@ -1140,13 +1142,10 @@ input[type="number"]::-webkit-outer-spin-button {
   color: inherit;
   background: var(--color-surface-muted);
   font-size: 1.6rem;
-  cursor: pointer;
+  cursor: inherit;
 }
 
-.member-avatar:disabled {
-  opacity: 1;
-  cursor: default;
-}
+.member-avatar:disabled { opacity: 1; cursor: default; }
 
 .member-menu,
 .member-action-popover {
@@ -1299,7 +1298,6 @@ input[type="number"]::-webkit-outer-spin-button {
 .text-button:active,
 .account-chip:active,
 .avatar:active,
-.member-avatar:active,
 .room-card:active,
 .settings-card-toggle:active,
 .select-trigger:active,
@@ -1323,7 +1321,6 @@ input[type="number"]::-webkit-outer-spin-button {
   .text-button:not(:disabled):hover,
   .account-chip:not(:disabled):hover,
   .avatar:not(:disabled):hover,
-  .member-avatar:not(:disabled):hover,
   .select-trigger:not(:disabled):hover,
   .select-options button:not(:disabled):hover,
   .settings-card-toggle:hover,
@@ -1551,6 +1548,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .fixed-panel {
   width: 100%;
   height: 100dvh;
+  max-height: 100dvh;
   min-width: 0;
   overflow: hidden;
   display: grid;
@@ -1953,6 +1951,18 @@ input[type="range"] {
   text-align: left;
 }
 
+.member-menu-trigger {
+  -webkit-touch-callout: none;
+  user-select: none;
+  touch-action: pan-y;
+  cursor: context-menu;
+}
+
+.member-menu-trigger:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
+}
+
 @media (max-width: 760px) {
   .admin-header {
     align-items: flex-start;
@@ -2031,16 +2041,14 @@ input[type="range"] {
   }
 }
 
-/* Avalon has a dedicated cool-toned palette plus two semantic emphasis colors:
-   teal for the viewer's operation and amber for the current leader. */
+/* Avalon uses the shared accent for current operations and a separate amber
+   identity color so "you" never competes with the active leader/event cue. */
 :root[data-theme-scope="avalon"][data-theme="light"] {
-  --avalon-leader: #b66f00;
-  --avalon-leader-text: #ffffff;
+  --avalon-self: #b66f00;
 }
 
 :root[data-theme-scope="avalon"][data-theme="dark"] {
-  --avalon-leader: #f0b95f;
-  --avalon-leader-text: #2d1b00;
+  --avalon-self: #f0b95f;
 }
 
 .game-choice-grid {
@@ -2087,6 +2095,7 @@ input[type="range"] {
 .avalon-shell {
   width: 100%;
   height: 100dvh;
+  max-height: 100dvh;
   min-width: 0;
   overflow: hidden;
   display: grid;
@@ -2121,8 +2130,7 @@ input[type="range"] {
 
 .avalon-top-actions,
 .avalon-host-actions,
-.avalon-choice-row,
-.avalon-member-actions {
+.avalon-choice-row {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -2205,6 +2213,26 @@ input[type="range"] {
   box-shadow: 0 16px 44px var(--color-shadow);
 }
 
+.avalon-member-rail.is-selecting-team {
+  border-color: var(--color-accent);
+  animation: avalon-selection-pulse 1.45s ease-in-out infinite;
+}
+
+@keyframes avalon-selection-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 16px 44px var(--color-shadow),
+      0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+  }
+
+  50% {
+    box-shadow:
+      0 16px 44px var(--color-shadow),
+      0 0 0 5px color-mix(in srgb, var(--color-accent) 46%, transparent);
+  }
+}
+
 .avalon-section-heading,
 .avalon-result > header {
   min-width: 0;
@@ -2281,16 +2309,16 @@ input[type="range"] {
 }
 
 .avalon-member.is-self {
-  border: 2px solid var(--color-accent);
+  border: 2px solid var(--avalon-self);
 }
 
 .avalon-member.is-leader {
-  border: 2px solid var(--avalon-leader);
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--avalon-leader) 30%, transparent);
+  border: 2px solid var(--color-accent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 
 .avalon-member.is-leader.is-self {
-  border-color: var(--avalon-leader);
+  border-color: var(--color-accent);
 }
 
 .avalon-member.is-team {
@@ -2318,10 +2346,16 @@ input[type="range"] {
   color: color-mix(in srgb, var(--color-accent-text) 82%, transparent) !important;
 }
 
+.avalon-member.is-self.is-ready,
+.avalon-member.is-self.needs-action,
+.avalon-member.is-self.is-selected {
+  border-color: var(--avalon-self);
+}
+
 .avalon-member.is-leader.is-ready,
 .avalon-member.is-leader.needs-action,
 .avalon-member.is-leader.is-selected {
-  border-color: var(--avalon-leader);
+  border-color: var(--color-accent);
 }
 
 .avalon-member.is-selectable {
@@ -2368,8 +2402,8 @@ input[type="range"] {
 }
 
 .avalon-member-badges .leader-badge {
-  color: var(--avalon-leader-text);
-  background: var(--avalon-leader);
+  color: var(--color-accent-text);
+  background: var(--color-accent);
 }
 
 .avalon-member.is-ready .avalon-member-badges b,
@@ -2382,8 +2416,20 @@ input[type="range"] {
 .avalon-member.is-ready .avalon-member-badges .leader-badge,
 .avalon-member.needs-action .avalon-member-badges .leader-badge,
 .avalon-member.is-selected .avalon-member-badges .leader-badge {
-  color: var(--avalon-leader-text);
-  background: var(--avalon-leader);
+  color: var(--color-accent-text);
+  background: var(--color-accent);
+}
+
+.avalon-member.is-identity-revealed {
+  color: var(--color-accent-text);
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+
+.avalon-member.is-identity-revealed .avalon-member-identity small,
+.avalon-member.is-identity-revealed .online,
+.avalon-member.is-identity-revealed .offline {
+  color: color-mix(in srgb, var(--color-accent-text) 82%, transparent);
 }
 
 .avalon-member-secret {
@@ -2396,8 +2442,8 @@ input[type="range"] {
   align-content: center;
   gap: .15rem;
   padding: .45rem;
-  color: #ffffff;
-  background: var(--color-accent);
+  color: var(--color-accent-text);
+  background: transparent;
   text-align: center;
   pointer-events: none;
 }
@@ -2419,52 +2465,18 @@ input[type="range"] {
 }
 
 .avalon-member-secret.tone-evil {
-  color: var(--color-danger-text);
-  background: var(--color-danger);
+  color: var(--color-accent-text);
+  background: transparent;
 }
 
 .avalon-member-secret.tone-good {
   color: var(--color-accent-text);
-  background: var(--color-accent);
+  background: transparent;
 }
 
 .avalon-member-secret.tone-uncertain {
-  color: var(--avalon-leader-text);
-  background: var(--avalon-leader);
-}
-
-.avalon-member-actions {
-  grid-column: 1 / -1;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  padding-top: .25rem;
-  border-top: 1px solid var(--color-border);
-}
-
-.avalon-member-actions button {
-  min-height: 2rem;
-  padding: .25rem .4rem;
-  font-size: .67rem;
-}
-
-.avalon-member.is-ready .avalon-member-actions,
-.avalon-member.needs-action .avalon-member-actions,
-.avalon-member.is-selected .avalon-member-actions {
-  border-color: color-mix(in srgb, var(--color-accent-text) 38%, transparent);
-}
-
-.avalon-member.is-ready .avalon-member-actions .text-button,
-.avalon-member.needs-action .avalon-member-actions .text-button,
-.avalon-member.is-selected .avalon-member-actions .text-button {
   color: var(--color-accent-text);
-}
-
-.avalon-member.is-ready .avalon-member-actions .danger-text,
-.avalon-member.needs-action .avalon-member-actions .danger-text,
-.avalon-member.is-selected .avalon-member-actions .danger-text {
-  padding-inline: .55rem;
-  color: var(--color-danger-text) !important;
-  background: var(--color-danger);
+  background: transparent;
 }
 
 .avalon-mission-track {
@@ -2481,7 +2493,7 @@ input[type="range"] {
   display: grid;
   place-items: center;
   align-content: center;
-  gap: .25rem;
+  gap: .35rem;
   padding: .55rem;
   border: 1px solid var(--color-border);
   border-radius: 50% 50% 18px 18px;
@@ -2490,37 +2502,58 @@ input[type="range"] {
   text-align: center;
 }
 
-.avalon-mission-track strong {
-  color: var(--color-text);
-  font-family: Georgia, serif;
-  font-size: 1.35rem;
-}
-
-.avalon-mission-track span,
-.avalon-mission-track small {
+.avalon-mission-track span {
   overflow-wrap: anywhere;
-  font-size: .69rem;
 }
 
 .avalon-mission-track .mission-current {
-  border-color: var(--avalon-leader);
-  color: var(--avalon-leader-text);
-  background: var(--avalon-leader);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--avalon-leader) 24%, transparent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 24%, transparent);
 }
 
-.avalon-mission-track .mission-current strong {
-  color: var(--avalon-leader-text);
+.avalon-mission-rule {
+  font-size: clamp(.78rem, 1.7vw, 1rem);
+  font-weight: 800;
+  line-height: 1.28;
 }
 
 .avalon-mission-track .mission-success {
+  color: var(--color-accent-text);
   border-color: var(--color-success);
-  background: color-mix(in srgb, var(--color-success) 13%, var(--color-surface-raised));
+  background: var(--color-success);
 }
 
 .avalon-mission-track .mission-fail {
+  color: var(--color-danger-text);
   border-color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 13%, var(--color-surface-raised));
+  background: var(--color-danger);
+}
+
+.avalon-mission-result {
+  width: 100%;
+  display: grid;
+  gap: .35rem;
+}
+
+.avalon-mission-result > span {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: .22rem;
+}
+
+.avalon-mission-result b {
+  font-size: clamp(.9rem, 2vw, 1.15rem);
+}
+
+.avalon-mission-result strong {
+  color: inherit;
+  font-family: Georgia, serif;
+  font-size: clamp(1.15rem, 3vw, 1.55rem);
+  line-height: 1;
 }
 
 .avalon-rejection-counter {
@@ -2987,7 +3020,19 @@ input[type="range"] {
   }
 
   .avalon-action-panel.is-game-active {
+    grid-template-columns: minmax(5.5rem, .6fr) minmax(0, 1.4fr);
+    gap: .5rem;
+  }
+
+  .avalon-action-panel.is-game-active .avalon-choice-row {
+    display: grid;
     grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+  }
+
+  .avalon-action-panel.is-game-active .avalon-choice-row > button {
+    width: 100%;
+    min-width: 0;
   }
 
   .avalon-mission-track {
@@ -3000,9 +3045,20 @@ input[type="range"] {
     border-radius: 999px 999px 12px 12px;
   }
 
-  .avalon-mission-track span,
-  .avalon-mission-track small {
-    font-size: .58rem;
+  .avalon-mission-rule {
+    font-size: .7rem;
+  }
+
+  .avalon-mission-result {
+    gap: .18rem;
+  }
+
+  .avalon-mission-result b {
+    font-size: .85rem;
+  }
+
+  .avalon-mission-result strong {
+    font-size: 1.18rem;
   }
 
   .avalon-setting-grid,

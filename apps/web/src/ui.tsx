@@ -6,7 +6,10 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type HTMLAttributes,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
@@ -18,6 +21,21 @@ import {
 
 export type { ThemeMode } from "@party/contracts";
 export type ThemeScope = "main" | "poker" | "avalon";
+
+type ContextMenuGestureProps = Pick<
+  HTMLAttributes<HTMLElement>,
+  | "onClickCapture"
+  | "onContextMenu"
+  | "onKeyDown"
+  | "onPointerCancel"
+  | "onPointerDown"
+  | "onPointerMove"
+  | "onPointerUp"
+>;
+
+const contextMenuTargetSelector = "[data-context-menu-id]";
+const contextMenuLongPressMs = 540;
+const contextMenuMoveTolerance = 12;
 
 const paletteVariables: Record<keyof ThemePalette, string> = {
   canvas: "--color-canvas",
@@ -43,6 +61,129 @@ const paletteVariables: Record<keyof ThemePalette, string> = {
   tableRail: "--color-table-rail",
   tableText: "--color-table-text"
 };
+
+export function useContextMenuGesture(
+  onOpen: (targetId: string, anchor: HTMLElement) => void
+): ContextMenuGestureProps {
+  const onOpenRef = useRef(onOpen);
+  const pressRef = useRef<{
+    anchor: HTMLElement;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    timer: number;
+  } | null>(null);
+  const suppressedClickRef = useRef<{
+    anchor: HTMLElement;
+    expiresAt: number;
+  } | null>(null);
+  onOpenRef.current = onOpen;
+
+  const clearPress = useCallback(() => {
+    if (pressRef.current) {
+      window.clearTimeout(pressRef.current.timer);
+      pressRef.current = null;
+    }
+  }, []);
+
+  const targetForEvent = useCallback(
+    (eventTarget: EventTarget | null, boundary: HTMLElement) => {
+      if (!(eventTarget instanceof Element)) return null;
+      const target = eventTarget.closest<HTMLElement>(
+        contextMenuTargetSelector
+      );
+      return target && boundary.contains(target) ? target : null;
+    },
+    []
+  );
+
+  const openTarget = useCallback((anchor: HTMLElement) => {
+    const targetId = anchor.dataset.contextMenuId;
+    if (targetId) onOpenRef.current(targetId, anchor);
+  }, []);
+
+  useEffect(() => clearPress, [clearPress]);
+
+  return {
+    onContextMenu: (event: ReactMouseEvent<HTMLElement>) => {
+      const anchor = targetForEvent(event.target, event.currentTarget);
+      if (!anchor) return;
+      event.preventDefault();
+      clearPress();
+      const suppressed = suppressedClickRef.current;
+      if (
+        suppressed?.anchor === anchor &&
+        suppressed.expiresAt > performance.now()
+      ) {
+        return;
+      }
+      openTarget(anchor);
+    },
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      if (event.pointerType === "mouse" || event.button !== 0) return;
+      const anchor = targetForEvent(event.target, event.currentTarget);
+      if (!anchor) return;
+      clearPress();
+      const press = {
+        anchor,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        timer: 0
+      };
+      press.timer = window.setTimeout(() => {
+        if (pressRef.current !== press) return;
+        suppressedClickRef.current = {
+          anchor,
+          expiresAt: performance.now() + 1_000
+        };
+        openTarget(anchor);
+        pressRef.current = null;
+      }, contextMenuLongPressMs);
+      pressRef.current = press;
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      const press = pressRef.current;
+      if (!press || press.pointerId !== event.pointerId) return;
+      if (
+        Math.hypot(
+          event.clientX - press.startX,
+          event.clientY - press.startY
+        ) > contextMenuMoveTolerance
+      ) {
+        clearPress();
+      }
+    },
+    onPointerUp: clearPress,
+    onPointerCancel: clearPress,
+    onClickCapture: (event: ReactMouseEvent<HTMLElement>) => {
+      const suppressed = suppressedClickRef.current;
+      if (
+        !suppressed ||
+        suppressed.expiresAt <= performance.now() ||
+        !(event.target instanceof Node) ||
+        !suppressed.anchor.contains(event.target)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      suppressedClickRef.current = null;
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+      if (
+        event.key !== "ContextMenu" &&
+        !(event.shiftKey && event.key === "F10")
+      ) {
+        return;
+      }
+      const anchor = targetForEvent(event.target, event.currentTarget);
+      if (!anchor) return;
+      event.preventDefault();
+      openTarget(anchor);
+    }
+  };
+}
 
 export function applyProductTheme(scope: ThemeScope, mode: ThemeMode): void {
   const palette = productConfig.themes[scope][mode];

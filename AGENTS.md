@@ -33,7 +33,7 @@
 
 ## 2. 当前开发阶段
 
-阶段快照日期：`2026-07-31`。当前分支为 `main`；本快照已包含 `avalon-game` change-1 UI 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
+阶段快照日期：`2026-07-31`。当前分支为 `main`；本快照已包含 `avalon-game` change-2 UI 收口工作区，精确提交身份与正式发布状态应以 `git rev-parse HEAD`、最新自动化部署输出和只读服务器事实为准。
 
 ### 已完成
 
@@ -48,13 +48,14 @@
 - `admin-account-preferences-and-ui` initial 已完成并冻结：平台新增匿名直达管理员设置、账户/历史赛季集合管理、开放房间账户安全删除、两步登录、服务器权威语言/主题/音量偏好，以及固定容器、共享 SVG 和 portal 头像菜单。lint、typecheck、platform/server 29/29、poker 15/15、realtime 4/4、Chromium/WebKit 6/6、容量 4/4、生产构建/静态资源和真实 iStoreOS 隔离容器/浏览器门禁均通过；当前权威快照为 `docs/requirements/admin-account-preferences-and-ui/effective-requirements.md`。
 - `avalon-game` initial 已完成并冻结：平台新增完整 5–10 人原版阿瓦隆、自动/手动认角色、原版与 Dized 奥伯伦、秘密投票/任务、刺杀、押分结算/作废、有符号安全积分，以及玩家/管理员/匿名 display 双语响应式 UI。lint、typecheck、Avalon 8/8、platform/server 37/37、poker 15/15、realtime 5/5、Chromium/WebKit 8/8、容量 4/4、生产构建/静态资源和真实 iStoreOS 随机隔离 Docker/浏览器门禁均通过；当前权威快照为 `docs/requirements/avalon-game/effective-requirements.md`。
 - `avalon-game` change-1 已完成并冻结：大厅/加入信息层级、十点准备计、玩家卡私密覆盖与队长提名、准备/投票/行动/本人/队长状态、五任务规则常显和独立 Avalon 冷色主题已交付。lint、typecheck、realtime 5/5、生产 build/static、Chromium/WebKit 8/8、桌面与 300px 独立浏览器检查均通过；没有修改服务端规则、资产、SQLite、部署接口或正式服务器。
+- `avalon-game` change-2 已完成并冻结：固定页移动端双层滚动已改为动态视口内唯一滚动区；“查看身份”统一强调全部玩家卡并保证本人精确角色，确认后按钮恢复次要样式；手机查看/操作保持左窄右宽双列；任务轨迹使用简化内容、放大票数和高对比结果色；提名区域呼吸提示、本人/队长语义色及 Avalon/Poker 长按/右键/键盘房主管理菜单已交付。lint、typecheck、realtime 5/5、生产 build/static、Chromium/WebKit 8/8、300px 动态视口、计算样式、几何和手势门禁均通过；没有修改服务端规则、投影、资产、SQLite、部署接口或正式服务器。
 
 ### 尚未完成或待执行
 
 - 当前没有待恢复的 `platform-usability-and-data-management` initial 或 change-1 任务。2026-07-30 只读检查确认正式 `home-table` 运行 healthy 的 Git `b131a4c35ec952180beed575e274b9cb27cbccd8` 镜像；后续正式发布状态以受支持部署入口的实际结果和只读服务器检查为准。
 - 当前没有待恢复的 `deployment-automation` initial 任务。其三个 phase plan/result、完成状态、`change-0.md` 与有效需求已经冻结；未来部署自动化需求必须新建连续的 `change-N` 运行。
 - 当前没有待恢复的 `admin-account-preferences-and-ui` initial 任务。其远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，没有切换正式服务、固定卷、发布目录或唯一备份；正式发布仍需按受支持部署入口另行执行并以只读服务器事实为准。
-- 当前没有待恢复的 `avalon-game` initial 或 change-1 任务。initial 远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，且已全部清理；change-1 只执行本地验证。2026-07-31 收口时正式服务仍运行 Git `67e68cea036a41c38917e19936c27e3f7cd49f19` 对应 healthy 镜像，固定卷、发布标记、唯一备份和部署锁均未改变；阿瓦隆及本次 UI 变更尚未正式发布到 `home-table`。
+- 当前没有待恢复的 `avalon-game` initial、change-1 或 change-2 任务。initial 远端验收只使用随机隔离容器、卷、镜像、端口和临时归档，且已全部清理；change-1 与 change-2 只执行本地验证。2026-07-31 收口时正式服务仍运行 Git `67e68cea036a41c38917e19936c27e3f7cd49f19` 对应 healthy 镜像，固定卷、发布标记、唯一备份和部署锁均未改变；阿瓦隆及两次 UI 变更尚未正式发布到 `home-table`。
 
 ### 工作流文档规则
 

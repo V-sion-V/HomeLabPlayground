@@ -51,12 +51,25 @@ test("uses anonymous admin routes, two-step registration, and account preference
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   const adminViewport = page.viewportSize()!;
   await page.setViewportSize({ width: 300, height: 760 });
-  expect(
-    await page.evaluate(() => ({
+  const adminNarrow = await page.evaluate(() => {
+    window.scrollTo(0, 100);
+    const content = document.querySelector<HTMLElement>(".fixed-panel-scroll");
+    return {
       viewport: innerWidth,
-      documentWidth: document.documentElement.scrollWidth
-    }))
-  ).toEqual({ viewport: 300, documentWidth: 300 });
+      viewportHeight: innerHeight,
+      documentWidth: document.documentElement.scrollWidth,
+      documentHeight: document.documentElement.scrollHeight,
+      outerScrollY: scrollY,
+      contentOverflowY: content ? getComputedStyle(content).overflowY : ""
+    };
+  });
+  expect(adminNarrow.viewport).toBe(300);
+  expect(adminNarrow.documentWidth).toBe(300);
+  expect(adminNarrow.documentHeight).toBeLessThanOrEqual(
+    adminNarrow.viewportHeight + 1
+  );
+  expect(adminNarrow.outerScrollY).toBe(0);
+  expect(adminNarrow.contentOverflowY).toBe("auto");
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeVisible();
   await page.setViewportSize(adminViewport);
 
@@ -256,10 +269,19 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByLabel("庄家按钮")).toHaveCount(1);
     await expect(hostPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
     await expect(guestPage.getByLabel("我的手牌").locator("span")).toHaveCount(2);
-    const memberTrigger = hostPage.getByRole("button", {
+    const memberTrigger = hostPage.getByRole("group", {
       name: `${unreadyName} 成员操作`
     });
+    await expect(
+      hostPage.getByRole("menuitem", { name: "移除玩家" })
+    ).toHaveCount(0);
     await memberTrigger.click();
+    await expect(hostPage.getByRole("menu", { name: "成员操作" })).toHaveCount(0);
+    await openMemberContextMenu(
+      memberTrigger,
+      hostPage,
+      testInfo.project.name
+    );
     const memberMenu = hostPage.getByRole("menu", { name: "成员操作" });
     await expect(memberMenu).toBeVisible();
     expect(
@@ -276,7 +298,11 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await hostPage.keyboard.press("Escape");
     await expect(memberMenu).toHaveCount(0);
     await expect(memberTrigger).toBeFocused();
-    await memberTrigger.click();
+    await openMemberContextMenu(
+      memberTrigger,
+      hostPage,
+      testInfo.project.name
+    );
     await hostPage.getByRole("menuitem", { name: "移除玩家" }).click();
     const kickConfirmation = hostPage.getByRole("alertdialog", {
       name: "确认踢出玩家"
@@ -636,11 +662,37 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
         `当前人数 ${guestIndex + 1}/10`
       );
       await joinDialog.getByRole("button", { name: "加入牌局" }).click();
-      await expect(
-        guestPage.getByRole("heading", { name: roomName })
-      ).toBeVisible();
+      await expect(guestPage.locator(".avalon-room-title h1")).toHaveText(
+        roomName
+      );
+      await expect(joinDialog).toHaveCount(0);
     }
     await expect(hostPage.locator(".avalon-member")).toHaveCount(5);
+    const avalonMemberTrigger = hostPage.getByRole("group", {
+      name: `${playerNames[1]} 玩家操作`
+    });
+    await expect(
+      hostPage.getByRole("menuitem", { name: "移除" })
+    ).toHaveCount(0);
+    await avalonMemberTrigger.click();
+    await expect(
+      hostPage.getByRole("menu", { name: "玩家操作" })
+    ).toHaveCount(0);
+    await openMemberContextMenu(
+      avalonMemberTrigger,
+      hostPage,
+      testInfo.project.name
+    );
+    await expect(
+      hostPage.getByRole("menu", { name: "玩家操作" })
+    ).toBeVisible();
+    await hostPage.keyboard.press("Escape");
+    await expect(avalonMemberTrigger).toBeFocused();
+    await hostPage.keyboard.press("Shift+F10");
+    await expect(
+      hostPage.getByRole("menu", { name: "玩家操作" })
+    ).toBeVisible();
+    await hostPage.keyboard.press("Escape");
     const waitingLayout = await hostPage
       .locator(".avalon-action-panel")
       .evaluate((panel) => {
@@ -705,6 +757,12 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
     await expect(hostPage.locator(".avalon-secret")).toHaveCount(0);
     await expect(hostPage.locator(".avalon-mission-rule")).toHaveCount(5);
     await expect(
+      hostPage.locator(".avalon-mission-board .avalon-section-heading h2")
+    ).toHaveCount(0);
+    await expect(
+      hostPage.locator(".avalon-mission-track article > strong")
+    ).toHaveCount(0);
+    await expect(
       hostPage.locator(".avalon-mission-rule").filter({ hasText: "–" })
     ).toHaveCount(0);
     await expect(
@@ -731,7 +789,9 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
         );
         return {
           viewportWidth: innerWidth,
+          secretX: secret?.getBoundingClientRect().x ?? 0,
           secretWidth: secret?.getBoundingClientRect().width ?? 0,
+          actionX: action?.getBoundingClientRect().x ?? 0,
           actionWidth: action?.getBoundingClientRect().width ?? 0,
           actionColor: action ? getComputedStyle(action).backgroundColor : "",
           buttonColor: button ? getComputedStyle(button).backgroundColor : "",
@@ -743,14 +803,10 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
             : ""
         };
       });
-    if (activeLayout.viewportWidth > 700) {
-      expect(activeLayout.actionWidth).toBeGreaterThan(
-        activeLayout.secretWidth * 1.5
-      );
-    } else {
-      expect(Math.abs(activeLayout.actionWidth - activeLayout.secretWidth))
-        .toBeLessThanOrEqual(2);
-    }
+    expect(activeLayout.actionX).toBeGreaterThan(activeLayout.secretX);
+    expect(activeLayout.actionWidth).toBeGreaterThan(
+      activeLayout.secretWidth * 1.45
+    );
     expect(activeLayout.actionColor).not.toBe(activeLayout.buttonColor);
     expect(activeLayout.leaderBorder).toBeTruthy();
     expect(activeLayout.selfBorder).toBeTruthy();
@@ -760,11 +816,64 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       expect(activeLayout.selfBorder).not.toBe(activeLayout.leaderBorder);
     }
     expect(activeLayout.missionColor).toBe(activeLayout.leaderBorder);
-    await revealAndCoverAvalonRole(hostPage);
+    const activeViewport = hostPage.viewportSize()!;
+    await hostPage.setViewportSize({ width: 300, height: 600 });
+    const activeMobile = await hostPage.evaluate(() => {
+      window.scrollTo(0, 100);
+      const shell = document.querySelector<HTMLElement>(".avalon-shell");
+      const layout = document.querySelector<HTMLElement>(".avalon-layout");
+      const secret = document.querySelector<HTMLElement>(
+        ".avalon-secret-control"
+      );
+      const action = document.querySelector<HTMLElement>(
+        ".avalon-control-card.is-actionable"
+      );
+      return {
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight,
+        documentWidth: document.documentElement.scrollWidth,
+        documentHeight: document.documentElement.scrollHeight,
+        outerScrollY: scrollY,
+        shellHeight: shell?.getBoundingClientRect().height ?? 0,
+        layoutOverflowY: layout ? getComputedStyle(layout).overflowY : "",
+        secretX: secret?.getBoundingClientRect().x ?? 0,
+        secretWidth: secret?.getBoundingClientRect().width ?? 0,
+        actionX: action?.getBoundingClientRect().x ?? 0,
+        actionWidth: action?.getBoundingClientRect().width ?? 0
+      };
+    });
+    expect(activeMobile.viewportWidth).toBe(300);
+    expect(activeMobile.documentWidth).toBe(300);
+    expect(activeMobile.documentHeight).toBeLessThanOrEqual(
+      activeMobile.viewportHeight + 1
+    );
+    expect(activeMobile.outerScrollY).toBe(0);
+    expect(activeMobile.shellHeight).toBeCloseTo(activeMobile.viewportHeight, 0);
+    expect(activeMobile.layoutOverflowY).toBe("auto");
+    expect(activeMobile.actionX).toBeGreaterThan(activeMobile.secretX);
+    expect(activeMobile.actionWidth).toBeGreaterThan(
+      activeMobile.secretWidth * 1.45
+    );
+    await hostPage.setViewportSize(activeViewport);
+    const automaticRoles = await Promise.all(
+      playerPages.map((playerPage) => revealAndCoverAvalonRole(playerPage))
+    );
+    const evilRoleIndex = automaticRoles.findIndex((role) =>
+      ["刺客", "莫甘娜", "莫德雷德", "奥伯伦", "爪牙"].includes(role)
+    );
+    expect(evilRoleIndex).toBeGreaterThanOrEqual(0);
     await expect(displayPage.getByText("你的角色", { exact: true })).toHaveCount(0);
-    await expect(displayPage.getByText("按住查看私密信息")).toHaveCount(0);
+    await expect(displayPage.getByText("查看身份")).toHaveCount(0);
 
-    for (const playerPage of playerPages) {
+    const hostIdentityButton = hostPage.getByRole("button", {
+      name: "查看身份"
+    });
+    await expect(hostIdentityButton).toHaveClass(/primary/);
+    await hostPage
+      .getByRole("button", { name: "确认已看清角色" })
+      .click();
+    await expect(hostIdentityButton).toHaveClass(/secondary/);
+    for (const playerPage of guestPages) {
       await expect(
         playerPage.getByRole("button", { name: "确认已看清角色" })
       ).toBeVisible();
@@ -772,6 +881,14 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
         .getByRole("button", { name: "确认已看清角色" })
         .click();
     }
+
+    const evilPlayerName = playerNames[evilRoleIndex]!;
+    await completeFailedAvalonMission(
+      playerPages,
+      displayPage,
+      roomId!,
+      evilPlayerName
+    );
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await rejectCurrentAvalonProposal(
@@ -803,12 +920,25 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
 
     const desktopViewport = hostPage.viewportSize()!;
     await hostPage.setViewportSize({ width: 300, height: 760 });
-    expect(
-      await hostPage.evaluate(() => ({
+    const intermissionNarrow = await hostPage.evaluate(() => {
+      window.scrollTo(0, 100);
+      const layout = document.querySelector<HTMLElement>(".avalon-layout");
+      return {
         viewport: innerWidth,
-        documentWidth: document.documentElement.scrollWidth
-      }))
-    ).toEqual({ viewport: 300, documentWidth: 300 });
+        viewportHeight: innerHeight,
+        documentWidth: document.documentElement.scrollWidth,
+        documentHeight: document.documentElement.scrollHeight,
+        outerScrollY: scrollY,
+        layoutOverflowY: layout ? getComputedStyle(layout).overflowY : ""
+      };
+    });
+    expect(intermissionNarrow.viewport).toBe(300);
+    expect(intermissionNarrow.documentWidth).toBe(300);
+    expect(intermissionNarrow.documentHeight).toBeLessThanOrEqual(
+      intermissionNarrow.viewportHeight + 1
+    );
+    expect(intermissionNarrow.outerScrollY).toBe(0);
+    expect(intermissionNarrow.layoutOverflowY).toBe("auto");
     await expect(hostPage.getByText("局间准备", { exact: true }).first()).toBeVisible();
     await hostPage.setViewportSize(desktopViewport);
 
@@ -820,14 +950,17 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
     }
     await hostPage.getByRole("button", { name: "开始下一局" }).click();
     await expect(
-      hostPage.getByRole("button", { name: "按住查看私密信息" })
+      hostPage.getByRole("button", { name: "查看身份" })
     ).toBeVisible();
 
     const reveal = hostPage.getByRole("button", {
-      name: "按住查看私密信息"
+      name: "查看身份"
     });
     await reveal.dispatchEvent("pointerdown", { pointerType: "mouse" });
     await expect(hostPage.locator(".avalon-member-secret")).toHaveCount(1);
+    await expect(
+      hostPage.locator(".avalon-member.is-identity-revealed")
+    ).toHaveCount(5);
     await expect(
       hostPage.locator(".avalon-member-secret").getByText(
         /梅林可见的邪恶|派西维尔候选|邪恶同伴/
@@ -837,6 +970,9 @@ test("plays Avalon in automatic and manual modes with private roles, display iso
       window.dispatchEvent(new PointerEvent("pointerup"));
     });
     await expect(hostPage.locator(".avalon-member-secret")).toHaveCount(0);
+    await expect(
+      hostPage.locator(".avalon-member.is-identity-revealed")
+    ).toHaveCount(0);
 
     for (const playerPage of playerPages) {
       await playerPage
@@ -1050,22 +1186,71 @@ async function actingPage(first: Page, second: Page): Promise<Page> {
   return second;
 }
 
-async function revealAndCoverAvalonRole(page: Page): Promise<void> {
+async function openMemberContextMenu(
+  trigger: Locator,
+  page: Page,
+  projectName: string
+): Promise<void> {
+  if (projectName.startsWith("webkit")) {
+    const box = await trigger.boundingBox();
+    expect(box).toBeTruthy();
+    const pointer = {
+      pointerType: "touch",
+      pointerId: 41,
+      isPrimary: true,
+      button: 0,
+      clientX: (box?.x ?? 0) + (box?.width ?? 0) / 2,
+      clientY: (box?.y ?? 0) + (box?.height ?? 0) / 2
+    };
+    await trigger.dispatchEvent("pointerdown", {
+      ...pointer,
+      buttons: 1
+    });
+    await page.waitForTimeout(580);
+    await trigger.dispatchEvent("pointerup", {
+      ...pointer,
+      buttons: 0
+    });
+    return;
+  }
+  await trigger.click({ button: "right" });
+}
+
+async function revealAndCoverAvalonRole(page: Page): Promise<string> {
   const reveal = page.getByRole("button", {
-    name: "按住查看私密信息"
+    name: "查看身份"
   });
   await reveal.dispatchEvent("pointerdown", { pointerType: "mouse" });
   await expect(page.locator(".avalon-member-secret").first()).toBeVisible();
+  const selfSecret = page.locator(
+    ".avalon-member.is-self .avalon-member-secret"
+  );
+  await expect(selfSecret).toBeVisible();
+  const exactRole = (await selfSecret.locator("strong").textContent()) ?? "";
+  expect(exactRole).toMatch(
+    /^(梅林|派西维尔|忠臣|刺客|莫甘娜|莫德雷德|奥伯伦|爪牙)$/
+  );
+  const memberCount = await page.locator(".avalon-member").count();
   await expect(
-    page.locator(".avalon-member.is-self .avalon-member-secret")
-  ).toBeVisible();
+    page.locator(".avalon-member.is-identity-revealed")
+  ).toHaveCount(memberCount);
+  const revealedBackgrounds = await page
+    .locator(".avalon-member.is-identity-revealed")
+    .evaluateAll((members) =>
+      members.map((member) => getComputedStyle(member).backgroundColor)
+    );
+  expect(new Set(revealedBackgrounds).size).toBe(1);
   await page.evaluate(() => {
     window.dispatchEvent(new PointerEvent("pointerup"));
   });
   await expect(page.locator(".avalon-member-secret")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "按住查看私密信息" })
+    page.locator(".avalon-member.is-identity-revealed")
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "查看身份" })
   ).toBeVisible();
+  return exactRole;
 }
 
 async function avalonLeaderPageIndex(pages: Page[]): Promise<number> {
@@ -1120,6 +1305,13 @@ async function rejectCurrentAvalonProposal(
   const leaderIndex = await avalonLeaderPageIndex(playerPages);
   const leaderPage = playerPages[leaderIndex]!;
   leaderPage.setDefaultTimeout(10_000);
+  const existingVoteHistory = inspectPartialSecrecy
+    ? (await avalonPublicProgress(displayPage, roomId)).voteHistory
+    : [];
+  const originalViewport = leaderPage.viewportSize()!;
+  if (inspectPartialSecrecy) {
+    await leaderPage.setViewportSize({ width: 300, height: 760 });
+  }
   const heading = leaderPage.getByRole("heading", {
     name: /选择任务队伍/
   });
@@ -1131,6 +1323,23 @@ async function rejectCurrentAvalonProposal(
   });
   const candidates = leaderPage.locator(".avalon-member-select");
   await expect(candidates).toHaveCount(playerPages.length);
+  const memberRail = leaderPage.locator(".avalon-member-rail");
+  await expect(memberRail).toHaveClass(/is-selecting-team/);
+  const selectionCue = await memberRail.evaluate((rail) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--color-accent)";
+    document.body.append(probe);
+    const accent = getComputedStyle(probe).color;
+    probe.remove();
+    const style = getComputedStyle(rail);
+    return {
+      accent,
+      border: style.borderTopColor,
+      animationName: style.animationName
+    };
+  });
+  expect(selectionCue.border).toBe(selectionCue.accent);
+  expect(selectionCue.animationName).toContain("avalon-selection-pulse");
   for (let index = 0; index < teamSize; index += 1) {
     await candidates.nth(index).click();
     await expect(candidates.nth(index)).toHaveAttribute(
@@ -1150,6 +1359,24 @@ async function rejectCurrentAvalonProposal(
   await expect(
     leaderPage.locator(".avalon-member.needs-action")
   ).toHaveCount(playerPages.length);
+  await expect(memberRail).not.toHaveClass(/is-selecting-team/);
+  if (inspectPartialSecrecy) {
+    const mobileChoices = await leaderPage
+      .locator(".avalon-control-card.is-actionable .avalon-choice-row")
+      .evaluate((row) =>
+        Array.from(row.querySelectorAll("button")).map((button) => {
+          const rect = button.getBoundingClientRect();
+          return { x: rect.x, y: rect.y, width: rect.width };
+        })
+      );
+    expect(mobileChoices).toHaveLength(2);
+    expect(Math.abs(mobileChoices[0]!.x - mobileChoices[1]!.x))
+      .toBeLessThanOrEqual(1);
+    expect(Math.abs(mobileChoices[0]!.width - mobileChoices[1]!.width))
+      .toBeLessThanOrEqual(1);
+    expect(mobileChoices[1]!.y).toBeGreaterThan(mobileChoices[0]!.y);
+    await leaderPage.setViewportSize(originalViewport);
+  }
 
   const partialCount = inspectPartialSecrecy ? playerPages.length - 1 : 0;
   for (let index = 0; index < partialCount; index += 1) {
@@ -1182,7 +1409,7 @@ async function rejectCurrentAvalonProposal(
     expect(partial.voteSubmittedAccountIds).toHaveLength(
       playerPages.length - 1
     );
-    expect(partial.voteHistory).toEqual([]);
+    expect(partial.voteHistory).toEqual(existingVoteHistory);
     expect(JSON.stringify(partial)).not.toContain("roleAssignments");
     expect(JSON.stringify(partial)).not.toContain("missionChoices");
   }
@@ -1210,6 +1437,140 @@ async function rejectCurrentAvalonProposal(
         .not.toBe("team-vote");
     }
   }
+}
+
+async function completeFailedAvalonMission(
+  playerPages: Page[],
+  displayPage: Page,
+  roomId: string,
+  evilPlayerName: string
+): Promise<void> {
+  await expect
+    .poll(async () => await avalonLeaderPageIndex(playerPages))
+    .toBeGreaterThanOrEqual(0);
+  const leaderPage = playerPages[
+    await avalonLeaderPageIndex(playerPages)
+  ]!;
+  const heading = leaderPage.getByRole("heading", {
+    name: /选择任务队伍/
+  });
+  const headingText = await heading.textContent();
+  const teamSize = Number(headingText?.match(/\/(\d+)/)?.[1]);
+  expect(teamSize).toBeGreaterThan(0);
+  const candidates = leaderPage.locator(".avalon-member-select");
+  const evilCandidate = candidates.filter({ hasText: evilPlayerName });
+  await expect(evilCandidate).toHaveCount(1);
+  await evilCandidate.click();
+  let selectedCount = 1;
+  for (let index = 0; index < (await candidates.count()); index += 1) {
+    const candidate = candidates.nth(index);
+    if (
+      selectedCount < teamSize &&
+      (await candidate.getAttribute("aria-pressed")) !== "true"
+    ) {
+      await candidate.click();
+      selectedCount += 1;
+    }
+  }
+  expect(selectedCount).toBe(teamSize);
+  await leaderPage.getByRole("button", { name: "提交队伍" }).click();
+  await expect
+    .poll(async () => (await avalonPublicProgress(displayPage, roomId)).phase)
+    .toBe("team-vote");
+
+  for (const [index, playerPage] of playerPages.entries()) {
+    await playerPage.getByRole("button", { name: "同意" }).click();
+    if (index < playerPages.length - 1) {
+      await expect
+        .poll(
+          async () =>
+            (
+              await avalonPublicProgress(displayPage, roomId)
+            ).voteSubmittedAccountIds.length
+        )
+        .toBe(index + 1);
+    }
+  }
+  await expect
+    .poll(async () => (await avalonPublicProgress(displayPage, roomId)).phase)
+    .toBe("mission");
+
+  await expect
+    .poll(async () => {
+      let count = 0;
+      for (const playerPage of playerPages) {
+        if (
+          await playerPage
+            .getByRole("button", { name: "任务成功" })
+            .isVisible()
+        ) {
+          count += 1;
+        }
+      }
+      return count;
+    })
+    .toBe(teamSize);
+  const missionPages: Page[] = [];
+  let evilMissionPage: Page | undefined;
+  for (const playerPage of playerPages) {
+    if (
+      await playerPage
+        .getByRole("button", { name: "任务成功" })
+        .isVisible()
+    ) {
+      missionPages.push(playerPage);
+      if (
+        await playerPage
+          .locator(".avalon-member.is-self")
+          .filter({ hasText: evilPlayerName })
+          .isVisible()
+      ) {
+        evilMissionPage = playerPage;
+      }
+    }
+  }
+  expect(evilMissionPage).toBeTruthy();
+  await expect(
+    evilMissionPage!.getByRole("button", { name: "任务失败" })
+  ).toBeEnabled();
+  for (const [index, missionPage] of missionPages.entries()) {
+    await missionPage
+      .getByRole("button", {
+        name: missionPage === evilMissionPage ? "任务失败" : "任务成功"
+      })
+      .click();
+    if (index < missionPages.length - 1) {
+      await expect
+        .poll(
+          async () =>
+            (
+              await avalonPublicProgress(displayPage, roomId)
+            ).missionSubmittedAccountIds.length
+        )
+        .toBe(index + 1);
+    }
+  }
+  await expect
+    .poll(
+      async () =>
+        (await avalonPublicProgress(displayPage, roomId)).missionHistory.length
+    )
+    .toBe(1);
+  const failedMission = displayPage.locator(
+    ".avalon-mission-track .mission-fail"
+  );
+  await expect(failedMission).toHaveCount(1);
+  await expect(failedMission.locator(".avalon-mission-rule")).toHaveCount(0);
+  await expect(failedMission).not.toContainText("任务失败");
+  await expect(
+    failedMission.getByLabel(`成功 ${teamSize - 1}`)
+  ).toBeVisible();
+  await expect(failedMission.getByLabel("失败 1")).toBeVisible();
+  const failedColors = await missionCardColors(failedMission, "--color-danger", "--color-danger-text");
+  expect(failedColors.background).toBe(failedColors.expectedBackground);
+  expect(failedColors.text).toBe(failedColors.expectedText);
+  expect(failedColors.numberFontSize).toBeGreaterThanOrEqual(18);
+  await expect(displayPage.locator(".avalon-mission-rule")).toHaveCount(4);
 }
 
 async function completeSuccessfulAvalonMission(
@@ -1343,6 +1704,28 @@ async function completeSuccessfulAvalonMission(
   }
   await expect(displayPage.locator(".avalon-mission-track .mission-success"))
     .toHaveCount(completedMissionCount + 1);
+  const successfulMission = displayPage
+    .locator(".avalon-mission-track .mission-success")
+    .nth(completedMissionCount);
+  await expect(successfulMission.locator(".avalon-mission-rule")).toHaveCount(0);
+  await expect(successfulMission).not.toContainText("任务成功");
+  await expect(
+    successfulMission.getByLabel(`成功 ${teamSize}`)
+  ).toBeVisible();
+  await expect(successfulMission.getByLabel("失败 0")).toBeVisible();
+  const successfulColors = await missionCardColors(
+    successfulMission,
+    "--color-success",
+    "--color-accent-text"
+  );
+  expect(successfulColors.background).toBe(
+    successfulColors.expectedBackground
+  );
+  expect(successfulColors.text).toBe(successfulColors.expectedText);
+  expect(successfulColors.numberFontSize).toBeGreaterThanOrEqual(18);
+  await expect(displayPage.locator(".avalon-mission-rule")).toHaveCount(
+    4 - completedMissionCount
+  );
 }
 
 async function avalonAssassinPageIndex(pages: Page[]): Promise<number> {
@@ -1361,6 +1744,46 @@ async function avalonAssassinPageIndex(pages: Page[]): Promise<number> {
 function uniqueSuffix(projectName: string): string {
   const project = projectName.startsWith("chromium") ? "ch" : "wk";
   return `${project}-${Date.now().toString(36).slice(-6)}`;
+}
+
+async function missionCardColors(
+  card: Locator,
+  backgroundVariable: string,
+  textVariable: string
+): Promise<{
+  background: string;
+  expectedBackground: string;
+  text: string;
+  expectedText: string;
+  numberFontSize: number;
+}> {
+  return card.evaluate(
+    (element, variables) => {
+      const resolveColor = (variable: string) => {
+        const probe = document.createElement("span");
+        probe.style.color = `var(${variable})`;
+        document.body.append(probe);
+        const color = getComputedStyle(probe).color;
+        probe.remove();
+        return color;
+      };
+      const style = getComputedStyle(element);
+      return {
+        background: style.backgroundColor,
+        expectedBackground: resolveColor(variables.background),
+        text: style.color,
+        expectedText: resolveColor(variables.text),
+        numberFontSize: Number.parseFloat(
+          getComputedStyle(
+            element.querySelector<HTMLElement>(
+              ".avalon-mission-result strong"
+            )!
+          ).fontSize
+        )
+      };
+    },
+    { background: backgroundVariable, text: textVariable }
+  );
 }
 
 function highContrastSuitColor(suit: string | null): string {

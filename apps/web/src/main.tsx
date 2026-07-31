@@ -51,7 +51,8 @@ import {
   SelectField,
   ThemeToggle,
   applyProductTheme,
-  type ThemeScope
+  type ThemeScope,
+  useContextMenuGesture
 } from "./ui";
 import "./styles.css";
 
@@ -1952,13 +1953,22 @@ function WaitingRoom({
   const [selectedMember, setSelectedMember] = useState<
     PublicSeatProjection | null
   >(null);
-  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [confirmation, setConfirmation] = useState<
     | { kind: "kick"; member: PublicSeatProjection }
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
   useMemberMenuValidity(room, host, selectedMember, setSelectedMember);
+  const memberMenuGesture = useContextMenuGesture((accountId, anchor) => {
+    const member = room.seats.find(
+      (candidate) => candidate.accountId === accountId
+    );
+    if (host && member && member.accountId !== session.account.id) {
+      setMenuAnchor(anchor);
+      setSelectedMember(member);
+    }
+  });
   const ready = new Set(room.readyAccountIds ?? []);
   const currentReady = ready.has(session.account.id);
   const eligibleReady = room.seats.filter(
@@ -2028,24 +2038,31 @@ function WaitingRoom({
             {t(language, "openDisplay")}
           </a>
         </div>
-        <div className="waiting-seats">
-          {room.seats.map((seat) => (
-            <article key={seat.accountId}>
-              <button
-                type="button"
-                className="member-avatar"
-                aria-label={`${seat.username} ${t(language, "memberActions")}`}
-                aria-expanded={selectedMember?.accountId === seat.accountId}
-                disabled={!host || seat.accountId === session.account.id}
-                onClick={(event) => {
-                  setMenuAnchor(event.currentTarget);
-                  setSelectedMember((current) =>
-                    current?.accountId === seat.accountId ? null : seat
-                  );
-                }}
-              >
+        <div className="waiting-seats" {...memberMenuGesture}>
+          {room.seats.map((seat) => {
+            const canManage = host && seat.accountId !== session.account.id;
+            return (
+            <article
+              key={seat.accountId}
+              className={canManage ? "member-menu-trigger" : undefined}
+              data-context-menu-id={canManage ? seat.accountId : undefined}
+              tabIndex={canManage ? 0 : undefined}
+              role={canManage ? "group" : undefined}
+              aria-label={
+                canManage
+                  ? `${seat.username} ${t(language, "memberActions")}`
+                  : undefined
+              }
+              aria-haspopup={canManage ? "menu" : undefined}
+              aria-expanded={
+                canManage
+                  ? selectedMember?.accountId === seat.accountId
+                  : undefined
+              }
+            >
+              <span className="member-avatar" aria-hidden="true">
                 {seat.avatar}
-              </button>
+              </span>
               <div><strong>{seat.username}</strong><small>{seat.tableChips.toLocaleString()} {t(language, "score")}</small></div>
               {seat.accountId === room.hostAccountId && <em>{t(language, "host")}</em>}
               {ready.has(seat.accountId) && seat.accountId !== room.hostAccountId && (
@@ -2055,7 +2072,8 @@ function WaitingRoom({
                 {seat.connected ? t(language, "online") : t(language, "offline")}
               </small>
             </article>
-          ))}
+            );
+          })}
         </div>
         <MemberActionsMenu
           language={language}
@@ -2200,7 +2218,7 @@ function MemberActionsMenu({
   onRemove
 }: {
   language: Language;
-  anchor: HTMLButtonElement | null;
+  anchor: HTMLElement | null;
   member: PublicSeatProjection | null;
   onClose: () => void;
   onTransfer: (member: PublicSeatProjection) => void;
@@ -2265,7 +2283,7 @@ function SpectatorTable({
   const [selectedMember, setSelectedMember] = useState<
     PublicSeatProjection | null
   >(null);
-  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [confirmation, setConfirmation] = useState<
     | { kind: "kick"; member: PublicSeatProjection }
     | { kind: "leave" | "close" }
@@ -2309,7 +2327,8 @@ function SpectatorTable({
         language={language}
         room={room}
         activeMemberId={selectedMember?.accountId}
-        onMemberClick={
+        memberMenuDisabledId={session.account.id}
+        onMemberMenu={
           host
             ? (member, anchor) => {
                 if (member.accountId !== session.account.id) {
@@ -2413,13 +2432,22 @@ function PlayerTable({
   const [selectedMember, setSelectedMember] = useState<
     PublicSeatProjection | null
   >(null);
-  const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [confirmation, setConfirmation] = useState<
     | { kind: "kick"; member: PublicSeatProjection }
     | { kind: "leave" | "close" | "start" }
     | null
   >(null);
   useMemberMenuValidity(room, host, selectedMember, setSelectedMember);
+  const memberMenuGesture = useContextMenuGesture((accountId, anchor) => {
+    const member = room.seats.find(
+      (candidate) => candidate.accountId === accountId
+    );
+    if (host && member && member.accountId !== session.account.id) {
+      setMenuAnchor(anchor);
+      setSelectedMember(member);
+    }
+  });
   const betCacheRef = useRef<HTMLDivElement>(null);
   const chipRackRef = useRef<HTMLDivElement>(null);
   const pointerGesture = useRef<{
@@ -2614,28 +2642,40 @@ function PlayerTable({
         </div>
         <div className="table-controls" aria-hidden="true" />
       </header>
-      <section className="poker-felt" aria-label={t(language, "poker")}>
+      <section
+        className="poker-felt"
+        aria-label={t(language, "poker")}
+        {...memberMenuGesture}
+      >
         <div className="table-seats">
-          {room.seats.filter((entry) => entry.role === "participant").map((entry) => (
+          {room.seats.filter((entry) => entry.role === "participant").map((entry) => {
+            const canManage = host && entry.accountId !== session.account.id;
+            return (
             <article
               key={entry.accountId}
-              className={`player-seat ${entry.accountId === room.actingAccountId ? "active" : ""}`}
+              className={[
+                "player-seat",
+                entry.accountId === room.actingAccountId ? "active" : "",
+                canManage ? "member-menu-trigger" : ""
+              ].filter(Boolean).join(" ")}
+              data-context-menu-id={canManage ? entry.accountId : undefined}
+              tabIndex={canManage ? 0 : undefined}
+              role={canManage ? "group" : undefined}
+              aria-label={
+                canManage
+                  ? `${entry.username} ${t(language, "memberActions")}`
+                  : undefined
+              }
+              aria-haspopup={canManage ? "menu" : undefined}
+              aria-expanded={
+                canManage
+                  ? selectedMember?.accountId === entry.accountId
+                  : undefined
+              }
             >
-              <button
-                type="button"
-                className="member-avatar"
-                aria-label={`${entry.username} ${t(language, "memberActions")}`}
-                aria-expanded={selectedMember?.accountId === entry.accountId}
-                disabled={!host || entry.accountId === session.account.id}
-                onClick={(event) => {
-                  setMenuAnchor(event.currentTarget);
-                  setSelectedMember((current) =>
-                    current?.accountId === entry.accountId ? null : entry
-                  );
-                }}
-              >
+              <span className="member-avatar" aria-hidden="true">
                 {entry.avatar}
-              </button>
+              </span>
               <b>{entry.username}{entry.accountId === room.hostAccountId ? " ★" : ""}</b>
               <span className="seat-values">
                 <small>
@@ -2655,7 +2695,8 @@ function PlayerTable({
               )}
               {entry.folded && <em>{t(language, "fold")}</em>}
             </article>
-          ))}
+            );
+          })}
         </div>
         {room.seats.some((entry) => entry.role === "spectator") && (
           <div className="spectator-strip" aria-label={t(language, "spectators")}>
@@ -2663,22 +2704,30 @@ function PlayerTable({
             {room.seats
               .filter((entry) => entry.role === "spectator")
               .map((entry) => (
-                <div key={entry.accountId} className="spectator-chip">
-                  <button
-                    type="button"
+                <div
+                  key={entry.accountId}
+                  className={`spectator-chip${host ? " member-menu-trigger" : ""}`}
+                  data-context-menu-id={host ? entry.accountId : undefined}
+                  tabIndex={host ? 0 : undefined}
+                  role={host ? "group" : undefined}
+                  aria-label={
+                    host
+                      ? `${entry.username} ${t(language, "memberActions")}`
+                      : undefined
+                  }
+                  aria-haspopup={host ? "menu" : undefined}
+                  aria-expanded={
+                    host
+                      ? selectedMember?.accountId === entry.accountId
+                      : undefined
+                  }
+                >
+                  <span
                     className="member-avatar compact-avatar"
-                    aria-label={`${entry.username} ${t(language, "memberActions")}`}
-                    aria-expanded={selectedMember?.accountId === entry.accountId}
-                    disabled={!host}
-                    onClick={(event) => {
-                      setMenuAnchor(event.currentTarget);
-                      setSelectedMember((current) =>
-                        current?.accountId === entry.accountId ? null : entry
-                      );
-                    }}
+                    aria-hidden="true"
                   >
                     {entry.avatar}
-                  </button>
+                  </span>
                   <span>{entry.username}</span>
                 </div>
               ))}
@@ -3099,39 +3148,57 @@ function PublicTableSurface({
   language,
   room,
   activeMemberId,
-  onMemberClick
+  memberMenuDisabledId,
+  onMemberMenu
 }: {
   language: Language;
   room: PokerRoomProjection;
   activeMemberId?: string;
-  onMemberClick?: (
+  memberMenuDisabledId?: string;
+  onMemberMenu?: (
     member: PublicSeatProjection,
-    anchor: HTMLButtonElement
+    anchor: HTMLElement
   ) => void;
 }) {
   const participants = room.phase
     ? room.seats.filter((seat) => seat.role === "participant")
     : room.seats;
+  const memberMenuGesture = useContextMenuGesture((accountId, anchor) => {
+    const member = participants.find(
+      (candidate) => candidate.accountId === accountId
+    );
+    if (member) onMemberMenu?.(member, anchor);
+  });
   return (
-    <section className="display-felt">
+    <section className="display-felt" {...memberMenuGesture}>
       <div className="display-seats">
-        {participants.map((seat) => (
+        {participants.map((seat) => {
+          const canManage = Boolean(
+            onMemberMenu && seat.accountId !== memberMenuDisabledId
+          );
+          return (
           <article
             key={seat.accountId}
-            className={seat.accountId === room.actingAccountId ? "active" : ""}
+            className={[
+              seat.accountId === room.actingAccountId ? "active" : "",
+              canManage ? "member-menu-trigger" : ""
+            ].filter(Boolean).join(" ")}
+            data-context-menu-id={canManage ? seat.accountId : undefined}
+            tabIndex={canManage ? 0 : undefined}
+            role={canManage ? "group" : undefined}
+            aria-label={
+              canManage
+                ? `${seat.username} ${t(language, "memberActions")}`
+                : undefined
+            }
+            aria-haspopup={canManage ? "menu" : undefined}
+            aria-expanded={
+              canManage ? activeMemberId === seat.accountId : undefined
+            }
           >
-            <button
-              type="button"
-              className="member-avatar"
-              aria-label={`${seat.username} ${t(language, "memberActions")}`}
-              aria-expanded={activeMemberId === seat.accountId}
-              disabled={!onMemberClick}
-              onClick={(event) =>
-                onMemberClick?.(seat, event.currentTarget)
-              }
-            >
+            <span className="member-avatar" aria-hidden="true">
               {seat.avatar}
-            </button>
+            </span>
             <b>{seat.username}</b>
             <span className="seat-values">
               <small>
@@ -3147,7 +3214,8 @@ function PublicTableSurface({
               <em className="dealer-marker" aria-label={t(language, "dealer")}>D</em>
             )}
           </article>
-        ))}
+          );
+        })}
       </div>
       <div className="display-board">
         {room.mode === "chips-and-cards" && (

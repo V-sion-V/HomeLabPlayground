@@ -3,6 +3,7 @@ import type {
   Account,
   AvalonNightStepCode,
   AvalonPlayerCount,
+  AvalonPublicMemberProjection,
   AvalonRole,
   AvalonRoomConfig,
   AvalonRoomProjection,
@@ -10,7 +11,13 @@ import type {
   Language
 } from "@party/contracts";
 import { AVALON_RULES, normalizeAvalonRoles } from "@party/avalon";
-import { ArrowIcon, ConfirmDialog, SelectField } from "./ui";
+import {
+  AnchoredMenu,
+  ArrowIcon,
+  ConfirmDialog,
+  SelectField,
+  useContextMenuGesture
+} from "./ui";
 
 type RunCommand = (
   type: string,
@@ -109,6 +116,7 @@ type AvalonTextKey =
   | "voided"
   | "transfer"
   | "remove"
+  | "memberActions"
   | "confirmDanger"
   | "rejections"
   | "missionTrack"
@@ -166,8 +174,8 @@ const avalonTexts: Record<AvalonTextKey, [string, string]> = {
   good: ["善方", "Good"],
   evil: ["邪恶方", "Evil"],
   secretCovered: ["私密信息已遮盖", "Private information is covered"],
-  reveal: ["按住查看私密信息", "Hold to reveal private information"],
-  hide: ["隐藏私密信息", "Hide private information"],
+  reveal: ["查看身份", "View identity"],
+  hide: ["隐藏身份", "Hide identity"],
   knowledge: ["你依法可见的信息", "Information you may know"],
   visibleEvil: ["梅林可见的邪恶", "Evil visible to Merlin"],
   percivalCandidates: ["派西维尔候选", "Percival candidates"],
@@ -209,6 +217,7 @@ const avalonTexts: Record<AvalonTextKey, [string, string]> = {
   voided: ["本局已作废；角色不会公开，押分已退回", "Game voided; roles stay hidden and stakes were refunded"],
   transfer: ["转让房主", "Transfer host"],
   remove: ["移除", "Remove"],
+  memberActions: ["玩家操作", "Player actions"],
   confirmDanger: ["此操作可能作废活动局并退款。确认继续？", "This can void the active game and refund stakes. Continue?"],
   rejections: ["连续否决", "Consecutive rejections"],
   missionTrack: ["任务轨迹", "Mission track"],
@@ -362,12 +371,6 @@ function buildAvalonSecretOverlays(
   const knowledge = room.ownKnowledge;
   if (!knowledge) return overlays;
   const alignment = roleIsEvil(knowledge.role) ? "evil" : "good";
-  overlays.set(currentAccountId, {
-    label: avalonRoleLabel(language, knowledge.role),
-    detail: avalonText(language, alignment),
-    tone: alignment,
-    description: avalonRoleDescription(language, knowledge.role)
-  });
   for (const accountId of knowledge.visibleEvilAccountIds) {
     overlays.set(accountId, {
       label: avalonText(language, "evil"),
@@ -389,6 +392,13 @@ function buildAvalonSecretOverlays(
       tone: "evil"
     });
   }
+  // Write the viewer last so relationship lists can never replace their exact role.
+  overlays.set(currentAccountId, {
+    label: avalonRoleLabel(language, knowledge.role),
+    detail: avalonText(language, alignment),
+    tone: alignment,
+    description: avalonRoleDescription(language, knowledge.role)
+  });
   return overlays;
 }
 
@@ -625,6 +635,7 @@ export function AvalonRoomView({
             <AvalonSecretControl
               language={language}
               visible={secretVisible}
+              emphasized={!room.ownRoleConfirmed}
               setVisible={setSecretVisible}
             />
           )}
@@ -953,13 +964,47 @@ function AvalonMemberRail({
       : room.phase === "team-vote"
         ? avalonText(language, "voted")
         : avalonText(language, "submitted");
+  const [selectedMember, setSelectedMember] =
+    useState<AvalonPublicMemberProjection | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const memberMenuGesture = useContextMenuGesture((accountId, anchor) => {
+    const member = room.seats.find(
+      (candidate) => candidate.accountId === accountId
+    );
+    if (
+      host &&
+      currentAccountId &&
+      member &&
+      member.accountId !== currentAccountId
+    ) {
+      setMenuAnchor(anchor);
+      setSelectedMember(member);
+    }
+  });
+
+  useEffect(() => {
+    if (
+      selectedMember &&
+      (!host ||
+        selectedMember.accountId === currentAccountId ||
+        !room.seats.some(
+          (member) => member.accountId === selectedMember.accountId
+        ))
+    ) {
+      setSelectedMember(null);
+    }
+  }, [currentAccountId, host, room.seats, selectedMember]);
+
   return (
-    <section className="avalon-member-rail" aria-label={avalonText(language, "participant")}>
+    <section
+      className={`avalon-member-rail${teamSelection ? " is-selecting-team" : ""}`}
+      aria-label={avalonText(language, "participant")}
+    >
       <div className="avalon-section-heading">
         <p className="eyebrow">{avalonText(language, "participant")}</p>
         <strong>{room.seats.length}/10</strong>
       </div>
-      <div className="avalon-member-grid">
+      <div className="avalon-member-grid" {...memberMenuGesture}>
         {room.seats.map((member) => {
           const participant = room.participantAccountIds.includes(
             member.accountId
@@ -985,6 +1030,12 @@ function AvalonMemberRail({
             teamSelection?.selectedAccountIds.includes(member.accountId)
           );
           const secret = secretOverlays?.get(member.accountId);
+          const canManage = Boolean(
+            host &&
+              currentAccountId &&
+              member.accountId !== currentAccountId
+          );
+          const articleIsMenuTrigger = canManage && !selectable;
           const content = (
             <>
               <span className="avalon-avatar">{member.avatar}</span>
@@ -1054,15 +1105,40 @@ function AvalonMemberRail({
                 isSubmitted ? "is-submitted" : "",
                 selectable ? "is-selectable" : "",
                 selected ? "is-selected" : "",
-                secret ? "has-secret" : ""
+                secret ? "has-secret" : "",
+                secretOverlays ? "is-identity-revealed" : "",
+                articleIsMenuTrigger ? "member-menu-trigger" : ""
               ].filter(Boolean).join(" ")}
+              data-context-menu-id={
+                articleIsMenuTrigger ? member.accountId : undefined
+              }
+              tabIndex={articleIsMenuTrigger ? 0 : undefined}
+              role={articleIsMenuTrigger ? "group" : undefined}
+              aria-label={
+                articleIsMenuTrigger
+                  ? `${member.username} ${avalonText(language, "memberActions")}`
+                  : undefined
+              }
+              aria-haspopup={articleIsMenuTrigger ? "menu" : undefined}
+              aria-expanded={
+                articleIsMenuTrigger
+                  ? selectedMember?.accountId === member.accountId
+                  : undefined
+              }
             >
               {selectable ? (
                 <button
                   type="button"
-                  className="avalon-member-select"
-                  aria-label={`${avalonText(language, "selectTeam")}: ${member.username} (${teamSelection?.selectedAccountIds.length ?? 0}/${teamSelection?.limit ?? 0})`}
+                  className={`avalon-member-select${canManage ? " member-menu-trigger" : ""}`}
+                  data-context-menu-id={canManage ? member.accountId : undefined}
+                  aria-label={`${avalonText(language, "selectTeam")}: ${member.username} (${teamSelection?.selectedAccountIds.length ?? 0}/${teamSelection?.limit ?? 0})${canManage ? ` · ${avalonText(language, "memberActions")}` : ""}`}
                   aria-pressed={selected}
+                  aria-haspopup={canManage ? "menu" : undefined}
+                  aria-expanded={
+                    canManage
+                      ? selectedMember?.accountId === member.accountId
+                      : undefined
+                  }
                   onClick={() => teamSelection?.onToggle(member.accountId)}
                 >
                   {content}
@@ -1070,32 +1146,47 @@ function AvalonMemberRail({
               ) : (
                 content
               )}
-              {host &&
-                currentAccountId &&
-                !selectable &&
-                member.accountId !== currentAccountId && (
-                  <span className="avalon-member-actions">
-                    <button
-                      className="text-button"
-                      disabled={!member.connected}
-                      onClick={() => onTransfer?.(member.accountId)}
-                    >
-                      {avalonText(language, "transfer")}
-                    </button>
-                    <button
-                      className="text-button danger-text"
-                      onClick={() =>
-                        onRemove?.(member.accountId, member.username)
-                      }
-                    >
-                      {avalonText(language, "remove")}
-                    </button>
-                  </span>
-                )}
             </article>
           );
         })}
       </div>
+      <AnchoredMenu
+        anchor={menuAnchor}
+        open={Boolean(selectedMember)}
+        label={avalonText(language, "memberActions")}
+        onClose={() => setSelectedMember(null)}
+      >
+        {selectedMember && (
+          <>
+            <strong className="anchored-menu-title">
+              {selectedMember.avatar} {selectedMember.username}
+            </strong>
+            <button
+              role="menuitem"
+              className="text-button"
+              disabled={!selectedMember.connected}
+              onClick={() => {
+                const accountId = selectedMember.accountId;
+                setSelectedMember(null);
+                onTransfer?.(accountId);
+              }}
+            >
+              {avalonText(language, "transfer")}
+            </button>
+            <button
+              role="menuitem"
+              className="text-button danger-text"
+              onClick={() => {
+                const { accountId, username } = selectedMember;
+                setSelectedMember(null);
+                onRemove?.(accountId, username);
+              }}
+            >
+              {avalonText(language, "remove")}
+            </button>
+          </>
+        )}
+      </AnchoredMenu>
     </section>
   );
 }
@@ -1107,10 +1198,6 @@ function AvalonMissionBoard({
   language: Language;
   room: AvalonRoomProjection;
 }) {
-  const successCount = room.missionHistory.filter(
-    (mission) => mission.succeeded
-  ).length;
-  const failCount = room.missionHistory.length - successCount;
   const playerCount = avalonPlayerCounts.find(
     (count) =>
       count ===
@@ -1123,13 +1210,7 @@ function AvalonMissionBoard({
   return (
     <section className="avalon-mission-board" aria-label={avalonText(language, "missionTrack")}>
       <div className="avalon-section-heading">
-        <div>
-          <p className="eyebrow">{avalonText(language, "missionTrack")}</p>
-          <h2>
-            {avalonText(language, "successes")} {successCount} ·{" "}
-            {avalonText(language, "failures")} {failCount}
-          </h2>
-        </div>
+        <p className="eyebrow">{avalonText(language, "missionTrack")}</p>
         <span className="avalon-rejection-counter">
           {avalonText(language, "rejections")} {room.rejectionCount}/5
         </span>
@@ -1153,20 +1234,29 @@ function AvalonMissionBoard({
                     ? "mission-current"
                     : ""
               }
+              aria-label={`${avalonText(language, "mission")} ${index + 1}`}
             >
-              <strong>{index + 1}</strong>
-              <span className="avalon-mission-rule">
-                {rule
-                  ? `${rule.teamSize} ${avalonText(language, "players")} · ${avalonText(language, "failThreshold")} ${rule.failThreshold}`
-                  : "–"}
-              </span>
-              {result && (
-                <small>
-                  {result.succeeded
-                    ? avalonText(language, "missionSuccess")
-                    : avalonText(language, "missionFail")}{" "}
-                  · {result.failCount} {avalonText(language, "failures")}
-                </small>
+              {result ? (
+                <span className="avalon-mission-result">
+                  <span
+                    aria-label={`${avalonText(language, "successes")} ${result.successCount}`}
+                  >
+                    <b aria-hidden="true">✓</b>
+                    <strong>{result.successCount}</strong>
+                  </span>
+                  <span
+                    aria-label={`${avalonText(language, "failures")} ${result.failCount}`}
+                  >
+                    <b aria-hidden="true">✕</b>
+                    <strong>{result.failCount}</strong>
+                  </span>
+                </span>
+              ) : (
+                <span className="avalon-mission-rule">
+                  {rule
+                    ? `${rule.teamSize} ${avalonText(language, "players")} · ${avalonText(language, "failThreshold")} ${rule.failThreshold}`
+                    : "–"}
+                </span>
               )}
             </article>
           );
@@ -1297,10 +1387,12 @@ function AvalonResult({
 function AvalonSecretControl({
   language,
   visible,
+  emphasized,
   setVisible
 }: {
   language: Language;
   visible: boolean;
+  emphasized: boolean;
   setVisible: (visible: boolean) => void;
 }) {
   return (
@@ -1310,7 +1402,7 @@ function AvalonSecretControl({
     >
       <button
         type="button"
-        className="primary"
+        className={emphasized ? "primary" : "secondary"}
         aria-pressed={visible}
         onPointerDown={() => setVisible(true)}
         onPointerUp={() => setVisible(false)}
