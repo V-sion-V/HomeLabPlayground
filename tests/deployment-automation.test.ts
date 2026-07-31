@@ -113,6 +113,16 @@ afterEach(() => {
 });
 
 describe("deployment automation local orchestrator", () => {
+  it("loads the default config beside the script on Windows PowerShell 5.1", () => {
+    const fixture = createLocalRepository();
+
+    const result = runLocalDeploy(fixture, "noop", "", true);
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain("deployment is a no-op");
+    expect(readJsonLines(fixture.openSshLog)).toHaveLength(1);
+  });
+
   it("rejects a dirty workspace before resolving any remote side effect", () => {
     const fixture = createLocalRepository();
     writeFileSync(join(fixture.repository, "dirty.txt"), "not committed", "utf8");
@@ -600,7 +610,7 @@ function createLocalRepository(): LocalFixture {
   const fakeBin = join(root, "fake-bin");
   const scpCapture = join(root, "scp-capture");
   const openSshLog = join(root, "openssh.jsonl");
-  const configPath = join(root, "deploy.config.psd1");
+  const configPath = join(repository, "deploy/deploy.config.psd1");
   mkdirSync(join(repository, "deploy"), { recursive: true });
   mkdirSync(fakeBin, { recursive: true });
   copyFileSync(deployScriptSource, join(repository, "deploy/deploy.ps1"));
@@ -657,20 +667,23 @@ function compileNativeSshProbe(outputPath: string) {
 function runLocalDeploy(
   fixture: LocalFixture,
   behavior: string,
-  identityFile = ""
+  identityFile = "",
+  useDefaultConfigPath = false
 ) {
   writeConfig(fixture.configPath, identityFile);
+  const argumentsList = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    join(fixture.repository, "deploy/deploy.ps1")
+  ];
+  if (!useDefaultConfigPath) {
+    argumentsList.push("-ConfigPath", fixture.configPath);
+  }
   const result = spawnSync(
     powershell,
-    [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      join(fixture.repository, "deploy/deploy.ps1"),
-      "-ConfigPath",
-      fixture.configPath
-    ],
+    argumentsList,
     {
       cwd: fixture.repository,
       env: {

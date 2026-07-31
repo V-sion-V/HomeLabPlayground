@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$ConfigPath = (Join-Path $PSScriptRoot "deploy.config.psd1"),
+  [string]$ConfigPath,
   [string]$SshHost,
   [string]$SshUser,
   [int]$SshPort,
@@ -17,6 +17,9 @@ $ErrorActionPreference = "Stop"
 $script:InvocationParameters = @{}
 foreach ($entry in $PSBoundParameters.GetEnumerator()) {
   $script:InvocationParameters[$entry.Key] = $entry.Value
+}
+if (-not $script:InvocationParameters.ContainsKey("ConfigPath")) {
+  $ConfigPath = Join-Path $PSScriptRoot "deploy.config.psd1"
 }
 
 function Write-Stage {
