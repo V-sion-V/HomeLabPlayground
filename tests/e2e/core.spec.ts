@@ -571,50 +571,127 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
     await expect(hostPage.getByRole("button", { name: /暂停牌局|继续牌局/ })).toHaveCount(0);
     await expect(hostPage.getByLabel("语言选择")).toHaveCount(0);
     await expect(hostPage.getByRole("button", { name: "静音" })).toHaveCount(0);
-    await hostPage.setViewportSize({ width: 300, height: 760 });
-    expect(await hostPage.evaluate(() => ({
-      viewport: innerWidth,
-      documentWidth: document.documentElement.scrollWidth
-    }))).toEqual({ viewport: 300, documentWidth: 300 });
-    const mobileSeatGeometry = await hostPage.locator(".table-seats").evaluate((track) => {
-      const trackRect = track.getBoundingClientRect();
-      const felt = track.closest<HTMLElement>(".poker-felt")!;
-      const feltRect = felt.getBoundingClientRect();
-      const board = felt.querySelector<HTMLElement>(".board")!;
-      const cards = Array.from(
-        track.querySelectorAll<HTMLElement>(".player-seat")
+    type SeatGeometry = {
+      viewport: number;
+      documentWidth: number;
+      layout: string;
+      overflowX: string;
+      visibleTopGap: number;
+      visibleLeftGap: number;
+      horizontalGap: number;
+      cardTopSpread: number;
+      cardWidth: number;
+      cardWidthSpread: number;
+      trackTopSafety: number;
+      trackBottomSafety: number;
+      trackZIndex: number;
+      boardZIndex: number;
+      shadows: string[];
+      dealerWithinTrack: boolean;
+      dealerWithinFelt: boolean;
+    };
+    const seatViewportWidths = [1280, 900, 761, 760, 601, 600, 521, 520, 300];
+    const seatGeometries: SeatGeometry[] = [];
+    for (const width of seatViewportWidths) {
+      await hostPage.setViewportSize({ width, height: 760 });
+      await hostPage.locator(".table-seats").evaluate((track) => {
+        track.scrollLeft = 0;
+      });
+      await hostPage.evaluate(() => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }));
+      seatGeometries.push(
+        await hostPage.locator(".table-seats").evaluate((track) => {
+          const trackRect = track.getBoundingClientRect();
+          const trackStyle = getComputedStyle(track);
+          const felt = track.closest<HTMLElement>(".poker-felt")!;
+          const feltRect = felt.getBoundingClientRect();
+          const board = felt.querySelector<HTMLElement>(".board")!;
+          const cards = Array.from(
+            track.querySelectorAll<HTMLElement>(".player-seat")
+          );
+          const cardRects = cards.map((card) => card.getBoundingClientRect());
+          const cardTops = cardRects.map((rect) => rect.top);
+          const cardWidths = cardRects.map((rect) => rect.width);
+          const dealer = track.querySelector<HTMLElement>(".dealer-marker");
+          const dealerRect = dealer?.getBoundingClientRect();
+          return {
+            viewport: innerWidth,
+            documentWidth: document.documentElement.scrollWidth,
+            layout: trackStyle.display,
+            overflowX: trackStyle.overflowX,
+            visibleTopGap: Math.min(...cardTops) - feltRect.top,
+            visibleLeftGap: cardRects[0]!.left - feltRect.left,
+            horizontalGap: cardRects.length > 1
+              ? cardRects[1]!.left - cardRects[0]!.right
+              : 0,
+            cardTopSpread: Math.max(...cardTops) - Math.min(...cardTops),
+            cardWidth: cardWidths[0]!,
+            cardWidthSpread: Math.max(...cardWidths) - Math.min(...cardWidths),
+            trackTopSafety: Math.min(...cardRects.map((rect) => rect.top - trackRect.top)),
+            trackBottomSafety: Math.min(...cardRects.map((rect) => trackRect.bottom - rect.bottom)),
+            trackZIndex: Number.parseInt(trackStyle.zIndex, 10),
+            boardZIndex: Number.parseInt(getComputedStyle(board).zIndex, 10),
+            shadows: cards.map((card) => getComputedStyle(card).boxShadow),
+            dealerWithinTrack: Boolean(dealerRect) &&
+              dealerRect!.top >= trackRect.top &&
+              dealerRect!.bottom <= trackRect.bottom,
+            dealerWithinFelt: Boolean(dealerRect) &&
+              dealerRect!.top >= feltRect.top &&
+              dealerRect!.bottom <= feltRect.bottom
+          };
+        })
       );
-      const cardRects = cards.map((card) => card.getBoundingClientRect());
-      const dealer = track.querySelector<HTMLElement>(".dealer-marker");
-      const dealerRect = dealer?.getBoundingClientRect();
-      return {
-        visibleTopGap: Math.min(...cardRects.map((rect) => rect.top - feltRect.top)),
-        horizontalGap: cardRects.length > 1
-          ? cardRects[1]!.left - cardRects[0]!.right
-          : 0,
-        trackTopSafety: Math.min(...cardRects.map((rect) => rect.top - trackRect.top)),
-        trackBottomSafety: Math.min(...cardRects.map((rect) => trackRect.bottom - rect.bottom)),
-        trackZIndex: Number.parseInt(getComputedStyle(track).zIndex, 10),
-        boardZIndex: Number.parseInt(getComputedStyle(board).zIndex, 10),
-        shadows: cards.map((card) => getComputedStyle(card).boxShadow),
-        dealerWithinTrack: Boolean(dealerRect) &&
-          dealerRect!.top >= trackRect.top &&
-          dealerRect!.bottom <= trackRect.bottom,
-        dealerWithinFelt: Boolean(dealerRect) &&
-          dealerRect!.top >= feltRect.top &&
-          dealerRect!.bottom <= feltRect.bottom
-      };
-    });
-    expect(mobileSeatGeometry.visibleTopGap).toBeGreaterThanOrEqual(14);
-    expect(mobileSeatGeometry.visibleTopGap).toBeLessThanOrEqual(17);
-    expect(mobileSeatGeometry.horizontalGap).toBeGreaterThanOrEqual(4);
-    expect(mobileSeatGeometry.horizontalGap).toBeLessThanOrEqual(8);
-    expect(mobileSeatGeometry.trackTopSafety).toBeGreaterThanOrEqual(14);
-    expect(mobileSeatGeometry.trackBottomSafety).toBeGreaterThanOrEqual(20);
-    expect(mobileSeatGeometry.trackZIndex).toBeGreaterThan(mobileSeatGeometry.boardZIndex);
-    expect(mobileSeatGeometry.shadows.every((shadow) => shadow !== "none")).toBe(true);
-    expect(mobileSeatGeometry.dealerWithinTrack).toBe(true);
-    expect(mobileSeatGeometry.dealerWithinFelt).toBe(true);
+    }
+    for (const [index, geometry] of seatGeometries.entries()) {
+      expect(geometry.viewport).toBe(seatViewportWidths[index]);
+      expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewport);
+      expect(geometry.layout).toBe("flex");
+      expect(geometry.overflowX).toBe("auto");
+      expect(Math.abs(geometry.visibleTopGap - geometry.visibleLeftGap)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.visibleLeftGap - geometry.horizontalGap)).toBeLessThanOrEqual(1);
+      expect(geometry.visibleTopGap).toBeGreaterThanOrEqual(8);
+      expect(geometry.visibleTopGap).toBeLessThanOrEqual(12);
+      expect(geometry.cardTopSpread).toBeLessThanOrEqual(1);
+      expect(geometry.cardWidthSpread).toBeLessThanOrEqual(1);
+      expect(geometry.trackTopSafety).toBeGreaterThanOrEqual(15);
+      expect(geometry.trackBottomSafety).toBeGreaterThanOrEqual(39);
+      expect(geometry.trackZIndex).toBeGreaterThan(geometry.boardZIndex);
+      expect(geometry.shadows.every((shadow) => shadow !== "none")).toBe(true);
+      expect(geometry.dealerWithinTrack).toBe(true);
+      expect(geometry.dealerWithinFelt).toBe(true);
+    }
+    const measuredSpacings = seatGeometries.flatMap((geometry) => [
+      geometry.visibleTopGap,
+      geometry.visibleLeftGap,
+      geometry.horizontalGap
+    ]);
+    expect(Math.max(...measuredSpacings) - Math.min(...measuredSpacings)).toBeLessThanOrEqual(1);
+    const desktopSeatGeometry = seatGeometries[0]!;
+    const mobileSeatGeometry = seatGeometries.at(-1)!;
+    expect(desktopSeatGeometry.cardWidth).toBeGreaterThan(mobileSeatGeometry.cardWidth);
+    expect(desktopSeatGeometry.cardWidth).toBeLessThanOrEqual(
+      mobileSeatGeometry.cardWidth * 2
+    );
+    const legacyBreakpointPairs: ReadonlyArray<readonly [number, number]> = [
+      [761, 760],
+      [601, 600],
+      [521, 520]
+    ];
+    for (const [above, below] of legacyBreakpointPairs) {
+      const aboveGeometry = seatGeometries.find((geometry) => geometry.viewport === above)!;
+      const belowGeometry = seatGeometries.find((geometry) => geometry.viewport === below)!;
+      expect(Math.abs(aboveGeometry.cardWidth - belowGeometry.cardWidth)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(aboveGeometry.visibleTopGap - belowGeometry.visibleTopGap)
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(aboveGeometry.visibleLeftGap - belowGeometry.visibleLeftGap)
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(aboveGeometry.horizontalGap - belowGeometry.horizontalGap)
+      ).toBeLessThanOrEqual(1);
+    }
     const focusableSeat = hostPage.locator('.player-seat[tabindex="0"]').first();
     await hostPage.evaluate(() => {
       (document.activeElement as HTMLElement | null)?.blur();
@@ -641,15 +718,23 @@ test("runs a real two-player hand, isolates private cards, synchronizes display,
       return {
         topInsideTrack: cardRect.top - outlineExtent >= trackRect.top - 1,
         bottomInsideTrack: cardRect.bottom + outlineExtent <= trackRect.bottom + 1,
+        leftInsideTrack: cardRect.left - outlineExtent >= trackRect.left - 1,
+        rightInsideTrack: cardRect.right + outlineExtent <= trackRect.right + 1,
         topInsideFelt: cardRect.top - outlineExtent >= feltRect.top - 1,
-        bottomInsideFelt: cardRect.bottom + outlineExtent <= feltRect.bottom + 1
+        bottomInsideFelt: cardRect.bottom + outlineExtent <= feltRect.bottom + 1,
+        leftInsideFelt: cardRect.left - outlineExtent >= feltRect.left - 1,
+        rightInsideFelt: cardRect.right + outlineExtent <= feltRect.right + 1
       };
     });
     expect(focusedSeatSafety).toEqual({
       topInsideTrack: true,
       bottomInsideTrack: true,
+      leftInsideTrack: true,
+      rightInsideTrack: true,
       topInsideFelt: true,
-      bottomInsideFelt: true
+      bottomInsideFelt: true,
+      leftInsideFelt: true,
+      rightInsideFelt: true
     });
     await expect(hostPage.locator(".player-seat .seat-values").first()).toContainText(
       "剩余筹码"
